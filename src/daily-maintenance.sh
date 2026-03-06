@@ -37,10 +37,10 @@ else
 - Check logs: $LOG_FILE"
 fi
 
-# Send to Discord
+# Send to Discord (escape content for JSON)
 curl -s -X POST "https://discord.com/api/v10/channels/$CHANNEL_ID/messages" \
     -H "Authorization: Bot $(cat /Users/johnpeter/.openclaw/openclaw.json | python3 -c "import json,sys; print(json.load(sys.stdin)['channels']['discord']['token'])")" \
     -H "Content-Type: application/json" \
-    -d "{\"content\": \"$MESSAGE\"}" 2>&1
+    --data-raw "$(python3 -c "import json; print(json.dumps({'content': '''$MESSAGE'''}))")" 2>&1
 
 echo "=== Done ===" | tee -a "$LOG_FILE"
