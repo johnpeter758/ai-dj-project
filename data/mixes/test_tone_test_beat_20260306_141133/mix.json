@@ -1,0 +1,21 @@
+{
+  "mix_id": "test_tone_test_beat_20260306_141133",
+  "song_a": "test_tone",
+  "song_b": "test_beat",
+  "compatibility": {
+    "song_a": "test_tone",
+    "song_b": "test_beat",
+    "score": 0.5078364755131546,
+    "key_score": 0.3,
+    "tempo_score": 0.3,
+    "energy_score": 0.974539265036583,
+    "timbre_score": 0.9861908167055864,
+    "key_a": "10B",
+    "key_b": "12A",
+    "tempo_a": 0.0,
+    "tempo_b": 117.45383522727273,
+    "compatible": false
+  },
+  "style": "harmonic",
+  "created_at": "2026-03-06T14:11:33.961920"
+}

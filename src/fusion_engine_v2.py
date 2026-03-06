@@ -130,7 +130,7 @@ class IntelligentFusion:
             json.dump(analysis, f, indent=2)
         
         print(f"   Key: {camelot} ({key} {mode})")
-        print(f"   Tempo: {tempo:.0f} BPM")
+        print(f"   Tempo: {float(tempo):.0f} BPM")
         print(f"   Energy: {energy:.3f}")
         
         return analysis
@@ -277,6 +277,7 @@ class IntelligentFusion:
         
         output_id = f"{song_a_id}_{song_b_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         output_path = self.mixes_dir / output_id
+        output_path.mkdir(parents=True, exist_ok=True)
         
         # Create mix metadata
         mix_data = {
