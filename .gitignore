@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# Audio
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Exports
+exports/
+fusions/
+
+# Large files
+*.pth
+*.pt
+*.ckpt
