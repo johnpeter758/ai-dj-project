@@ -369,55 +369,67 @@ class MIDISequencer:
         
         # Add tempo track (Meta event 0x51 = tempo)
         microseconds_per_beat = int(60000000 / self.bpm)
+        # Helper to write variable-length quantity
+        def write_vlq(value: int) -> bytes:
+            """Write variable-length quantity"""
+            if value == 0:
+                return bytes([0])
+            result = []
+            while value > 0:
+                result.insert(0, value & 0x7F)
+                value >>= 7
+            for i in range(len(result) - 1):
+                result[i] |= 0x80
+            return bytes(result)
+        
+        # Add tempo track
+        microseconds_per_beat = int(60000000 / self.bpm)
         # Delta time (0) + FF (meta) + 51 (tempo) + 03 (length) + 3 bytes tempo
         tempo_event = bytes([0, 0xFF, 0x51, 0x03, 
                             (microseconds_per_beat >> 16) & 0xFF,
                             (microseconds_per_beat >> 8) & 0xFF,
                             microseconds_per_beat & 0xFF])
         track_data += tempo_event
-        track_data += struct.pack('>IBH', 0, 0x2F, 0)  # End of track
+        track_data += bytes([0, 0x2F, 0])  # End of track
         
         # Add note events for each pattern
         for pattern in self.patterns:
             for track in pattern.tracks:
-                # Set instrument/program
-                track_data += struct.pack('>IBH', 0, 0xC0 | track.channel, 0)
+                # Set instrument/program (Program change: Cn pp)
+                track_data += write_vlq(0) + bytes([0xC0 | track.channel, 0])
                 
-                # Set volume and pan
-                track_data += struct.pack('>IBH', 0, 0xB0 | track.channel, 7)
-                track_data += struct.pack('>IBH', 0, track.volume)
-                track_data += struct.pack('>IBH', 0, 0xB0 | track.channel, 10)
-                track_data += struct.pack('>IBH', 0, track.pan)
+                # Set volume (CC7) and pan (CC10)
+                track_data += write_vlq(0) + bytes([0xB0 | track.channel, 7, track.volume])
+                track_data += write_vlq(0) + bytes([0xB0 | track.channel, 10, track.pan])
                 
                 # Sort notes by start time
                 sorted_notes = sorted(track.notes, key=lambda n: n.start)
                 
+                # Track last event time for delta calculation
+                last_time = 0
+                
                 # Add note events
                 for note in sorted_notes:
-                    # Note on
-                    track_data += struct.pack('>IBHB', 
-                                              note.start, 
-                                              0x90 | track.channel, 
-                                              note.pitch, 
-                                              note.velocity)
-                    # Note off
-                    track_data += struct.pack('>IBHB', 
-                                              note.end, 
-                                              0x80 | track.channel, 
-                                              note.pitch, 
-                                              0)
+                    delta = note.start - last_time
+                    last_time = note.start
+                    # Note on (90 nn vv) - velocity 0 = note off
+                    track_data += write_vlq(delta) + bytes([0x90 | track.channel, note.pitch, note.velocity])
+                    
+                    # Note off (80 nn 00)
+                    delta_end = note.end - note.start
+                    track_data += write_vlq(delta_end) + bytes([0x80 | track.channel, note.pitch, 0])
+                    last_time = note.end
                 
                 # Add CC events
                 sorted_cc = sorted(track.cc_events, key=lambda c: c.time)
+                last_cc_time = 0
                 for cc in sorted_cc:
-                    track_data += struct.pack('>IBHB',
-                                             cc.time,
-                                             0xB0 | track.channel,
-                                             cc.cc_number,
-                                             cc.value)
+                    delta = cc.time - last_cc_time
+                    last_cc_time = cc.time
+                    track_data += write_vlq(delta) + bytes([0xB0 | track.channel, cc.cc_number, cc.value])
                 
                 # End of track
-                track_data += struct.pack('>IBH', 0, 0x2F, 0)
+                track_data += bytes([0, 0x2F, 0])
         
         # Assemble file
         midi_file = header + b'MTrk' + struct.pack('>I', len(track_data)) + bytes(track_data)
