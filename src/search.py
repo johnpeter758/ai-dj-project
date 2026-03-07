@@ -108,6 +108,12 @@ class TrackSearch:
             )
         """)
         
+        # Rebuild FTS index if out of sync
+        try:
+            cursor.execute("INSERT INTO songs_fts(songs_fts) VALUES('rebuild')")
+        except:
+            pass  # Index is fine
+        
         # Triggers to keep FTS in sync
         cursor.execute("""
             CREATE TRIGGER IF NOT EXISTS songs_ai AFTER INSERT ON songs BEGIN

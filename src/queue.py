@@ -357,6 +357,9 @@ class TrackQueue:
         if not self._persist_path:
             return
         
+        # Ensure directory exists
+        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+        
         data = {
             'queue': [t.to_dict() for t in self._queue],
             'history': [t.to_dict() for t in self._history],
@@ -365,11 +368,9 @@ class TrackQueue:
             'saved_at': datetime.now().isoformat()
         }
         
-        # Write atomically
-        temp_path = self._persist_path.with_suffix('.tmp')
-        with open(temp_path, 'w') as f:
+        # Write directly (simpler than atomic rename for cross-platform)
+        with open(self._persist_path, 'w') as f:
             json.dump(data, f, indent=2)
-        temp_path.replace(self._persist_path)
     
     def _load(self) -> None:
         """Load queue from disk"""
