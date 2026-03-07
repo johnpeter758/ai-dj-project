@@ -293,13 +293,12 @@ class TrackSearch:
     
     def _get_order_by(self, sort_by: SortBy, query: Optional[str]) -> str:
         """Get ORDER BY clause."""
-        # Only use FTS ranking if there's an actual text query
-        if sort_by == SortBy.RELEVANCE and query and query.strip():
-            return "ORDER BY bm25(songs_fts)"
-        
+        # Note: We don't use FTS bm25() in ORDER BY since we're querying
+        # the songs table, not FTS. Relevance scoring is done in Python
+        # after fetching results.
         mapping = {
-            SortBy.RELEVANCE: "ORDER BY created_at DESC",  # Fallback
-            SortBy.NAME: "ORDER BY name ASC",
+            SortBy.RELEVANCE: "ORDER BY created_at DESC",  # Will be re-sorted by relevance in Python
+            SortBy.NAME: "ORDER BY name COLLATE NOCASE ASC",
             SortBy.DATE_NEWEST: "ORDER BY created_at DESC",
             SortBy.DATE_OLDEST: "ORDER BY created_at ASC",
             SortBy.BPM: "ORDER BY bpm ASC",

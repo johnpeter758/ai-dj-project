@@ -1,0 +1,19 @@
+{
+  "23b1894de4f4": {
+    "share_id": "23b1894de4f4",
+    "track_id": "track_abc123",
+    "views": 2,
+    "downloads": 1,
+    "plays": 1,
+    "remixes": 0,
+    "shares": 0,
+    "unique_viewers": [
+      "viewer_1",
+      "viewer_2"
+    ],
+    "referrers": {},
+    "countries": {},
+    "first_shared": "2026-03-07T09:02:33.329847",
+    "last_viewed": "2026-03-07T09:02:33.330140"
+  }
+}
