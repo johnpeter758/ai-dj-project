@@ -1,0 +1,1602 @@
+[
+  {
+    "name": "vip_1000",
+    "style": "classic",
+    "key_score": 0.99,
+    "style_score": 0.81,
+    "energy_score": 0.87,
+    "overall": 0.9
+  },
+  {
+    "name": "vip_1001",
+    "style": "build",
+    "key_score": 0.81,
+    "style_score": 0.79,
+    "energy_score": 0.94,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1002",
+    "style": "build",
+    "key_score": 0.9,
+    "style_score": 0.78,
+    "energy_score": 0.72,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1003",
+    "style": "build",
+    "key_score": 0.76,
+    "style_score": 0.66,
+    "energy_score": 0.82,
+    "overall": 0.75
+  },
+  {
+    "name": "vip_1004",
+    "style": "drop",
+    "key_score": 0.81,
+    "style_score": 0.76,
+    "energy_score": 0.73,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1005",
+    "style": "drop",
+    "key_score": 0.91,
+    "style_score": 0.8,
+    "energy_score": 0.95,
+    "overall": 0.89
+  },
+  {
+    "name": "vip_1006",
+    "style": "chill",
+    "key_score": 0.73,
+    "style_score": 0.72,
+    "energy_score": 0.84,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1007",
+    "style": "build",
+    "key_score": 0.82,
+    "style_score": 0.79,
+    "energy_score": 0.66,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1008",
+    "style": "classic",
+    "key_score": 0.96,
+    "style_score": 0.7,
+    "energy_score": 0.91,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1009",
+    "style": "classic",
+    "key_score": 0.93,
+    "style_score": 0.62,
+    "energy_score": 0.76,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1010",
+    "style": "build",
+    "key_score": 0.97,
+    "style_score": 0.87,
+    "energy_score": 0.88,
+    "overall": 0.91
+  },
+  {
+    "name": "vip_1011",
+    "style": "classic",
+    "key_score": 0.83,
+    "style_score": 0.61,
+    "energy_score": 0.89,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1012",
+    "style": "classic",
+    "key_score": 0.95,
+    "style_score": 0.67,
+    "energy_score": 0.78,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1013",
+    "style": "classic",
+    "key_score": 0.76,
+    "style_score": 0.7,
+    "energy_score": 0.65,
+    "overall": 0.71
+  },
+  {
+    "name": "vip_1014",
+    "style": "drop",
+    "key_score": 0.87,
+    "style_score": 0.82,
+    "energy_score": 0.78,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1015",
+    "style": "drop",
+    "key_score": 1.0,
+    "style_score": 0.7,
+    "energy_score": 0.8,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1016",
+    "style": "build",
+    "key_score": 0.83,
+    "style_score": 0.73,
+    "energy_score": 0.84,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1017",
+    "style": "build",
+    "key_score": 0.71,
+    "style_score": 0.77,
+    "energy_score": 0.68,
+    "overall": 0.72
+  },
+  {
+    "name": "vip_1018",
+    "style": "build",
+    "key_score": 0.74,
+    "style_score": 0.76,
+    "energy_score": 0.87,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1019",
+    "style": "build",
+    "key_score": 0.99,
+    "style_score": 0.7,
+    "energy_score": 0.78,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1020",
+    "style": "build",
+    "key_score": 0.74,
+    "style_score": 0.73,
+    "energy_score": 0.95,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1021",
+    "style": "build",
+    "key_score": 0.79,
+    "style_score": 0.73,
+    "energy_score": 0.76,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1022",
+    "style": "build",
+    "key_score": 0.98,
+    "style_score": 0.7,
+    "energy_score": 0.93,
+    "overall": 0.88
+  },
+  {
+    "name": "vip_1023",
+    "style": "chill",
+    "key_score": 0.92,
+    "style_score": 0.75,
+    "energy_score": 0.8,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1024",
+    "style": "classic",
+    "key_score": 0.84,
+    "style_score": 0.79,
+    "energy_score": 0.8,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1025",
+    "style": "classic",
+    "key_score": 0.98,
+    "style_score": 0.82,
+    "energy_score": 0.7,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1026",
+    "style": "build",
+    "key_score": 0.93,
+    "style_score": 0.76,
+    "energy_score": 0.79,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1027",
+    "style": "drop",
+    "key_score": 0.79,
+    "style_score": 0.77,
+    "energy_score": 0.66,
+    "overall": 0.75
+  },
+  {
+    "name": "vip_1028",
+    "style": "chill",
+    "key_score": 0.88,
+    "style_score": 0.8,
+    "energy_score": 0.71,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1029",
+    "style": "classic",
+    "key_score": 0.77,
+    "style_score": 0.84,
+    "energy_score": 0.85,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1030",
+    "style": "build",
+    "key_score": 0.88,
+    "style_score": 0.88,
+    "energy_score": 0.72,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1031",
+    "style": "classic",
+    "key_score": 0.8,
+    "style_score": 0.84,
+    "energy_score": 0.75,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1032",
+    "style": "chill",
+    "key_score": 0.8,
+    "style_score": 0.75,
+    "energy_score": 0.84,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1033",
+    "style": "drop",
+    "key_score": 0.84,
+    "style_score": 0.84,
+    "energy_score": 0.72,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1034",
+    "style": "drop",
+    "key_score": 0.81,
+    "style_score": 0.68,
+    "energy_score": 0.69,
+    "overall": 0.74
+  },
+  {
+    "name": "vip_1035",
+    "style": "classic",
+    "key_score": 0.82,
+    "style_score": 0.83,
+    "energy_score": 0.77,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1036",
+    "style": "build",
+    "key_score": 0.95,
+    "style_score": 0.66,
+    "energy_score": 0.88,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1037",
+    "style": "chill",
+    "key_score": 0.8,
+    "style_score": 0.9,
+    "energy_score": 0.93,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1038",
+    "style": "chill",
+    "key_score": 0.81,
+    "style_score": 0.71,
+    "energy_score": 0.73,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1039",
+    "style": "chill",
+    "key_score": 0.72,
+    "style_score": 0.79,
+    "energy_score": 0.73,
+    "overall": 0.74
+  },
+  {
+    "name": "vip_1040",
+    "style": "build",
+    "key_score": 0.88,
+    "style_score": 0.8,
+    "energy_score": 0.73,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1041",
+    "style": "build",
+    "key_score": 0.72,
+    "style_score": 0.88,
+    "energy_score": 0.86,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1042",
+    "style": "build",
+    "key_score": 0.92,
+    "style_score": 0.63,
+    "energy_score": 0.73,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1043",
+    "style": "build",
+    "key_score": 0.8,
+    "style_score": 0.9,
+    "energy_score": 0.68,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1044",
+    "style": "classic",
+    "key_score": 0.89,
+    "style_score": 0.83,
+    "energy_score": 0.79,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1045",
+    "style": "chill",
+    "key_score": 0.71,
+    "style_score": 0.68,
+    "energy_score": 0.73,
+    "overall": 0.71
+  },
+  {
+    "name": "vip_1046",
+    "style": "build",
+    "key_score": 0.74,
+    "style_score": 0.76,
+    "energy_score": 0.7,
+    "overall": 0.73
+  },
+  {
+    "name": "vip_1047",
+    "style": "drop",
+    "key_score": 0.87,
+    "style_score": 0.75,
+    "energy_score": 0.69,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1048",
+    "style": "drop",
+    "key_score": 0.95,
+    "style_score": 0.73,
+    "energy_score": 0.78,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1049",
+    "style": "chill",
+    "key_score": 0.84,
+    "style_score": 0.64,
+    "energy_score": 0.87,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1050",
+    "style": "drop",
+    "key_score": 0.72,
+    "style_score": 0.86,
+    "energy_score": 0.74,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1051",
+    "style": "chill",
+    "key_score": 0.8,
+    "style_score": 0.62,
+    "energy_score": 0.65,
+    "overall": 0.7
+  },
+  {
+    "name": "vip_1052",
+    "style": "classic",
+    "key_score": 0.93,
+    "style_score": 0.81,
+    "energy_score": 0.89,
+    "overall": 0.88
+  },
+  {
+    "name": "vip_1053",
+    "style": "build",
+    "key_score": 0.92,
+    "style_score": 0.9,
+    "energy_score": 0.76,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1054",
+    "style": "build",
+    "key_score": 0.99,
+    "style_score": 0.88,
+    "energy_score": 0.7,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1055",
+    "style": "build",
+    "key_score": 0.84,
+    "style_score": 0.65,
+    "energy_score": 0.93,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1056",
+    "style": "chill",
+    "key_score": 0.77,
+    "style_score": 0.89,
+    "energy_score": 0.81,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1057",
+    "style": "classic",
+    "key_score": 0.74,
+    "style_score": 0.62,
+    "energy_score": 0.67,
+    "overall": 0.68
+  },
+  {
+    "name": "vip_1058",
+    "style": "classic",
+    "key_score": 0.71,
+    "style_score": 0.78,
+    "energy_score": 0.72,
+    "overall": 0.73
+  },
+  {
+    "name": "vip_1059",
+    "style": "chill",
+    "key_score": 0.9,
+    "style_score": 0.66,
+    "energy_score": 0.82,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1060",
+    "style": "build",
+    "key_score": 0.74,
+    "style_score": 0.74,
+    "energy_score": 0.84,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1061",
+    "style": "chill",
+    "key_score": 0.77,
+    "style_score": 0.82,
+    "energy_score": 0.88,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1062",
+    "style": "build",
+    "key_score": 0.98,
+    "style_score": 0.72,
+    "energy_score": 0.72,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1063",
+    "style": "drop",
+    "key_score": 0.92,
+    "style_score": 0.9,
+    "energy_score": 0.8,
+    "overall": 0.88
+  },
+  {
+    "name": "vip_1064",
+    "style": "build",
+    "key_score": 0.75,
+    "style_score": 0.61,
+    "energy_score": 0.77,
+    "overall": 0.72
+  },
+  {
+    "name": "vip_1065",
+    "style": "drop",
+    "key_score": 0.83,
+    "style_score": 0.71,
+    "energy_score": 0.75,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1066",
+    "style": "chill",
+    "key_score": 0.98,
+    "style_score": 0.64,
+    "energy_score": 0.9,
+    "overall": 0.86
+  },
+  {
+    "name": "vip_1067",
+    "style": "drop",
+    "key_score": 0.78,
+    "style_score": 0.72,
+    "energy_score": 0.81,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1068",
+    "style": "chill",
+    "key_score": 0.81,
+    "style_score": 0.72,
+    "energy_score": 0.73,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1069",
+    "style": "drop",
+    "key_score": 0.82,
+    "style_score": 0.67,
+    "energy_score": 0.65,
+    "overall": 0.72
+  },
+  {
+    "name": "vip_1070",
+    "style": "classic",
+    "key_score": 0.85,
+    "style_score": 0.75,
+    "energy_score": 0.77,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1071",
+    "style": "chill",
+    "key_score": 0.7,
+    "style_score": 0.85,
+    "energy_score": 0.67,
+    "overall": 0.73
+  },
+  {
+    "name": "vip_1072",
+    "style": "drop",
+    "key_score": 0.8,
+    "style_score": 0.68,
+    "energy_score": 0.73,
+    "overall": 0.74
+  },
+  {
+    "name": "vip_1073",
+    "style": "classic",
+    "key_score": 0.79,
+    "style_score": 0.9,
+    "energy_score": 0.94,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1074",
+    "style": "build",
+    "key_score": 0.81,
+    "style_score": 0.7,
+    "energy_score": 0.67,
+    "overall": 0.73
+  },
+  {
+    "name": "vip_1075",
+    "style": "classic",
+    "key_score": 0.81,
+    "style_score": 0.83,
+    "energy_score": 0.86,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1076",
+    "style": "drop",
+    "key_score": 0.78,
+    "style_score": 0.76,
+    "energy_score": 0.7,
+    "overall": 0.75
+  },
+  {
+    "name": "vip_1077",
+    "style": "build",
+    "key_score": 0.74,
+    "style_score": 0.75,
+    "energy_score": 0.86,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1078",
+    "style": "build",
+    "key_score": 0.71,
+    "style_score": 0.69,
+    "energy_score": 0.67,
+    "overall": 0.69
+  },
+  {
+    "name": "vip_1079",
+    "style": "build",
+    "key_score": 0.75,
+    "style_score": 0.85,
+    "energy_score": 0.86,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1080",
+    "style": "build",
+    "key_score": 0.86,
+    "style_score": 0.73,
+    "energy_score": 0.7,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1081",
+    "style": "drop",
+    "key_score": 0.8,
+    "style_score": 0.66,
+    "energy_score": 0.68,
+    "overall": 0.72
+  },
+  {
+    "name": "vip_1082",
+    "style": "drop",
+    "key_score": 0.89,
+    "style_score": 0.66,
+    "energy_score": 0.88,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1083",
+    "style": "build",
+    "key_score": 0.84,
+    "style_score": 0.72,
+    "energy_score": 0.77,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1084",
+    "style": "classic",
+    "key_score": 0.74,
+    "style_score": 0.6,
+    "energy_score": 0.95,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1085",
+    "style": "drop",
+    "key_score": 0.81,
+    "style_score": 0.63,
+    "energy_score": 0.91,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1086",
+    "style": "build",
+    "key_score": 0.9,
+    "style_score": 0.6,
+    "energy_score": 0.9,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1087",
+    "style": "classic",
+    "key_score": 0.91,
+    "style_score": 0.68,
+    "energy_score": 0.91,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1088",
+    "style": "drop",
+    "key_score": 0.84,
+    "style_score": 0.65,
+    "energy_score": 0.83,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1089",
+    "style": "chill",
+    "key_score": 0.72,
+    "style_score": 0.81,
+    "energy_score": 0.75,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1090",
+    "style": "build",
+    "key_score": 0.9,
+    "style_score": 0.84,
+    "energy_score": 0.91,
+    "overall": 0.88
+  },
+  {
+    "name": "vip_1091",
+    "style": "classic",
+    "key_score": 0.75,
+    "style_score": 0.62,
+    "energy_score": 0.82,
+    "overall": 0.73
+  },
+  {
+    "name": "vip_1092",
+    "style": "classic",
+    "key_score": 0.96,
+    "style_score": 0.69,
+    "energy_score": 0.7,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1093",
+    "style": "build",
+    "key_score": 0.92,
+    "style_score": 0.67,
+    "energy_score": 0.75,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1094",
+    "style": "classic",
+    "key_score": 0.86,
+    "style_score": 0.7,
+    "energy_score": 0.9,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1095",
+    "style": "drop",
+    "key_score": 0.91,
+    "style_score": 0.61,
+    "energy_score": 0.83,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1096",
+    "style": "classic",
+    "key_score": 0.8,
+    "style_score": 0.76,
+    "energy_score": 0.7,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1097",
+    "style": "build",
+    "key_score": 0.89,
+    "style_score": 0.87,
+    "energy_score": 0.7,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1098",
+    "style": "drop",
+    "key_score": 0.71,
+    "style_score": 0.65,
+    "energy_score": 0.79,
+    "overall": 0.71
+  },
+  {
+    "name": "vip_1099",
+    "style": "chill",
+    "key_score": 0.96,
+    "style_score": 0.8,
+    "energy_score": 0.67,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1100",
+    "style": "chill",
+    "key_score": 0.76,
+    "style_score": 0.63,
+    "energy_score": 0.74,
+    "overall": 0.72
+  },
+  {
+    "name": "vip_1101",
+    "style": "classic",
+    "key_score": 0.99,
+    "style_score": 0.61,
+    "energy_score": 0.81,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1102",
+    "style": "classic",
+    "key_score": 0.81,
+    "style_score": 0.66,
+    "energy_score": 0.92,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1103",
+    "style": "build",
+    "key_score": 1.0,
+    "style_score": 0.74,
+    "energy_score": 0.74,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1104",
+    "style": "chill",
+    "key_score": 0.92,
+    "style_score": 0.72,
+    "energy_score": 0.85,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1105",
+    "style": "chill",
+    "key_score": 0.99,
+    "style_score": 0.87,
+    "energy_score": 0.65,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1106",
+    "style": "chill",
+    "key_score": 0.96,
+    "style_score": 0.7,
+    "energy_score": 0.91,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1107",
+    "style": "chill",
+    "key_score": 0.81,
+    "style_score": 0.83,
+    "energy_score": 0.8,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1108",
+    "style": "drop",
+    "key_score": 0.88,
+    "style_score": 0.6,
+    "energy_score": 0.78,
+    "overall": 0.77
+  },
+  {
+    "name": "vip_1109",
+    "style": "chill",
+    "key_score": 0.7,
+    "style_score": 0.84,
+    "energy_score": 0.9,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1110",
+    "style": "drop",
+    "key_score": 0.73,
+    "style_score": 0.71,
+    "energy_score": 0.65,
+    "overall": 0.7
+  },
+  {
+    "name": "vip_1111",
+    "style": "classic",
+    "key_score": 0.87,
+    "style_score": 0.82,
+    "energy_score": 0.77,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1112",
+    "style": "chill",
+    "key_score": 1.0,
+    "style_score": 0.64,
+    "energy_score": 0.91,
+    "overall": 0.86
+  },
+  {
+    "name": "vip_1113",
+    "style": "drop",
+    "key_score": 0.92,
+    "style_score": 0.67,
+    "energy_score": 0.83,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1114",
+    "style": "drop",
+    "key_score": 0.96,
+    "style_score": 0.78,
+    "energy_score": 0.93,
+    "overall": 0.89
+  },
+  {
+    "name": "vip_1115",
+    "style": "build",
+    "key_score": 0.97,
+    "style_score": 0.82,
+    "energy_score": 0.88,
+    "overall": 0.9
+  },
+  {
+    "name": "vip_1116",
+    "style": "drop",
+    "key_score": 0.82,
+    "style_score": 0.83,
+    "energy_score": 0.85,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1117",
+    "style": "chill",
+    "key_score": 0.73,
+    "style_score": 0.75,
+    "energy_score": 0.76,
+    "overall": 0.74
+  },
+  {
+    "name": "vip_1118",
+    "style": "build",
+    "key_score": 0.88,
+    "style_score": 0.76,
+    "energy_score": 0.8,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1119",
+    "style": "build",
+    "key_score": 0.87,
+    "style_score": 0.64,
+    "energy_score": 0.72,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1120",
+    "style": "drop",
+    "key_score": 0.89,
+    "style_score": 0.61,
+    "energy_score": 0.8,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1121",
+    "style": "classic",
+    "key_score": 0.79,
+    "style_score": 0.8,
+    "energy_score": 0.79,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1122",
+    "style": "classic",
+    "key_score": 0.75,
+    "style_score": 0.69,
+    "energy_score": 0.69,
+    "overall": 0.72
+  },
+  {
+    "name": "vip_1123",
+    "style": "classic",
+    "key_score": 0.96,
+    "style_score": 0.79,
+    "energy_score": 0.77,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1124",
+    "style": "build",
+    "key_score": 0.87,
+    "style_score": 0.73,
+    "energy_score": 0.84,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1125",
+    "style": "chill",
+    "key_score": 0.99,
+    "style_score": 0.72,
+    "energy_score": 0.65,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1126",
+    "style": "build",
+    "key_score": 0.94,
+    "style_score": 0.68,
+    "energy_score": 0.88,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1127",
+    "style": "chill",
+    "key_score": 0.86,
+    "style_score": 0.62,
+    "energy_score": 0.9,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1128",
+    "style": "chill",
+    "key_score": 0.86,
+    "style_score": 0.62,
+    "energy_score": 0.78,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1129",
+    "style": "chill",
+    "key_score": 0.9,
+    "style_score": 0.67,
+    "energy_score": 0.86,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1130",
+    "style": "chill",
+    "key_score": 0.72,
+    "style_score": 0.69,
+    "energy_score": 0.7,
+    "overall": 0.71
+  },
+  {
+    "name": "vip_1131",
+    "style": "drop",
+    "key_score": 0.98,
+    "style_score": 0.84,
+    "energy_score": 0.9,
+    "overall": 0.91
+  },
+  {
+    "name": "vip_1132",
+    "style": "build",
+    "key_score": 0.8,
+    "style_score": 0.83,
+    "energy_score": 0.92,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1133",
+    "style": "chill",
+    "key_score": 0.83,
+    "style_score": 0.61,
+    "energy_score": 0.91,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1134",
+    "style": "classic",
+    "key_score": 0.89,
+    "style_score": 0.71,
+    "energy_score": 0.84,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1135",
+    "style": "chill",
+    "key_score": 0.86,
+    "style_score": 0.69,
+    "energy_score": 0.76,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1136",
+    "style": "build",
+    "key_score": 0.99,
+    "style_score": 0.88,
+    "energy_score": 0.77,
+    "overall": 0.89
+  },
+  {
+    "name": "vip_1137",
+    "style": "chill",
+    "key_score": 0.93,
+    "style_score": 0.83,
+    "energy_score": 0.85,
+    "overall": 0.88
+  },
+  {
+    "name": "vip_1138",
+    "style": "chill",
+    "key_score": 0.72,
+    "style_score": 0.79,
+    "energy_score": 0.85,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1139",
+    "style": "classic",
+    "key_score": 1.0,
+    "style_score": 0.74,
+    "energy_score": 0.67,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1140",
+    "style": "drop",
+    "key_score": 0.82,
+    "style_score": 0.66,
+    "energy_score": 0.7,
+    "overall": 0.74
+  },
+  {
+    "name": "vip_1141",
+    "style": "chill",
+    "key_score": 0.84,
+    "style_score": 0.77,
+    "energy_score": 0.89,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1142",
+    "style": "drop",
+    "key_score": 0.85,
+    "style_score": 0.67,
+    "energy_score": 0.86,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1143",
+    "style": "classic",
+    "key_score": 0.96,
+    "style_score": 0.84,
+    "energy_score": 0.67,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1144",
+    "style": "drop",
+    "key_score": 0.94,
+    "style_score": 0.86,
+    "energy_score": 0.7,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1145",
+    "style": "drop",
+    "key_score": 0.94,
+    "style_score": 0.73,
+    "energy_score": 0.79,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1146",
+    "style": "classic",
+    "key_score": 0.72,
+    "style_score": 0.63,
+    "energy_score": 0.92,
+    "overall": 0.75
+  },
+  {
+    "name": "vip_1147",
+    "style": "chill",
+    "key_score": 0.86,
+    "style_score": 0.85,
+    "energy_score": 0.65,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1148",
+    "style": "classic",
+    "key_score": 0.85,
+    "style_score": 0.76,
+    "energy_score": 0.78,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1149",
+    "style": "build",
+    "key_score": 0.75,
+    "style_score": 0.62,
+    "energy_score": 0.74,
+    "overall": 0.71
+  },
+  {
+    "name": "vip_1150",
+    "style": "drop",
+    "key_score": 0.98,
+    "style_score": 0.85,
+    "energy_score": 0.73,
+    "overall": 0.86
+  },
+  {
+    "name": "vip_1151",
+    "style": "classic",
+    "key_score": 0.95,
+    "style_score": 0.9,
+    "energy_score": 0.9,
+    "overall": 0.92
+  },
+  {
+    "name": "vip_1152",
+    "style": "drop",
+    "key_score": 1.0,
+    "style_score": 0.77,
+    "energy_score": 0.92,
+    "overall": 0.91
+  },
+  {
+    "name": "vip_1153",
+    "style": "build",
+    "key_score": 0.8,
+    "style_score": 0.79,
+    "energy_score": 0.68,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1154",
+    "style": "classic",
+    "key_score": 0.89,
+    "style_score": 0.76,
+    "energy_score": 0.91,
+    "overall": 0.86
+  },
+  {
+    "name": "vip_1155",
+    "style": "classic",
+    "key_score": 0.7,
+    "style_score": 0.88,
+    "energy_score": 0.93,
+    "overall": 0.82
+  },
+  {
+    "name": "vip_1156",
+    "style": "drop",
+    "key_score": 0.88,
+    "style_score": 0.71,
+    "energy_score": 0.66,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1157",
+    "style": "build",
+    "key_score": 0.91,
+    "style_score": 0.78,
+    "energy_score": 0.67,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1158",
+    "style": "chill",
+    "key_score": 0.82,
+    "style_score": 0.84,
+    "energy_score": 0.66,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1159",
+    "style": "classic",
+    "key_score": 1.0,
+    "style_score": 0.64,
+    "energy_score": 0.82,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1160",
+    "style": "build",
+    "key_score": 0.74,
+    "style_score": 0.81,
+    "energy_score": 0.86,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1161",
+    "style": "classic",
+    "key_score": 0.84,
+    "style_score": 0.78,
+    "energy_score": 0.74,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1162",
+    "style": "chill",
+    "key_score": 0.79,
+    "style_score": 0.74,
+    "energy_score": 0.72,
+    "overall": 0.75
+  },
+  {
+    "name": "vip_1163",
+    "style": "classic",
+    "key_score": 0.81,
+    "style_score": 0.63,
+    "energy_score": 0.75,
+    "overall": 0.74
+  },
+  {
+    "name": "vip_1164",
+    "style": "drop",
+    "key_score": 1.0,
+    "style_score": 0.65,
+    "energy_score": 0.91,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1165",
+    "style": "drop",
+    "key_score": 0.83,
+    "style_score": 0.64,
+    "energy_score": 0.86,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1166",
+    "style": "chill",
+    "key_score": 0.76,
+    "style_score": 0.61,
+    "energy_score": 0.66,
+    "overall": 0.68
+  },
+  {
+    "name": "vip_1167",
+    "style": "drop",
+    "key_score": 0.81,
+    "style_score": 0.68,
+    "energy_score": 0.86,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1168",
+    "style": "chill",
+    "key_score": 0.88,
+    "style_score": 0.68,
+    "energy_score": 0.77,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1169",
+    "style": "chill",
+    "key_score": 0.88,
+    "style_score": 0.89,
+    "energy_score": 0.69,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1170",
+    "style": "classic",
+    "key_score": 0.96,
+    "style_score": 0.8,
+    "energy_score": 0.87,
+    "overall": 0.89
+  },
+  {
+    "name": "vip_1171",
+    "style": "build",
+    "key_score": 0.83,
+    "style_score": 0.86,
+    "energy_score": 0.86,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1172",
+    "style": "build",
+    "key_score": 0.87,
+    "style_score": 0.83,
+    "energy_score": 0.91,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1173",
+    "style": "drop",
+    "key_score": 0.71,
+    "style_score": 0.76,
+    "energy_score": 0.82,
+    "overall": 0.76
+  },
+  {
+    "name": "vip_1174",
+    "style": "drop",
+    "key_score": 0.89,
+    "style_score": 0.63,
+    "energy_score": 0.88,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1175",
+    "style": "chill",
+    "key_score": 0.99,
+    "style_score": 0.7,
+    "energy_score": 0.89,
+    "overall": 0.88
+  },
+  {
+    "name": "vip_1176",
+    "style": "build",
+    "key_score": 1.0,
+    "style_score": 0.66,
+    "energy_score": 0.78,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1177",
+    "style": "classic",
+    "key_score": 0.94,
+    "style_score": 0.76,
+    "energy_score": 0.9,
+    "overall": 0.87
+  },
+  {
+    "name": "vip_1178",
+    "style": "classic",
+    "key_score": 0.75,
+    "style_score": 0.86,
+    "energy_score": 0.8,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1179",
+    "style": "classic",
+    "key_score": 0.79,
+    "style_score": 0.87,
+    "energy_score": 0.76,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1180",
+    "style": "drop",
+    "key_score": 0.86,
+    "style_score": 0.79,
+    "energy_score": 0.88,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1181",
+    "style": "drop",
+    "key_score": 0.88,
+    "style_score": 0.82,
+    "energy_score": 0.82,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1182",
+    "style": "classic",
+    "key_score": 0.92,
+    "style_score": 0.7,
+    "energy_score": 0.85,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1183",
+    "style": "build",
+    "key_score": 0.71,
+    "style_score": 0.65,
+    "energy_score": 0.76,
+    "overall": 0.7
+  },
+  {
+    "name": "vip_1184",
+    "style": "drop",
+    "key_score": 0.85,
+    "style_score": 0.7,
+    "energy_score": 0.8,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1185",
+    "style": "chill",
+    "key_score": 0.79,
+    "style_score": 0.61,
+    "energy_score": 0.76,
+    "overall": 0.73
+  },
+  {
+    "name": "vip_1186",
+    "style": "classic",
+    "key_score": 0.97,
+    "style_score": 0.77,
+    "energy_score": 0.94,
+    "overall": 0.9
+  },
+  {
+    "name": "vip_1187",
+    "style": "drop",
+    "key_score": 0.79,
+    "style_score": 0.79,
+    "energy_score": 0.75,
+    "overall": 0.78
+  },
+  {
+    "name": "vip_1188",
+    "style": "drop",
+    "key_score": 0.86,
+    "style_score": 0.78,
+    "energy_score": 0.91,
+    "overall": 0.85
+  },
+  {
+    "name": "vip_1189",
+    "style": "chill",
+    "key_score": 0.9,
+    "style_score": 0.65,
+    "energy_score": 0.92,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1190",
+    "style": "chill",
+    "key_score": 0.89,
+    "style_score": 0.78,
+    "energy_score": 0.79,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1191",
+    "style": "build",
+    "key_score": 0.88,
+    "style_score": 0.79,
+    "energy_score": 0.71,
+    "overall": 0.8
+  },
+  {
+    "name": "vip_1192",
+    "style": "chill",
+    "key_score": 0.87,
+    "style_score": 0.69,
+    "energy_score": 0.66,
+    "overall": 0.75
+  },
+  {
+    "name": "vip_1193",
+    "style": "chill",
+    "key_score": 0.93,
+    "style_score": 0.89,
+    "energy_score": 0.74,
+    "overall": 0.86
+  },
+  {
+    "name": "vip_1194",
+    "style": "build",
+    "key_score": 0.86,
+    "style_score": 0.73,
+    "energy_score": 0.89,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1195",
+    "style": "classic",
+    "key_score": 0.94,
+    "style_score": 0.65,
+    "energy_score": 0.85,
+    "overall": 0.83
+  },
+  {
+    "name": "vip_1196",
+    "style": "build",
+    "key_score": 0.86,
+    "style_score": 0.8,
+    "energy_score": 0.74,
+    "overall": 0.81
+  },
+  {
+    "name": "vip_1197",
+    "style": "drop",
+    "key_score": 0.97,
+    "style_score": 0.7,
+    "energy_score": 0.82,
+    "overall": 0.84
+  },
+  {
+    "name": "vip_1198",
+    "style": "build",
+    "key_score": 0.71,
+    "style_score": 0.84,
+    "energy_score": 0.83,
+    "overall": 0.79
+  },
+  {
+    "name": "vip_1199",
+    "style": "build",
+    "key_score": 0.97,
+    "style_score": 0.69,
+    "energy_score": 0.73,
+    "overall": 0.81
+  }
+]

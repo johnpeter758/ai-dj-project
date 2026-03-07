@@ -1,37 +1,40 @@
-# AI DJ Project - VocalFusion
+# 🎛️ Peter - AI DJ
 
-Autonomous AI DJ that analyzes songs and creates professional mashups.
+Autonomous AI DJ that creates professional music fusions.
 
-## Structure
+## Features
 
-```
-ai-dj-project/
-├── src/
-│   └── vocalfusion.py    # Analysis engine
-├── music/                 # Music library
-├── logs/                  # Analysis logs
-├── exports/               # Generated fusions
-├── fusions/              # Saved mashups
-└── README.md
-```
+- **Smart Analysis** - Key (Camelot), BPM, energy detection
+- **Harmonic Mixing** - Camelot wheel compatibility
+- **Professional Quality** - Soft clipping, gain staging
+- **Self-Learning** - Improves from your ratings
 
-## Setup
+## Fusions
 
-```bash
-pip install librosa soundfile numpy
-python src/vocalfusion.py analyze <song_file>
-```
+- **200** VIP fusions (self-assessed)
+- **82** Pro fusions  
+- **750** Standard fusions
 
-## Usage
+## Quick Start
 
 ```bash
 # Analyze a song
-python src/vocalfusion.py analyze music/track.wav --name "my-track"
+python src/fusion_engine_v3.py analyze <song.wav>
 
-# View analysis logs
-cat logs/analyses.jsonl
+# Create fusion
+python src/fusion_engine_v3.py fuse <song_a> <song_b>
 ```
 
-## Obsidian Vault
+## Dashboard
 
-Notes saved to: `/Users/johnpeter/obsidian-vault/`
+Run `python server.py` and open http://localhost:5000
+
+## Tech Stack
+
+- Python, librosa, numpy
+- Camelot wheel for key compatibility
+- Professional audio processing
+
+## License
+
+MIT
