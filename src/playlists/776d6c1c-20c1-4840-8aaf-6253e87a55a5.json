@@ -1,0 +1,37 @@
+{
+  "id": "776d6c1c-20c1-4840-8aaf-6253e87a55a5",
+  "name": "Hip Hop Classics",
+  "description": "Old school hip hop",
+  "tracks": [
+    {
+      "id": "7297fd48-235c-45d3-a562-de09a94e733b",
+      "title": "Golden Era",
+      "artist": "Old School",
+      "genre": "hip_hop",
+      "bpm": 92,
+      "key": "C",
+      "duration_seconds": 240,
+      "duration_formatted": "4:00",
+      "energy": "medium",
+      "mood": [],
+      "file_path": null,
+      "tags": [],
+      "source": "library",
+      "added_at": "2026-03-07T08:59:33.121171",
+      "play_count": 0,
+      "last_played": null
+    }
+  ],
+  "track_count": 1,
+  "total_duration_seconds": 240,
+  "duration_formatted": "4:00",
+  "average_bpm": 92.0,
+  "created_at": "2026-03-07T08:59:33.121000",
+  "modified_at": "2026-03-07T08:59:33.121807",
+  "created_by": "system",
+  "tags": [],
+  "genre": "hip_hop",
+  "cover_art": null,
+  "current_index": 0,
+  "playback_mode": "linear"
+}

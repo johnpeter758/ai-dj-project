@@ -1,0 +1,92 @@
+{
+  "queue": [
+    {
+      "filename": "drake_in_my_feings.wav",
+      "artist": "Drake",
+      "genre": "Hip-Hop",
+      "bpm": 185,
+      "key": "2A",
+      "energy": 0.7,
+      "duration": 210,
+      "added_at": "2026-03-07T08:59:48.639406",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "travis_sicko_mode.wav",
+      "artist": "Travis Scott",
+      "genre": "Trap",
+      "bpm": 152,
+      "key": "3A",
+      "energy": 0.8,
+      "duration": 240,
+      "added_at": "2026-03-07T08:59:48.639410",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "marshmello_happier.wav",
+      "artist": "Marshmello",
+      "genre": "EDM",
+      "bpm": 99,
+      "key": "6A",
+      "energy": 0.6,
+      "duration": 210,
+      "added_at": "2026-03-07T08:59:48.639412",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "drake_in_my_feings.wav",
+      "artist": "Drake",
+      "genre": "Hip-Hop",
+      "bpm": 185,
+      "key": "2A",
+      "energy": 0.7,
+      "duration": 210,
+      "added_at": "2026-03-07T08:59:58.420812",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "travis_sicko_mode.wav",
+      "artist": "Travis Scott",
+      "genre": "Trap",
+      "bpm": 152,
+      "key": "3A",
+      "energy": 0.8,
+      "duration": 240,
+      "added_at": "2026-03-07T08:59:58.420820",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "marshmello_happier.wav",
+      "artist": "Marshmello",
+      "genre": "EDM",
+      "bpm": 99,
+      "key": "6A",
+      "energy": 0.6,
+      "duration": 210,
+      "added_at": "2026-03-07T08:59:58.420821",
+      "priority": 0,
+      "requested_by": null
+    }
+  ],
+  "history": [],
+  "repeat_mode": "off",
+  "shuffle_enabled": false,
+  "saved_at": "2026-03-07T08:59:58.421337"
+}     "key": "3A",
+      "energy": 0.8,
+      "duration": 240,
+      "added_at": "2026-03-07T08:59:58.420820",
+      "priority": 0,
+      "requested_by": null
+    }
+  ],
+  "history": [],
+  "repeat_mode": "off",
+  "shuffle_enabled": true,
+  "saved_at": "2026-03-07T08:59:58.421859"
+}
