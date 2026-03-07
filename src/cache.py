@@ -240,40 +240,47 @@ class AudioCache:
     """Specialized cache for audio analysis results."""
     
     @staticmethod
+    def _key(suffix: str, path: str) -> str:
+        return f"audio_{suffix}:{hashlib.md5(path.encode()).hexdigest()}"
+    
+    @staticmethod
     def get_analysis(audio_path: str) -> Optional[dict]:
         """Get cached audio analysis."""
-        key = f"audio_analysis:{hashlib.md5(audio_path.encode()).hexdigest()}"
-        return get(key)
+        return get(AudioCache._key("analysis", audio_path))
     
     @staticmethod
     def set_analysis(audio_path: str, analysis: dict, ttl: int = 86400) -> None:
         """Cache audio analysis (default 24 hours)."""
-        key = f"audio_analysis:{hashlib.md5(audio_path.encode()).hexdigest()}"
-        set(key, analysis, ttl)
+        set(AudioCache._key("analysis", audio_path), analysis, ttl)
     
     @staticmethod
     def get_bpm(audio_path: str) -> Optional[float]:
         """Get cached BPM."""
-        key = f"bpm:{audio_path}"
-        return get(key)
+        return get(AudioCache._key("bpm", audio_path))
     
     @staticmethod
     def set_bpm(audio_path: str, bpm: float, ttl: int = 86400) -> None:
         """Cache BPM detection result."""
-        key = f"bpm:{audio_path}"
-        set(key, bpm, ttl)
+        set(AudioCache._key("bpm", audio_path), bpm, ttl)
     
     @staticmethod
     def get_key(audio_path: str) -> Optional[str]:
         """Get cached key detection."""
-        key = f"key:{audio_path}"
-        return get(key)
+        return get(AudioCache._key("key", audio_path))
     
     @staticmethod
     def set_key(audio_path: str, musical_key: str, ttl: int = 86400) -> None:
         """Cache key detection result."""
-        key = f"key:{audio_path}"
-        set(key, musical_key, ttl)
+        set(AudioCache._key("key", audio_path), musical_key, ttl)
+    
+    @staticmethod
+    def delete(audio_path: str) -> bool:
+        """Delete all cached data for an audio file."""
+        deleted = False
+        for suffix in ["analysis", "bpm", "key"]:
+            if delete(AudioCache._key(suffix, audio_path)):
+                deleted = True
+        return deleted
 
 
 class ModelCache:
