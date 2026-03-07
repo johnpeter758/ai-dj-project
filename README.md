@@ -1,27 +1,36 @@
 # 🎛️ Peter - AI DJ
 
-Autonomous AI that creates professional music fusions.
+Autonomous AI music system. Goal: Better than Suno.
 
 ## Features
-- Smart key detection (Camelot wheel)
-- Equal-power crossfade mixing
-- Professional audio processing
-- Self-learning from ratings
+- Song analysis (BPM, key, energy)
+- Camelot wheel harmonic mixing
+- Professional fusion engine
+- Self-learning system
+- Research-driven improvements
 
 ## Fusions
-- 15,000+ created
-- Multiple quality tiers
+- 12,000+ created
+- Best: chart_, elite_, premium_ series
 
-## Quick Start
+## Research
+- Music theory
+- Audio mastering
+- Stem mixing
+- AI models (ACE-Step, YuE)
+- Sound design
+- Trends 2025-2026
+
+## Tech
+- Python, librosa, numpy
+- Flask dashboard
+- Equal-power crossfade
+
+## Goal
+Self-improving AI music > Suno
+
+## To Run
 ```bash
 python server.py
 # Open http://localhost:5000
 ```
-
-## Tech Stack
-- Python, librosa, numpy
-- Flask dashboard
-- Professional audio processing
-
-## License
-MIT
