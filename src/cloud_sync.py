@@ -524,7 +524,7 @@ class CloudSync:
         result = SyncResult(success=False, start_time=datetime.now())
         try:
             # Use macOS built-in iCloud Drive
-           icloud_path = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs")
+            icloud_path = os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs")
             if os.path.exists(icloud_path):
                 dest = os.path.join(icloud_path, self.config.cloud_path)
                 os.makedirs(dest, exist_ok=True)
