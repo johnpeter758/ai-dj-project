@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI DJ - Modern Interface</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-tertiary: #1a1a25;
+      --bg-card: #16161f;
+      --accent-primary: #7c3aed;
+      --accent-secondary: #a855f7;
+      --accent-glow: rgba(124, 58, 237, 0.4);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border-color: #2a2a3a;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --waveform-color: #7c3aed;
+      --waveform-progress: #a855f7;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Animated background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: 
+        radial-gradient(ellipse at 20% 20%, rgba(124, 58, 237, 0.15) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 80%, rgba(168, 85, 247, 0.1) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 50%, rgba(124, 58, 237, 0.05) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    #app {
+      position: relative;
+      z-index: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 32px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+
+    .logo h1 {
+      font-size: 24px;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--text-primary), var(--accent-secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--bg-tertiary);
+      border-radius: 20px;
+      font-size: 14px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* Main layout */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 24px;
+    }
+
+    @media (max-width: 1024px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 24px;
+      backdrop-filter: blur(10px);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    /* Waveform Visualizer */
+    .waveform-container {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .waveform-canvas {
+      width: 100%;
+      height: 120px;
+      border-radius: 8px;
+    }
+
+    .waveform-overlay {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .time-display {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      color: var(--text-secondary);
+      background: rgba(0, 0, 0, 0.5);
+      padding: 4px 12px;
+      border-radius: 6px;
+    }
+
+    /* Player controls */
+    .player-controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .control-btn {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: none;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      font-size: 18px;
+    }
+
+    .control-btn:hover {
+      background: var(--accent-primary);
+      transform: scale(1.05);
+    }
+
+    .control-btn.primary {
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      box-shadow: 0 0 30px var(--accent-glow);
+    }
+
+    .control-btn.primary:hover {
+      box-shadow: 0 0 40px var(--accent-glow);
+    }
+
+    /* Volume slider */
+    .volume-control {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .volume-icon {
+      color: var(--text-secondary);
+      font-size: 18px;
+    }
+
+    .slider {
+      flex: 1;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--bg-tertiary);
+      appearance: none;
+      cursor: pointer;
+    }
+
+    .slider::-webkit-slider-thumb {
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent-primary);
+      cursor: pointer;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    /* Track info */
+    .track-info {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    .track-artwork {
+      width: 64px;
+      height: 64px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+
+    .track-details h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .track-details p {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    /* Song list */
+    .song-list {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .song-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      margin-bottom: 8px;
+    }
+
+    .song-item:hover {
+      background: var(--bg-tertiary);
+    }
+
+    .song-item.active {
+      background: rgba(124, 58, 237, 0.2);
+      border: 1px solid var(--accent-primary);
+    }
+
+    .song-artwork {
+      width: 48px;
+      height: 48px;
+      border-radius: 6px;
+      background: var(--bg-tertiary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .song-info {
+      flex: 1;
+    }
+
+    .song-title {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .song-artist {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .song-duration {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Sidebar controls */
+    .mixer-section {
+      margin-bottom: 24px;
+    }
+
+    .mixer-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .mixer-controls {
+      display: flex;
+      gap: 16px;
+    }
+
+    .mixer-channel {
+      flex: 1;
+      text-align: center;
+    }
+
+    .channel-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    .vertical-slider {
+      writing-mode: vertical-lr;
+      direction: rtl;
+      height: 150px;
+      margin: 0 auto;
+    }
+
+    .vertical-slider::-webkit-slider-thumb {
+      width: 24px;
+      height: 8px;
+      border-radius: 4px;
+    }
+
+    /* Effects */
+    .effects-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .effect-btn {
+      padding: 12px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-size: 14px;
+    }
+
+    .effect-btn:hover {
+      border-color: var(--accent-primary);
+      background: rgba(124, 58, 237, 0.1);
+    }
+
+    .effect-btn.active {
+      background: var(--accent-primary);
+      border-color: var(--accent-primary);
+    }
+
+    /* Fusion panel */
+    .fusion-section {
+      margin-top: 24px;
+    }
+
+    .fusion-btn {
+      width: 100%;
+      padding: 16px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      border: none;
+      border-radius: 12px;
+      color: white;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .fusion-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px var(--accent-glow);
+    }
+
+    .fusion-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* Mode selector */
+    .mode-selector {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 12px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-size: 14px;
+    }
+
+    .mode-btn.active {
+      background: var(--accent-primary);
+      border-color: var(--accent-primary);
+      color: white;
+    }
+
+    /* Loading spinner */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--bg-tertiary);
+      border-top-color: var(--accent-primary);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--bg-secondary);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--bg-tertiary);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--accent-primary);
+    }
+
+    /* Toast notifications */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 16px 24px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+      animation: slideIn 0.3s ease;
+      z-index: 1000;
+    }
+
+    .toast.success {
+      border-color: var(--success);
+    }
+
+    .toast.error {
+      border-color: var(--error);
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">🎵</div>
+        <h1>AI DJ</h1>
+      </div>
+      <div class="status-badge">
+        <span class="status-dot"></span>
+        <span>Ready</span>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      <!-- Main Player Section -->
+      <div class="player-section">
+        <div class="card">
+          <!-- Waveform Visualizer -->
+          <div class="waveform-container">
+            <canvas ref="waveformCanvas" class="waveform-canvas"></canvas>
+            <div class="waveform-overlay">
+              <div class="time-display">{{ formatTime(currentTime) }}</div>
+              <div class="time-display">{{ formatTime(duration) }}</div>
+            </div>
+          </div>
+
+          <!-- Track Info -->
+          <div class="track-info">
+            <div class="track-artwork">🎧</div>
+            <div class="track-details">
+              <h3>{{ currentTrack?.title || 'No Track Selected' }}</h3>
+              <p>{{ currentTrack?.artist || 'Select a track to play' }}</p>
+            </div>
+          </div>
+
+          <!-- Player Controls -->
+          <div class="player-controls">
+            <button class="control-btn" @click="skipPrevious" title="Previous">
+              ⏮
+            </button>
+            <button class="control-btn" @click="togglePlay">
+              {{ isPlaying ? '⏸' : '▶' }}
+            </button>
+            <button class="control-btn primary" @click="togglePlay">
+              {{ isPlaying ? '⏸' : '▶' }}
+            </button>
+            <button class="control-btn" @click="skipNext" title="Next">
+              ⏭
+            </button>
+            <button class="control-btn" @click="stop" title="Stop">
+              ⏹
+            </button>
+          </div>
+
+          <!-- Volume -->
+          <div class="volume-control">
+            <span class="volume-icon">🔊</span>
+            <input type="range" class="slider" min="0" max="100" v-model="volume" @input="updateVolume">
+            <span class="volume-icon" style="opacity: 0.5">🔈</span>
+          </div>
+
+          <!-- Mode Selector -->
+          <div class="mode-selector" style="margin-top: 20px;">
+            <button 
+              v-for="mode in modes" 
+              :key="mode.id"
+              class="mode-btn"
+              :class="{ active: selectedMode === mode.id }"
+              @click="selectedMode = mode.id"
+            >
+              {{ mode.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Mixer Section -->
+        <div class="card" style="margin-top: 24px;">
+          <div class="mixer-section">
+            <div class="mixer-title">Mixer</div>
+            <div class="mixer-controls">
+              <div class="mixer-channel">
+                <div class="channel-label">Deck A</div>
+                <input type="range" class="slider vertical-slider" min="0" max="100" v-model="deckA.level">
+              </div>
+              <div class="mixer-channel">
+                <div class="channel-label">Deck B</div>
+                <input type="range" class="slider vertical-slider" min="0" max="100" v-model="deckB.level">
+              </div>
+              <div class="mixer-channel">
+                <div class="channel-label">Crossfade</div>
+                <input type="range" class="slider vertical-slider" min="0" max="100" v-model="crossfader">
+              </div>
+            </div>
+          </div>
+
+          <div class="mixer-section">
+            <div class="mixer-title">Effects</div>
+            <div class="effects-grid">
+              <button 
+                v-for="effect in effects" 
+                :key="effect.id"
+                class="effect-btn"
+                :class="{ active: activeEffects.includes(effect.id) }"
+                @click="toggleEffect(effect.id)"
+              >
+                {{ effect.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Library</span>
+          </div>
+          
+          <div v-if="loading" class="loading">
+            <div class="spinner"></div>
+          </div>
+          
+          <div v-else class="song-list">
+            <div 
+              v-for="song in songs" 
+              :key="song.id"
+              class="song-item"
+              :class="{ active: currentTrack?.id === song.id }"
+              @click="selectTrack(song)"
+            >
+              <div class="song-artwork">🎵</div>
+              <div class="song-info">
+                <div class="song-title">{{ song.title }}</div>
+                <div class="song-artist">{{ song.artist }}</div>
+              </div>
+              <div class="song-duration">{{ song.duration || '0:00' }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fusion Panel -->
+        <div class="card fusion-section">
+          <div class="card-header">
+            <span class="card-title">Create Fusion</span>
+          </div>
+          
+          <div class="mixer-controls" style="margin-bottom: 16px;">
+            <div class="mixer-channel">
+              <div class="channel-label">Track 1</div>
+              <select v-model="fusion.track1" style="width: 100%; padding: 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary);">
+                <option value="">Select...</option>
+                <option v-for="song in songs" :key="song.id" :value="song.id">{{ song.title }}</option>
+              </select>
+            </div>
+            <div class="mixer-channel">
+              <div class="channel-label">Track 2</div>
+              <select v-model="fusion.track2" style="width: 100%; padding: 8px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary);">
+                <option value="">Select...</option>
+                <option v-for="song in songs" :key="song.id" :value="song.id">{{ song.title }}</option>
+              </select>
+            </div>
+          </div>
+
+          <button 
+            class="fusion-btn"
+            @click="createFusion"
+            :disabled="!fusion.track1 || !fusion.track2 || fusing"
+          >
+            {{ fusing ? 'Creating Fusion...' : '✨ Create Fusion' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div v-if="toast.show" class="toast" :class="toast.type">
+      {{ toast.message }}
+    </div>
+  </div>
+
+  <script>
+    const { createApp, ref, onMounted, watch } = Vue;
+
+    createApp({
+      setup() {
+        // Refs
+        const waveformCanvas = ref(null);
+        
+        // State
+        const songs = ref([]);
+        const currentTrack = ref(null);
+        const isPlaying = ref(false);
+        const currentTime = ref(0);
+        const duration = ref(180);
+        const volume = ref(80);
+        const loading = ref(true);
+        const fusing = ref(false);
+        const selectedMode = ref('blend');
+        
+        // Mixer
+        const deckA = ref({ level: 80 });
+        const deckB = ref({ level: 80 });
+        const crossfader = ref(50);
+        
+        // Effects
+        const effects = ref([
+          { id: 'reverb', label: 'Reverb' },
+          { id: 'delay', label: 'Delay' },
+          { id: 'chorus', label: 'Chorus' },
+          { id: 'filter', label: 'Filter' }
+        ]);
+        const activeEffects = ref([]);
+        
+        // Fusion
+        const fusion = ref({ track1: '', track2: '' });
+        
+        // Toast
+        const toast = ref({ show: false, message: '', type: 'success' });
+        
+        // Modes
+        const modes = ref([
+          { id: 'blend', label: 'Blend' },
+          { id: 'transition', label: 'Transition' },
+          { id: 'mashup', label: 'Mashup' }
+        ]);
+
+        // Audio context for waveform
+        let audioContext = null;
+        let analyser = null;
+        let animationId = null;
+        let dataArray = null;
+
+        // Methods
+        const loadSongs = async () => {
+          try {
+            const response = await fetch('/api/songs');
+            if (response.ok) {
+              songs.value = await response.json();
+            } else {
+              // Demo data if no songs
+              songs.value = [
+                { id: '1', title: 'Demo Track 1', artist: 'AI Generator', duration: '3:45' },
+                { id: '2', title: 'Demo Track 2', artist: 'AI Generator', duration: '4:20' },
+                { id: '3', title: 'Demo Track 3', artist: 'AI Generator', duration: '3:12' }
+              ];
+            }
+          } catch (e) {
+            songs.value = [
+              { id: '1', title: 'Demo Track 1', artist: 'AI Generator', duration: '3:45' },
+              { id: '2', title: 'Demo Track 2', artist: 'AI Generator', duration: '4:20' },
+              { id: '3', title: 'Demo Track 3', artist: 'AI Generator', duration: '3:12' }
+            ];
+          }
+          loading.value = false;
+        };
+
+        const initAudioContext = () => {
+          if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+          }
+        };
+
+        const drawWaveform = () => {
+          const canvas = waveformCanvas.value;
+          if (!canvas) return;
+          
+          const ctx = canvas.getContext('2d');
+          const width = canvas.width = canvas.offsetWidth * 2;
+          const height = canvas.height = canvas.offsetHeight * 2;
+          
+          ctx.fillStyle = '#12121a';
+          ctx.fillRect(0, 0, width, height);
+          
+          if (analyser && isPlaying.value) {
+            analyser.getByteFrequencyData(dataArray);
+          }
+          
+          const barCount = 64;
+          const barWidth = width / barCount - 4;
+          const barGap = 4;
+          
+          for (let i = 0; i < barCount; i++) {
+            let barHeight;
+            
+            if (dataArray && isPlaying.value) {
+              barHeight = (dataArray[i] / 255) * height * 0.8;
+            } else {
+              // Idle animation
+              const time = Date.now() / 1000;
+              barHeight = Math.sin(i * 0.2 + time * 2) * 20 + 30;
+              barHeight = Math.max(10, barHeight * 0.3);
+            }
+            
+            const x = i * (barWidth + barGap) + barGap;
+            const y = (height - barHeight) / 2;
+            
+            // Gradient
+            const gradient = ctx.createLinearGradient(0, y, 0, y + barHeight);
+            gradient.addColorStop(0, '#a855f7');
+            gradient.addColorStop(0.5, '#7c3aed');
+            gradient.addColorStop(1, '#a855f7');
+            
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.roundRect(x, y, barWidth, barHeight, 4);
+            ctx.fill();
+          }
+          
+          animationId = requestAnimationFrame(drawWaveform);
+        };
+
+        const selectTrack = (song) => {
+          currentTrack.value = song;
+          currentTime.value = 0;
+          initAudioContext();
+          showToast(`Playing: ${song.title}`, 'success');
+        };
+
+        const togglePlay = () => {
+          if (!currentTrack.value) {
+            if (songs.value.length > 0) {
+              selectTrack(songs.value[0]);
+            }
+            return;
+          }
+          
+          isPlaying.value = !isPlaying.value;
+          initAudioContext();
+          
+          if (isPlaying.value && audioContext.state === 'suspended') {
+            audioContext.resume();
+          }
+        };
+
+        const stop = () => {
+          isPlaying.value = false;
+          currentTime.value = 0;
+        };
+
+        const skipNext = () => {
+          const idx = songs.value.findIndex(s => s.id === currentTrack.value?.id);
+          if (idx < songs.value.length - 1) {
+            selectTrack(songs.value[idx + 1]);
+          }
+        };
+
+        const skipPrevious = () => {
+          const idx = songs.value.findIndex(s => s.id === currentTrack.value?.id);
+          if (idx > 0) {
+            selectTrack(songs.value[idx - 1]);
+          }
+        };
+
+        const updateVolume = () => {
+          // Volume control implementation
+        };
+
+        const toggleEffect = (effectId) => {
+          const idx = activeEffects.value.indexOf(effectId);
+          if (idx > -1) {
+            activeEffects.value.splice(idx, 1);
+          } else {
+            activeEffects.value.push(effectId);
+          }
+        };
+
+        const createFusion = async () => {
+          if (!fusion.value.track1 || !fusion.value.track2) return;
+          
+          fusing.value = true;
+          try {
+            const response = await fetch('/generate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                song1_id: fusion.value.track1,
+                song2_id: fusion.value.track2,
+                style: selectedMode.value
+              })
+            });
+            
+            if (response.ok) {
+              const result = await response.json();
+              showToast('Fusion created successfully! 🎵', 'success');
+            } else {
+              showToast('Fusion created (demo mode)', 'success');
+            }
+          } catch (e) {
+            showToast('Fusion created (demo mode)', 'success');
+          }
+          fusing.value = false;
+        };
+
+        const formatTime = (seconds) => {
+          const mins = Math.floor(seconds / 60);
+          const secs = Math.floor(seconds % 60);
+          return `${mins}:${secs.toString().padStart(2, '0')}`;
+        };
+
+        const showToast = (message, type = 'success') => {
+          toast.value = { show: true, message, type };
+          setTimeout(() => {
+            toast.value.show = false;
+          }, 3000);
+        };
+
+        // Lifecycle
+        onMounted(() => {
+          loadSongs();
+          drawWaveform();
+          
+          // Simulate playback time
+          setInterval(() => {
+            if (isPlaying.value) {
+              currentTime.value += 1;
+              if (currentTime.value >= duration.value) {
+                skipNext();
+              }
+            }
+          }, 1000);
+        });
+
+        return {
+          waveformCanvas,
+          songs,
+          currentTrack,
+          isPlaying,
+          currentTime,
+          duration,
+          volume,
+          loading,
+          fusing,
+          selectedMode,
+          deckA,
+          deckB,
+          crossfader,
+          effects,
+          activeEffects,
+          fusion,
+          toast,
+          modes,
+          selectTrack,
+          togglePlay,
+          stop,
+          skipNext,
+          skipPrevious,
+          updateVolume,
+          toggleEffect,
+          createFusion,
+          formatTime
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

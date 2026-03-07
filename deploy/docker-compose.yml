@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  ai-dj:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: ai-dj-server
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - LOG_LEVEL=info
+      - DATA_DIR=/app/data
+      - OUTPUT_DIR=/app/exports
+    volumes:
+      - ai-dj-data:/app/data
+      - ai-dj-exports:/app/exports
+      - ai-dj-music:/app/music
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for job queue
+  redis:
+    image: redis:7-alpine
+    container_name: ai-dj-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  # Optional: Celery worker for async processing
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: ai-dj-celery
+    command: celery -A tasks worker --loglevel=info
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - ai-dj-data:/app/data
+      - ai-dj-exports:/app/exports
+    restart: unless-stopped
+
+volumes:
+  ai-dj-data:
+  ai-dj-exports:
+  ai-dj-music:
+  redis-data:

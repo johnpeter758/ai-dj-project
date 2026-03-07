@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-dj-server
+  namespace: ai-dj
+  labels:
+    app: ai-dj
+    component: server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-dj
+      component: server
+  template:
+    metadata:
+      labels:
+        app: ai-dj
+        component: server
+    spec:
+      containers:
+        - name: ai-dj
+          image: ai-dj-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: ai-dj-config
+            - secretRef:
+                name: ai-dj-secret
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: exports
+              mountPath: /app/exports
+            - name: music
+              mountPath: /app/music
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ai-dj-data-pvc
+        - name: exports
+          persistentVolumeClaim:
+            claimName: ai-dj-exports-pvc
+        - name: music
+          emptyDir: {}

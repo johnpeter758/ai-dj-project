@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-dj-config
+  namespace: ai-dj
+data:
+  FLASK_ENV: "production"
+  LOG_LEVEL: "info"
+  DATA_DIR: "/app/data"
+  OUTPUT_DIR: "/app/exports"
+  MAX_UPLOAD_SIZE: "100M"
+  WORKER_THREADS: "4"

@@ -1,0 +1,44 @@
+# Dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Data (don't include local data in image)
+data/
+music/
+exports/
+fusions/
+logs/
+
+# Large model files (should be mounted or downloaded at runtime)
+ACE-Step-1.5/
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Misc
+.DS_Store
+*.log
+*.tmp
