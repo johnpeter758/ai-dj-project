@@ -26,6 +26,11 @@ class ADSREnvelope:
         decay_samples = int(self.decay * sample_rate)
         release_samples = int(self.release * sample_rate)
         
+        # Ensure minimum lengths
+        attack_samples = min(attack_samples, length // 4)
+        decay_samples = min(decay_samples, length // 4)
+        release_samples = min(release_samples, length // 4)
+        
         sustain_samples = length - attack_samples - decay_samples - release_samples
         sustain_samples = max(sustain_samples, 0)
         
@@ -39,19 +44,25 @@ class ADSREnvelope:
         # Decay
         if decay_samples > 0:
             end_attack = attack_samples
-            end_decay = end_attack + decay_samples
-            envelope[end_attack:end_decay] = np.linspace(1, self.sustain, decay_samples)
+            end_decay = min(end_attack + decay_samples, length)
+            decay_len = end_decay - end_attack
+            if decay_len > 0:
+                envelope[end_attack:end_decay] = np.linspace(1, self.sustain, decay_len)
         
         # Sustain
         if sustain_samples > 0:
             end_decay = attack_samples + decay_samples
-            end_sustain = end_decay + sustain_samples
-            envelope[end_decay:end_sustain] = self.sustain
+            end_sustain = min(end_decay + sustain_samples, length)
+            sustain_len = end_sustain - end_decay
+            if sustain_len > 0:
+                envelope[end_decay:end_sustain] = self.sustain
         
         # Release
         if release_samples > 0:
-            end_sustain = length - release_samples
-            envelope[end_sustain:] = np.linspace(self.sustain, 0, release_samples)
+            release_start = length - release_samples
+            release_len = length - release_start
+            if release_len > 0:
+                envelope[release_start:] = np.linspace(self.sustain, 0, release_len)
         
         return envelope
 
