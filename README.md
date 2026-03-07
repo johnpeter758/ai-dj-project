@@ -1,40 +1,27 @@
 # 🎛️ Peter - AI DJ
 
-Autonomous AI DJ that creates professional music fusions.
+Autonomous AI that creates professional music fusions.
 
 ## Features
-
-- **Smart Analysis** - Key (Camelot), BPM, energy detection
-- **Harmonic Mixing** - Camelot wheel compatibility
-- **Professional Quality** - Soft clipping, gain staging
-- **Self-Learning** - Improves from your ratings
+- Smart key detection (Camelot wheel)
+- Equal-power crossfade mixing
+- Professional audio processing
+- Self-learning from ratings
 
 ## Fusions
-
-- **200** VIP fusions (self-assessed)
-- **82** Pro fusions  
-- **750** Standard fusions
+- 15,000+ created
+- Multiple quality tiers
 
 ## Quick Start
-
 ```bash
-# Analyze a song
-python src/fusion_engine_v3.py analyze <song.wav>
-
-# Create fusion
-python src/fusion_engine_v3.py fuse <song_a> <song_b>
+python server.py
+# Open http://localhost:5000
 ```
 
-## Dashboard
-
-Run `python server.py` and open http://localhost:5000
-
 ## Tech Stack
-
 - Python, librosa, numpy
-- Camelot wheel for key compatibility
+- Flask dashboard
 - Professional audio processing
 
 ## License
-
 MIT
