@@ -162,10 +162,9 @@ class CrowdAnalyzer:
             return "maintain_or_peak"
         else:
             return "peak_or_drop"
-_stats(self) -> Dict:
+    def get_stats(self) -> Dict:
         return {
-    
-    def get            "current_energy": round(self.avg_energy, 2),
+            "current_energy": round(self.avg_energy, 2),
             "level": self.get_energy_level().value,
             "trend": self.energy_trend[-1] if self.energy_trend else "unknown",
             "samples": len(self.energy_history)
