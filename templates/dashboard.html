@@ -1002,4 +1002,389 @@
 
     <script>
         // State
-        let song
+        let song1File = null;
+        let song2File = null;
+        let isPlaying = false;
+        let currentRating = 0;
+        let librarySongs = [];
+        let selectedSongs = [];
+        let currentTab = 'all';
+        let pickerMode = false;
+        
+        // Audio context for waveform visualization
+        let audioContext = null;
+        let analyser1 = null;
+        let analyser2 = null;
+        let audio1 = null;
+        let audio2 = null;
+        
+        // Mock library data
+        const mockLibrary = [
+            { id: 1, title: "Drake - In My Feelings", artist: "Drake", key: "2A", bpm: 185, energy: 0.85, genre: "hiphop", art: "🎤" },
+            { id: 2, title: "Travis Scott - Sicko Mode", artist: "Travis Scott", key: "3A", bpm: 152, energy: 0.92, genre: "hiphop", art: "🎤" },
+            { id: 3, title: "Marshmello - Happier", artist: "Marshmello", key: "6A", bpm: 99, energy: 0.78, genre: "edm", art: "🎹" },
+            { id: 4, title: "Rick Astley - Never Gonna Give You Up", artist: "Rick Astley", key: "9B", bpm: 112, energy: 0.88, genre: "pop", art: "🎵" },
+            { id: 5, title: "The Chainsmokers - Don't Let Me Down", artist: "Chainsmokers", key: "11A", bpm: 160, energy: 0.90, genre: "edm", art: "🎛️" },
+            { id: 6, title: "Post Malone -rockstar", artist: "Post Malone", key: "5A", bpm: 160, energy: 0.75, genre: "hiphop", art: "🎤" },
+            { id: 7, title: "Dua Lipa - New Rules", artist: "Dua Lipa", key: "11B", bpm: 124, energy: 0.82, genre: "pop", art: "👑" },
+            { id: 8, title: "Martin Garrix - Animals", artist: "Martin Garrix", key: "6A", bpm: 128, energy: 0.95, genre: "edm", art: "🦄" }
+        ];
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            librarySongs = [...mockLibrary];
+            renderLibrary();
+            setupDragAndDrop();
+        });
+        
+        // File handling
+        function selectSong(num) {
+            document.getElementById('file' + num).click();
+        }
+        
+        function handleFile(input, num) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                if (num === 1) {
+                    song1File = file;
+                    updateUploadZone(1, file);
+                } else {
+                    song2File = file;
+                    updateUploadZone(2, file);
+                }
+            }
+        }
+        
+        function updateUploadZone(num, file) {
+            const zone = document.getElementById('dropZone' + num);
+            zone.classList.add('has-file');
+            zone.innerHTML = `
+                <div class="upload-audio-info">
+                    <div class="filename">${file.name}</div>
+                    <div class="audiometa">${(file.size / 1024 / 1024).toFixed(2)} MB</div>
+                </div>
+            `;
+        }
+        
+        // Drag and drop
+        function setupDragAndDrop() {
+            ['dropZone1', 'dropZone2'].forEach(id => {
+                const zone = document.getElementById(id);
+                const num = id === 'dropZone1' ? 1 : 2;
+                
+                zone.addEventListener('dragover', e => {
+                    e.preventDefault();
+                    zone.classList.add('dragover');
+                });
+                
+                zone.addEventListener('dragleave', e => {
+                    zone.classList.remove('dragover');
+                });
+                
+                zone.addEventListener('drop', e => {
+                    e.preventDefault();
+                    zone.classList.remove('dragover');
+                    if (e.dataTransfer.files[0]) {
+                        handleFile({ files: e.dataTransfer.files }, num);
+                    }
+                });
+            });
+        }
+        
+        // Library functions
+        function renderLibrary() {
+            const filtered = currentTab === 'all' 
+                ? librarySongs 
+                : librarySongs.filter(s => s.genre === currentTab);
+            
+            const songList = document.getElementById('songList');
+            songList.innerHTML = filtered.map(song => `
+                <div class="library-song ${selectedSongs.includes(song.id) ? 'selected' : ''}" 
+                     onclick="toggleLibrarySelection(${song.id})">
+                    <div class="song-art">${song.art}</div>
+                    <div class="song-info">
+                        <div class="song-title">${song.title}</div>
+                        <div class="song-meta">
+                            <span>🔑 ${song.key}</span>
+                            <span>⚡ ${song.bpm}</span>
+                        </div>
+                    </div>
+                    <div class="song-actions">
+                        <button class="song-action-btn" onclick="event.stopPropagation(); playPreview(${song.id})">▶</button>
+                        <button class="song-action-btn" onclick="event.stopPropagation(); removeSong(${song.id})">🗑</button>
+                    </div>
+                </div>
+            `).join('');
+            
+            updateFusionButton();
+        }
+        
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.playlist-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            renderLibrary();
+        }
+        
+        function toggleLibrarySelection(id) {
+            if (pickerMode) {
+                // In picker mode, select exactly 2
+                const idx = selectedSongs.indexOf(id);
+                if (idx > -1) {
+                    selectedSongs.splice(idx, 1);
+                } else if (selectedSongs.length < 2) {
+                    selectedSongs.push(id);
+                }
+                renderModalLibrary();
+            } else {
+                // Normal mode
+                const idx = selectedSongs.indexOf(id);
+                if (idx > -1) {
+                    selectedSongs.splice(idx, 1);
+                } else if (selectedSongs.length < 2) {
+                    selectedSongs.push(id);
+                }
+                renderLibrary();
+            }
+            updateFusionButton();
+        }
+        
+        function updateFusionButton() {
+            const btn = document.getElementById('createFusionBtn');
+            btn.textContent = `🔮 Create Fusion (${selectedSongs.length}/2)`;
+            btn.disabled = selectedSongs.length !== 2;
+        }
+        
+        function addSongs() {
+            document.getElementById('file1').click();
+        }
+        
+        function removeSong(id) {
+            librarySongs = librarySongs.filter(s => s.id !== id);
+            selectedSongs = selectedSongs.filter(sid => sid !== id);
+            renderLibrary();
+        }
+        
+        // Modal functions
+        function openLibraryPicker() {
+            pickerMode = true;
+            selectedSongs = [];
+            document.getElementById('libraryModal').classList.add('active');
+            renderModalLibrary();
+        }
+        
+        function closeLibraryPicker() {
+            pickerMode = false;
+            document.getElementById('libraryModal').classList.remove('active');
+        }
+        
+        function renderModalLibrary() {
+            const songList = document.getElementById('modalSongList');
+            songList.innerHTML = librarySongs.map(song => `
+                <div class="library-song selectable ${selectedSongs.includes(song.id) ? 'selected' : ''}" 
+                     onclick="toggleLibrarySelection(${song.id})">
+                    <div class="song-art">${song.art}</div>
+                    <div class="song-info">
+                        <div class="song-title">${song.title}</div>
+                        <div class="song-meta">
+                            <span>🔑 ${song.key}</span>
+                            <span>⚡ ${song.bpm}</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+            
+            if (selectedSongs.length === 2) {
+                setTimeout(() => {
+                    closeLibraryPicker();
+                    loadSongsFromLibrary();
+                }, 500);
+            }
+        }
+        
+        function loadSongsFromLibrary() {
+            const songs = librarySongs.filter(s => selectedSongs.includes(s.id));
+            if (songs.length === 2) {
+                // Simulate loading files
+                const zone1 = document.getElementById('dropZone1');
+                const zone2 = document.getElementById('dropZone2');
+                
+                zone1.classList.add('has-file');
+                zone1.innerHTML = `<div class="upload-audio-info"><div class="filename">${songs[0].title}</div><div class="audiometa">🔑 ${songs[0].key} • ⚡ ${songs[0].bpm} BPM</div></div>`;
+                
+                zone2.classList.add('has-file');
+                zone2.innerHTML = `<div class="upload-audio-info"><div class="filename">${songs[1].title}</div><div class="audiometa">🔑 ${songs[1].key} • ⚡ ${songs[1].bpm} BPM</div></div>`;
+                
+                song1File = { name: songs[0].title, size: 5000000 };
+                song2File = { name: songs[1].title, size: 5000000 };
+                
+                analyzeAndFuse();
+            }
+        }
+        
+        function createFromLibrary() {
+            if (selectedSongs.length === 2) {
+                loadSongsFromLibrary();
+            }
+        }
+        
+        // Analysis
+        function analyzeAndFuse() {
+            const btn = document.getElementById('analyzeBtn');
+            btn.innerHTML = '🔮 Analyzing...';
+            btn.disabled = true;
+            
+            // Simulate analysis
+            setTimeout(() => {
+                // Generate mock analysis data
+                const key1 = ["2A", "3A", "6A", "9B", "11A", "5A", "11B"][Math.floor(Math.random() * 7)];
+                const key2 = ["2A", "3A", "6A", "9B", "11A", "5A", "11B"][Math.floor(Math.random() * 7)];
+                const bpm1 = Math.floor(Math.random() * 60) + 100;
+                const bpm2 = Math.floor(Math.random() * 60) + 100;
+                const energy1 = (Math.random() * 0.4 + 0.5).toFixed(2);
+                const energy2 = (Math.random() * 0.4 + 0.5).toFixed(2);
+                const score = Math.floor(Math.random() * 35) + 65;
+                
+                // Update UI
+                document.getElementById('scoreCircle').style.setProperty('--score', score + '%');
+                document.getElementById('scoreValue').textContent = score + '%';
+                
+                // Key match
+                const keyMatch = key1 === key2 ? 'Perfect' : (Math.random() > 0.5 ? 'Good' : 'Fair');
+                document.getElementById('keyMatch').textContent = keyMatch;
+                
+                // BPM match
+                const bpmDiff = Math.abs(bpm1 - bpm2);
+                const bpmMatch = bpmDiff < 10 ? 'Perfect' : (bpmDiff < 25 ? 'Good' : 'Fair');
+                document.getElementById('bpmMatch').textContent = bpmMatch;
+                
+                // Energy match
+                const energyAvg = ((parseFloat(energy1) + parseFloat(energy2)) / 2).toFixed(2);
+                document.getElementById('energyMatch').textContent = energyAvg;
+                
+                // Style
+                const styles = ['EDM Trap', 'Hip-Hop', 'Pop-Dance', 'House', 'Future Bass'];
+                document.getElementById('styleMatch').textContent = styles[Math.floor(Math.random() * styles.length)];
+                
+                // Song details
+                document.getElementById('key1').textContent = key1;
+                document.getElementById('bpm1').textContent = bpm1;
+                document.getElementById('energy1').textContent = energy1;
+                document.getElementById('key2').textContent = key2;
+                document.getElementById('bpm2').textContent = bpm2;
+                document.getElementById('energy2').textContent = energy2;
+                
+                // Draw waveforms
+                drawWaveform('waveform1');
+                drawWaveform('waveform2');
+                
+                // Show results
+                document.getElementById('results').classList.add('active');
+                btn.innerHTML = '⚡ Create Fusion';
+                btn.disabled = false;
+                
+                // Scroll to results
+                document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+            }, 2000);
+        }
+        
+        // Waveform visualization using Web Audio API
+        function drawWaveform(canvasId) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width = canvas.offsetWidth * 2;
+            const height = canvas.height = canvas.offsetHeight * 2;
+            
+            // Generate random waveform data
+            const bars = 100;
+            const barWidth = width / bars;
+            const data = [];
+            
+            for (let i = 0; i < bars; i++) {
+                data.push(Math.random() * 0.7 + 0.15);
+            }
+            
+            // Draw
+            ctx.clearRect(0, 0, width, height);
+            
+            const gradient = ctx.createLinearGradient(0, 0, width, 0);
+            gradient.addColorStop(0, '#00f5ff');
+            gradient.addColorStop(0.5, '#b400ff');
+            gradient.addColorStop(1, '#ff00aa');
+            
+            data.forEach((val, i) => {
+                const barHeight = val * height * 0.8;
+                const x = i * barWidth;
+                const y = (height - barHeight) / 2;
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.roundRect(x + 1, y, barWidth - 2, barHeight, 2);
+                ctx.fill();
+            });
+        }
+        
+        // Player controls
+        function togglePlay() {
+            const btn = document.querySelector('.play-btn');
+            if (isPlaying) {
+                btn.textContent = '▶';
+                isPlaying = false;
+            } else {
+                btn.textContent = '⏸';
+                isPlaying = true;
+                
+                // Simulate playback
+                let progress = 0;
+                const duration = 180; // 3 minutes
+                
+                const interval = setInterval(() => {
+                    progress += 1;
+                    const percent = (progress / duration) * 100;
+                    document.getElementById('progressFill').style.width = percent + '%';
+                    document.getElementById('currentTime').textContent = formatTime(progress);
+                    document.getElementById('duration').textContent = formatTime(duration);
+                    
+                    if (progress >= duration) {
+                        clearInterval(interval);
+                        btn.textContent = '▶';
+                        isPlaying = false;
+                    }
+                }, 1000);
+            }
+        }
+        
+        function seekAudio(event) {
+            const bar = document.getElementById('progressBar');
+            const rect = bar.getBoundingClientRect();
+            const percent = ((event.clientX - rect.left) / rect.width) * 100;
+            document.getElementById('progressFill').style.width = percent + '%';
+        }
+        
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Rating
+        function rate(stars) {
+            currentRating = stars;
+            const starElements = document.querySelectorAll('.star');
+            starElements.forEach((star, index) => {
+                if (index < stars) {
+                    star.classList.add('active');
+                } else {
+                    star.classList.remove('active');
+                }
+            });
+            // In real app, this would send rating to backend
+        }
+        
+        // Preview (placeholder)
+        function playPreview(id) {
+            alert('Preview: Playing song ' + id);
+        }
+    </script>
+</body>
+</html>
