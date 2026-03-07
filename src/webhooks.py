@@ -601,26 +601,52 @@ class WebhookManager:
         # Prepare body
         body = payload.to_json()
         
-        # Select HTTP method based on provider
-        method = "POST"
-        if webhook.provider == WebhookProvider.SLACK:
-            # Slack uses special formatting
-            method = "POST"
-        elif webhook.provider == WebhookProvider.DISCORD:
-            # Discord embeds
-            method = "POST"
-        
-        # Send request
+        # Send request - prefer aiohttp if available, fallback to requests
+        if AIOHTTP_AVAILABLE:
+            return await self._send_request_aiohttp(webhook, body, headers)
+        elif REQUESTS_AVAILABLE:
+            return self._send_request_requests(webhook, body, headers)
+        else:
+            raise RuntimeError("Neither aiohttp nor requests is available. Install one to enable webhooks.")
+    
+    async def _send_request_aiohttp(
+        self,
+        webhook: WebhookRegistration,
+        body: str,
+        headers: Dict[str, str]
+    ) -> tuple[bool, Optional[int], Optional[str]]:
+        """Send request using aiohttp."""
         timeout = aiohttp.ClientTimeout(total=webhook.timeout)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
-                method, webhook.url, data=body, headers=headers
+                "POST", webhook.url, data=body, headers=headers
             ) as response:
                 response_body = await response.text()
                 
                 success = 200 <= response.status < 300
                 return success, response.status, response_body
+    
+    def _send_request_requests(
+        self,
+        webhook: WebhookRegistration,
+        body: str,
+        headers: Dict[str, str]
+    ) -> tuple[bool, Optional[int], Optional[str]]:
+        """Send request using requests library (sync fallback)."""
+        try:
+            response = requests.post(
+                webhook.url,
+                data=body,
+                headers=headers,
+                timeout=webhook.timeout
+            )
+            success = 200 <= response.status_code < 300
+            return success, response.status_code, response.text
+        except requests.Timeout:
+            return False, None, "Request timed out"
+        except Exception as e:
+            return False, None, str(e)
     
     async def _check_rate_limit(self, webhook_id: str):
         """Enforce minimum delivery interval."""
