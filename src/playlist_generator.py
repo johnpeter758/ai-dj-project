@@ -153,21 +153,19 @@ class PlaylistGenerator:
         "Ab": ["Ab", "Eb", "Db", "Fm", "Bbm", "Cm"],
         "Db": ["Db", "Ab", "Gb", "Bbm", "Ebm", "Fm"],
         "Gb": ["Gb", "Db", "Ebm", "Bbm", "Abm", "Bbm"],
+        # Minor keys
+        "Am": ["Am", "Em", "Dm", "C", "G", "F"],
+        "Dm": ["Dm", "Am", "Gm", "F", "A", "C"],
+        "Em": ["Em", "Bm", "Am", "G", "D", "A"],
+        "Bm": ["Bm", "F#m", "Em", "D", "A", "E"],
+        "F#m": ["F#m", "C#m", "Bm", "A", "E", "B"],
+        "Gm": ["Gm", "Dm", "Cm", "Bb", "F", "Eb"],
+        "Fm": ["Fm", "Cm", "Bb", "Ab", "Eb", "Db"],
+        "Cm": ["Cm", "Gm", "Fm", "Eb", "Bb", "Ab"],
+        "Bbm": ["Bbm", "Fm", "Ebm", "Db", "Gb", "Ab"],
+        "Ebm": ["Ebm", "Bbm", "Ab", "Gb", "Db", "Gb"],
+        "Abm": ["Abm", "Ebm", "Bbm", "Gb", "Db", "Ebm"],
     }
-    
-    # Minor keys
-    "Cm": ["Cm", "Gm", "Fm", "Eb", "G", "Bb"],
-    "Am": ["Am", "Em", "Dm", "C", "G", "F"],
-    "Dm": ["Dm", "Am", "Gm", "F", "A", "C"],
-    "Em": ["Em", "Bm", "Am", "G", "D", "A"],
-    "Bm": ["Bm", "F#m", "Em", "D", "A", "E"],
-    "F#m": ["F#m", "C#m", "Bm", "A", "E", "B"],
-    "Gm": ["Gm", "Dm", "Cm", "Bb", "F", "Eb"],
-    "Fm": ["Fm", "Cm", "Bb", "Ab", "Eb", "Db"],
-    "Cm": ["Cm", "Gm", "Fm", "Eb", "Bb", "Ab"],
-    "Bbm": ["Bbm", "Fm", "Ebm", "Db", "Gb", "Ab"],
-    "Ebm": ["Ebm", "Bbm", "Ab", "Gb", "Db", "Gb"],
-    "Abm": ["Abm", "Ebm", "Bbm", "Gb", "Db", "Ebm"],
     
     def __init__(self, library_path: Optional[str] = None):
         """Initialize the playlist generator.
