@@ -1088,4 +1088,39 @@ if __name__ == "__main__":
     # Example usage
     manager = DAWManager()
     
-    #
+    # Auto-detect and connect to DAW
+    if manager.auto_connect():
+        print(f"Connected to DAW")
+        
+        # Get current tempo
+        print(f"Current tempo: {manager.get_tempo()} BPM")
+        
+        # Set new tempo
+        manager.set_tempo(128.0)
+        
+        # Play/pause controls
+        manager.play()
+        time.sleep(2)
+        manager.pause()
+        manager.stop()
+        
+        # Get tracks
+        tracks = manager.get_tracks()
+        print(f"Found {len(tracks)} tracks")
+        
+        # Create a new track
+        new_track = manager.create_track("AI Generated", TrackType.AUDIO)
+        
+        # Import generated audio
+        manager.import_audio("/path/to/generated/audio.wav")
+        
+        # Export final mix
+        manager.export_project("/path/to/output/mix.wav")
+        
+        # Disconnect
+        manager.disconnect_daw()
+    else:
+        print("No DAW detected. Available DAWs:")
+        for daw_type in DAWType:
+            if daw_type != DAWType.UNKNOWN:
+                print(f"  - {daw_type.value}")
