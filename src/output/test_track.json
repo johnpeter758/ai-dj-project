@@ -1,0 +1,98 @@
+{
+  "title": "Test House Track",
+  "artist": "AI DJ",
+  "genre": "house",
+  "key": "C",
+  "scale": "minor",
+  "bpm": 128,
+  "duration_sec": 30,
+  "energy": 0.8,
+  "created_at": "2026-03-07T07:51:37.885911",
+  "arrangement": [
+    {
+      "section": "intro",
+      "bars": 4,
+      "start_bar": 0,
+      "duration_sec": 2.0,
+      "energy_start": 0.2,
+      "energy_end": 0.3
+    },
+    {
+      "section": "verse",
+      "bars": 4,
+      "start_bar": 8,
+      "duration_sec": 4.0,
+      "energy_start": 0.3,
+      "energy_end": 0.45
+    },
+    {
+      "section": "prechorus",
+      "bars": 4,
+      "start_bar": 24,
+      "duration_sec": 2.0,
+      "energy_start": 0.45,
+      "energy_end": 0.75
+    },
+    {
+      "section": "chorus",
+      "bars": 4,
+      "start_bar": 32,
+      "duration_sec": 4.0,
+      "energy_start": 0.8,
+      "energy_end": 0.85
+    },
+    {
+      "section": "verse",
+      "bars": 4,
+      "start_bar": 48,
+      "duration_sec": 4.0,
+      "energy_start": 0.35,
+      "energy_end": 0.45
+    },
+    {
+      "section": "prechorus",
+      "bars": 4,
+      "start_bar": 64,
+      "duration_sec": 2.0,
+      "energy_start": 0.5,
+      "energy_end": 0.8
+    },
+    {
+      "section": "chorus",
+      "bars": 4,
+      "start_bar": 72,
+      "duration_sec": 4.0,
+      "energy_start": 0.85,
+      "energy_end": 0.9
+    },
+    {
+      "section": "bridge",
+      "bars": 4,
+      "start_bar": 88,
+      "duration_sec": 2.0,
+      "energy_start": 0.4,
+      "energy_end": 0.5
+    },
+    {
+      "section": "chorus",
+      "bars": 4,
+      "start_bar": 96,
+      "duration_sec": 4.0,
+      "energy_start": 0.9,
+      "energy_end": 0.85
+    },
+    {
+      "section": "outro",
+      "bars": 4,
+      "start_bar": 112,
+      "duration_sec": 2.0,
+      "energy_start": 0.4,
+      "energy_end": 0.1
+    }
+  ],
+  "metadata": {
+    "total_bars": 40,
+    "sections": 10,
+    "created_by": "AI DJ Orchestrator"
+  }
+}

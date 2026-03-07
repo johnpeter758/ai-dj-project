@@ -1,0 +1,66 @@
+{
+  "title": "AI Generated Edm",
+  "artist": "AI DJ",
+  "genre": "edm",
+  "key": "A",
+  "scale": "minor",
+  "bpm": 128,
+  "duration_sec": 20,
+  "energy": 0.95,
+  "created_at": "2026-03-07T07:51:46.300684",
+  "arrangement": [
+    {
+      "section": "intro",
+      "bars": 4,
+      "start_bar": 0,
+      "duration_sec": 2.5,
+      "energy_start": 0.2,
+      "energy_end": 0.4
+    },
+    {
+      "section": "prechorus",
+      "bars": 4,
+      "start_bar": 8,
+      "duration_sec": 2.5,
+      "energy_start": 0.5,
+      "energy_end": 0.8
+    },
+    {
+      "section": "drop",
+      "bars": 4,
+      "start_bar": 16,
+      "duration_sec": 5.0,
+      "energy_start": 1.0,
+      "energy_end": 1.0
+    },
+    {
+      "section": "bridge",
+      "bars": 4,
+      "start_bar": 32,
+      "duration_sec": 2.5,
+      "energy_start": 0.6,
+      "energy_end": 0.85
+    },
+    {
+      "section": "drop",
+      "bars": 4,
+      "start_bar": 40,
+      "duration_sec": 5.0,
+      "energy_start": 1.0,
+      "energy_end": 0.95
+    },
+    {
+      "section": "outro",
+      "bars": 4,
+      "start_bar": 56,
+      "duration_sec": 2.5,
+      "energy_start": 0.4,
+      "energy_end": 0.1
+    }
+  ],
+  "metadata": {
+    "total_bars": 24,
+    "sections": 6,
+    "created_by": "AI DJ Orchestrator"
+  }
+}

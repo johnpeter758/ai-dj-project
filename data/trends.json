@@ -1,0 +1,161 @@
+{
+  "genres": [
+    {
+      "name": "afrobeats",
+      "popularity_score": 92,
+      "growth_rate": 0.8,
+      "viral_potential": 0.85,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "dance",
+        "feel-good",
+        "party",
+        "west-africa"
+      ]
+    },
+    {
+      "name": "phonk",
+      "popularity_score": 88,
+      "growth_rate": 0.9,
+      "viral_potential": 0.95,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "drift",
+        "hype",
+        "808s",
+        "cowbell",
+        "aggressive"
+      ]
+    },
+    {
+      "name": "hyperpop",
+      "popularity_score": 75,
+      "growth_rate": 0.6,
+      "viral_potential": 0.8,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "glitch",
+        "extreme",
+        "experimental",
+        "catchy"
+      ]
+    },
+    {
+      "name": "amapiano",
+      "popularity_score": 85,
+      "growth_rate": 0.7,
+      "viral_potential": 0.75,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "south-africa",
+        "deep-house",
+        "groovy",
+        "log-drumming"
+      ]
+    },
+    {
+      "name": "regional-mexican",
+      "popularity_score": 90,
+      "growth_rate": 0.75,
+      "viral_potential": 0.8,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "corridos",
+        "tumbados",
+        "band",
+        "acoustic"
+      ]
+    },
+    {
+      "name": "lo-fi-hip-hop",
+      "popularity_score": 78,
+      "growth_rate": 0.2,
+      "viral_potential": 0.6,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "chill",
+        "study",
+        "relaxing",
+        "vinyl"
+      ]
+    },
+    {
+      "name": "pop-punk",
+      "popularity_score": 72,
+      "growth_rate": 0.5,
+      "viral_potential": 0.7,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "punk",
+        "emo",
+        "guitar",
+        " energetic"
+      ]
+    },
+    {
+      "name": "drill",
+      "popularity_score": 82,
+      "growth_rate": 0.4,
+      "viral_potential": 0.85,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "trap",
+        "aggressive",
+        "dark",
+        "flow"
+      ]
+    },
+    {
+      "name": "trap-soul",
+      "popularity_score": 76,
+      "growth_rate": 0.55,
+      "viral_potential": 0.7,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "r&b",
+        "melodic",
+        "moody",
+        "808s"
+      ]
+    },
+    {
+      "name": "techno",
+      "popularity_score": 70,
+      "growth_rate": 0.45,
+      "viral_potential": 0.6,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "hard",
+        "dark",
+        "warehouse",
+        "rhythmic"
+      ]
+    },
+    {
+      "name": "bass-house",
+      "popularity_score": 74,
+      "growth_rate": 0.5,
+      "viral_potential": 0.7,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "heavy-bass",
+        "four-on-floor",
+        "festival"
+      ]
+    },
+    {
+      "name": "cloud-rap",
+      "popularity_score": 68,
+      "growth_rate": 0.6,
+      "viral_potential": 0.75,
+      "last_updated": "2025-01-01",
+      "tags": [
+        "atmospheric",
+        "dreamy",
+        "melodic",
+        "lo-fi"
+      ]
+    }
+  ],
+  "last_fetch": "2026-03-07T07:50:54.629978"
+}
