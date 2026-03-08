@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Union
-from queue import PriorityQueue, Empty
+import queue  # stdlib
 import json
 import os
 
@@ -97,7 +97,7 @@ class TaskScheduler:
             persist_path: Optional path for persisting scheduled tasks
         """
         self._tasks: Dict[str, ScheduledTask] = {}
-        self._task_queue: PriorityQueue = PriorityQueue()
+        self._task_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="AI-DJ-Scheduler")
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
@@ -366,7 +366,7 @@ class TaskScheduler:
                 # Get task with timeout
                 try:
                     task = self._task_queue.get(timeout=1.0)
-                except Empty:
+                except queue.Empty:
                     continue
                 
                 # Check if we should wait for scheduled time
