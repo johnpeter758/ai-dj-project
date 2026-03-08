@@ -20,6 +20,17 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 def index():
     return send_from_directory(TEMPLATES_DIR, 'dashboard.html')
 
+# Serve fusion audio files
+FUSIONS_DIR = os.path.join(os.path.dirname(__file__), 'fusions')
+
+@app.route('/fusions/<path:filename>')
+def serve_fusion(filename):
+    return send_from_directory(FUSIONS_DIR, filename)
+
+@app.route('/music/<path:filename>')
+def serve_music(filename):
+    return send_from_directory(os.path.dirname(__file__), 'music', filename)
+
 @app.route('/<path:filename>')
 def serve_static(filename):
     return send_from_directory(TEMPLATES_DIR, filename)
