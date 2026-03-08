@@ -156,7 +156,7 @@ class TrackAutomation:
         self.add_trigger(
             AutomationTrigger(
                 event=AutomationEvent.TRACK_END,
-                condition=lambda _: self._is_playing and len(self._queue.queue) > 0
+                condition=lambda _: self._is_playing and self._queue.length > 0
             ),
             [AutomationAction(action_type="transition_next", params={})]
         )
@@ -256,7 +256,7 @@ class TrackAutomation:
     def skip(self) -> bool:
         """Skip to next track"""
         with self._lock:
-            if self._queue and len(self._queue.queue) > 0:
+            if self._queue and self._queue.length > 0:
                 self._queue.pop()
                 self._fire_callback(AutomationEvent.TRACK_END)
                 return True
@@ -265,8 +265,8 @@ class TrackAutomation:
     def previous(self) -> bool:
         """Go to previous track (from history)"""
         with self._lock:
-            if self._queue and len(self._queue.history) > 0:
-                last = self._queue.history[-1]
+            if self._queue and len(self._queue.get_history()) > 0:
+                last = self._queue.get_history()[-1]
                 self._queue.add(last)
                 return True
         return False
@@ -371,7 +371,7 @@ class TrackAutomation:
     
     def _execute_crossfade(self):
         """Execute crossfade transition"""
-        if not self._queue or len(self._queue.queue) < 1:
+        if not self._queue or self._queue.length < 1:
             return
         
         # Fade out current
@@ -492,9 +492,9 @@ class TrackAutomation:
         
         repeat_mode = self._queue.get_repeat_mode()
         
-        if repeat_mode == RepeatMode.ALL and self._queue.history:
+        if repeat_mode == RepeatMode.ALL and self._queue.get_history():
             # Re-add history to queue
-            for track in reversed(self._queue.history):
+            for track in reversed(self._queue.get_history()):
                 self._queue.add(deepcopy(track))
         elif repeat_mode == RepeatMode.OFF:
             # Try to shuffle library or notify
@@ -690,7 +690,7 @@ class TrackAutomation:
             "transition_type": self._transition_type.name,
             "crossfade_duration": self._crossfade_duration,
             "current_track": self._current_track.name if self._current_track else None,
-            "queue_length": len(self._queue.queue) if self._queue else 0,
+            "queue_length": self._queue.length if self._queue else 0,
             "active_preset": self._active_preset.name if self._active_preset else None,
             "effects": deepcopy(self._effects_state),
         }

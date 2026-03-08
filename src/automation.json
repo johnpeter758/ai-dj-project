@@ -1,18 +1,12 @@
 {
-  "ai_dj.effects": {
-    "reverb_mix": [
-      {
-        "time": 1772888121.101061,
-        "value": 0.5,
-        "source": "HOST"
-      }
-    ],
-    "delay_mix": [
-      {
-        "time": 1772888121.101064,
-        "value": 0.3,
-        "source": "HOST"
-      }
-    ]
-  }
+  "effects": {
+    "reverb_mix": 0.3,
+    "delay_mix": 0.1,
+    "filter_cutoff": 1.0,
+    "low_gain": 1.0,
+    "mid_gain": 1.0,
+    "high_gain": 1.0
+  },
+  "active_preset": "smooth_jazz",
+  "last_updated": "2026-03-08T12:17:42.293944"
 }

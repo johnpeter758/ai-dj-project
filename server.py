@@ -5,12 +5,24 @@ Run: python3 server.py
 Endpoints: /generate, /analyze, /fusion
 """
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 import os
 import json
 from datetime import datetime
 
 app = Flask(__name__)
+
+# Templates directory
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
+
+# Serve dashboard at root
+@app.route('/')
+def index():
+    return send_from_directory(TEMPLATES_DIR, 'dashboard.html')
+
+@app.route('/<path:filename>')
+def serve_static(filename):
+    return send_from_directory(TEMPLATES_DIR, filename)
 
 # Data directory for songs and fusions
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
