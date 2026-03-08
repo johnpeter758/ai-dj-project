@@ -79,3 +79,40 @@ class APIRateLimitException(APIException):
 class APIAuthenticationException(APIException):
     """Raised when API authentication fails."""
     pass
+
+
+# Processing Exceptions
+class ProcessingException(AIDJException):
+    """Base exception for audio processing errors."""
+    pass
+
+
+class InvalidAudioException(ProcessingException):
+    """Raised when audio data is invalid or malformed."""
+    pass
+
+
+class ProcessingTimeoutException(ProcessingException):
+    """Raised when audio processing exceeds time limit."""
+    pass
+
+
+class ResourceExhaustedException(ProcessingException):
+    """Raised when system runs out of memory or processing resources."""
+    pass
+
+
+# Generation Exceptions
+class GenerationException(AIDJException):
+    """Base exception for music generation errors."""
+    pass
+
+
+class GenerationFailedException(GenerationException):
+    """Raised when music generation fails."""
+    pass
+
+
+class InvalidParametersException(GenerationException):
+    """Raised when generation parameters are invalid."""
+    pass
