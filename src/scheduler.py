@@ -19,9 +19,20 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Union
-import queue  # stdlib
+import sys
 import json
 import os
+import importlib.util
+
+# Load stdlib queue module directly (avoiding local queue.py)
+_stdlib_queue = importlib.util.module_from_spec(
+    importlib.util.spec_from_file_location("_queue", 
+        os.path.join(sys.prefix, "lib/python3.9/queue.py"))
+)
+stdlib_queue_spec = importlib.util.spec_from_file_location("_queue", 
+    os.path.join(sys.prefix, "lib/python3.9/queue.py"))
+_stdlib_queue = importlib.util.module_from_spec(stdlib_queue_spec)
+stdlib_queue_spec.loader.exec_module(_stdlib_queue)
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +108,7 @@ class TaskScheduler:
             persist_path: Optional path for persisting scheduled tasks
         """
         self._tasks: Dict[str, ScheduledTask] = {}
-        self._task_queue: queue.PriorityQueue = queue.PriorityQueue()
+        self._task_queue: _stdlib_queue.PriorityQueue = _stdlib_queue.PriorityQueue()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="AI-DJ-Scheduler")
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
@@ -366,7 +377,7 @@ class TaskScheduler:
                 # Get task with timeout
                 try:
                     task = self._task_queue.get(timeout=1.0)
-                except queue.Empty:
+                except _stdlib_queue.Empty:
                     continue
                 
                 # Check if we should wait for scheduled time
