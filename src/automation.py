@@ -66,6 +66,10 @@ class AutomationTrigger:
     event: AutomationEvent
     condition: Optional[Callable[[Any], bool]] = None
     track_filter: Optional[Callable[[QueuedTrack], bool]] = None  # Filter which tracks trigger
+    
+    def __hash__(self):
+        # Only hash the event (callable fields can't be hashed)
+        return hash(self.event)
 
 
 @dataclass

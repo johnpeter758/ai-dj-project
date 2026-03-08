@@ -1,0 +1,44 @@
+{
+  "queue": [
+    {
+      "filename": "test1.wav",
+      "artist": "Artist 1",
+      "genre": "Pop",
+      "bpm": 120,
+      "key": "4A",
+      "energy": 0.7,
+      "duration": 180.0,
+      "added_at": "2026-03-08T12:15:35.198801",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "test2.wav",
+      "artist": "Artist 2",
+      "genre": "Rock",
+      "bpm": 130,
+      "key": "5A",
+      "energy": 0.8,
+      "duration": 180.0,
+      "added_at": "2026-03-08T12:15:35.198802",
+      "priority": 0,
+      "requested_by": null
+    },
+    {
+      "filename": "test3.wav",
+      "artist": "Artist 3",
+      "genre": "EDM",
+      "bpm": 128,
+      "key": "6A",
+      "energy": 0.9,
+      "duration": 180.0,
+      "added_at": "2026-03-08T12:15:35.198804",
+      "priority": 0,
+      "requested_by": null
+    }
+  ],
+  "history": [],
+  "repeat_mode": "off",
+  "shuffle_enabled": false,
+  "saved_at": "2026-03-08T12:15:35.199540"
+}

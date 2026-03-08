@@ -14,7 +14,7 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum, auto
@@ -24,15 +24,26 @@ import json
 import os
 import importlib.util
 
-# Load stdlib queue module directly (avoiding local queue.py)
-_stdlib_queue = importlib.util.module_from_spec(
-    importlib.util.spec_from_file_location("_queue", 
-        os.path.join(sys.prefix, "lib/python3.9/queue.py"))
-)
-stdlib_queue_spec = importlib.util.spec_from_file_location("_queue", 
-    os.path.join(sys.prefix, "lib/python3.9/queue.py"))
-_stdlib_queue = importlib.util.module_from_spec(stdlib_queue_spec)
-stdlib_queue_spec.loader.exec_module(_stdlib_queue)
+# Load stdlib queue module directly (avoiding local queue.py conflict)
+# This must be done BEFORE any imports that might pull in the local queue.py
+_queue_path = os.path.join(sys.prefix, "lib/python3.9/queue.py")
+_queue_spec = importlib.util.spec_from_file_location("_stdlib_queue", _queue_path)
+_stdlib_queue = importlib.util.module_from_spec(_queue_spec)
+_queue_spec.loader.exec_module(_stdlib_queue)
+
+# Patch sys.modules to ensure stdlib queue is used by internal imports
+# (ThreadPoolExecutor and others use 'import queue')
+_orig_queue = sys.modules.get('queue')
+sys.modules['queue'] = _stdlib_queue
+
+# Now safe to import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
+
+# Restore original queue module if it was there
+if _orig_queue is not None:
+    sys.modules['queue'] = _orig_queue
+else:
+    del sys.modules['queue']
 
 logger = logging.getLogger(__name__)
 
