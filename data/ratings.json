@@ -1,0 +1,97 @@
+{
+  "ratings": [
+    {
+      "id": 4,
+      "song_id": 4,
+      "song_name": "Party Starter",
+      "song_path": "",
+      "artist": "DJ Mix",
+      "genre": "house",
+      "overall": 4,
+      "energy": 10.0,
+      "mood": 8.0,
+      "danceability": 10.0,
+      "quality": 7.0,
+      "originality": 5.0,
+      "tags": [
+        "party",
+        "workout"
+      ],
+      "notes": "",
+      "rated_at": "2026-03-08T12:10:43.781636",
+      "updated_at": "2026-03-08T12:10:43.781636",
+      "rating_count": 1
+    },
+    {
+      "id": 3,
+      "song_id": 3,
+      "song_name": "Chill Wave",
+      "song_path": "",
+      "artist": "Lo-Fi Artist",
+      "genre": "chillwave",
+      "overall": 5,
+      "energy": 3.0,
+      "mood": 9.5,
+      "danceability": 2.0,
+      "quality": 8.0,
+      "originality": 7.5,
+      "tags": [
+        "chill",
+        "study",
+        "relaxing"
+      ],
+      "notes": "",
+      "rated_at": "2026-03-08T12:10:43.781353",
+      "updated_at": "2026-03-08T12:10:43.781353",
+      "rating_count": 1
+    },
+    {
+      "id": 2,
+      "song_id": 2,
+      "song_name": "Midnight Drive",
+      "song_path": "",
+      "artist": "Synthwave Master",
+      "genre": "electronic",
+      "overall": 4,
+      "energy": 9.0,
+      "mood": 7.5,
+      "danceability": 7.0,
+      "quality": 8.5,
+      "originality": 8.0,
+      "tags": [
+        "night",
+        "driving",
+        "retro"
+      ],
+      "notes": "",
+      "rated_at": "2026-03-08T12:10:43.781104",
+      "updated_at": "2026-03-08T12:10:43.781104",
+      "rating_count": 1
+    },
+    {
+      "id": 1,
+      "song_id": 1,
+      "song_name": "Summer Vibes",
+      "song_path": "",
+      "artist": "Beach Boys",
+      "genre": "pop",
+      "overall": 5,
+      "energy": 9.0,
+      "mood": 9.0,
+      "danceability": 8.0,
+      "quality": 7.5,
+      "originality": 6.0,
+      "tags": [
+        "summer",
+        "happy",
+        "party"
+      ],
+      "notes": "Perfect summer anthem",
+      "rated_at": "2026-03-08T12:10:43.780807",
+      "updated_at": "2026-03-08T12:10:43.782063",
+      "rating_count": 2
+    }
+  ],
+  "next_id": 5,
+  "updated_at": "2026-03-08T12:10:43.782207"
+}
