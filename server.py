@@ -241,22 +241,27 @@ def generate():
         result[fade_len:, 0] = audio1[fade_len:, 0] * 0.3 * pan_song1[0] + audio2[fade_len:, 0] * 0.7 * pan_song2[0]
         result[fade_len:, 1] = audio1[fade_len:, 1] * 0.3 * pan_song1[1] + audio2[fade_len:, 1] * 0.7 * pan_song2[1]
         
-        # === OUTPUT NORMALIZATION + SOFT CLIPPING + LUFS ===
-        # Research: LUFS -14 for Spotify, soft clip, headroom
+        # === OUTPUT NORMALIZATION + SOFT CLIPPING + LUFS + REVERB ===
+        # Research: LUFS -14 for Spotify, soft clip, headroom, subtle reverb
         max_val = np.max(np.abs(result))
         if max_val > 0.9:
-            # Soft clip using tanh (research: warm sound, not harsh)
             result = np.tanh(result * 1.2) / np.tanh(1.2) * 0.85
         elif max_val < 0.1:
             result = result / max(max_val, 0.01) * 0.3
         
-        # Leave headroom (-6dB per track rule from research)
-        result = result * 0.5  # Professional headroom
+        result = result * 0.5  # Headroom
         
-        # Apply LUFS normalization approximation (target -14 LUFS)
-        # Calculate RMS and normalize
+        # Apply subtle reverb tail (research: adds space and cohesion)
+        # Simple reverb: add delayed copy with decay
+        reverb_decay = 0.3
+        reverb_delay = int(sr1 * 0.05)  # 50ms
+        if len(result) > reverb_delay:
+            result[reverb_delay:] += result[:-reverb_delay] * reverb_decay
+            result = result / (1 + reverb_decay)  # Normalize
+        
+        # LUFS normalization
         rms = np.sqrt(np.mean(result**2))
-        target_rms = 0.15  # Approximate -14 LUFS
+        target_rms = 0.15
         if rms > 0:
             result = result * (target_rms / rms)
         
