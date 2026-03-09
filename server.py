@@ -41,11 +41,27 @@ def serve_music(filename):
 
 # Helper functions
 def load_songs():
+    """Load songs from music directory."""
     songs_file = os.path.join(DATA_DIR, 'songs.json')
     if os.path.exists(songs_file):
         with open(songs_file, 'r') as f:
             return json.load(f)
-    return []
+    
+    # Scan music folder for actual files
+    songs = []
+    for root, dirs, files in os.walk(MUSIC_DIR):
+        for f in files:
+            if f.endswith(('.mp3', '.wav')):
+                rel_path = os.path.relpath(os.path.join(root, f), MUSIC_DIR)
+                # Use filename without extension as ID
+                song_id = f.replace('.mp3', '').replace('.wav', '').replace(' ', '_')
+                songs.append({
+                    'id': song_id,
+                    'title': f.replace('.mp3', '').replace('.wav', ''),
+                    'artist': os.path.basename(os.path.dirname(rel_path)),
+                    'file': rel_path
+                })
+    return songs
 
 def load_fusions():
     index_file = os.path.join(FUSIONS_DIR, 'index.json')
