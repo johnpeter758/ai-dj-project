@@ -16,7 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 FUSIONS_DIR = os.path.join(BASE_DIR, 'fusions')
-MUSIC_DIR = os.path.expanduser("~")  # Scan entire home for music
+MUSIC_DIR = os.path.join(BASE_DIR, 'music')
 
 
 @app.route('/')
