@@ -160,6 +160,33 @@ def generate():
         audio1 = normalize_for_layering(audio1, 0.25)
         audio2 = normalize_for_layering(audio2, 0.25)
         
+        # === SIDECHAIN DUCKING (Research: classic EDM pumping) ===
+        # When song1's kick hits, temporarily reduce song2's volume
+        def apply_sidechain(trigger_audio, duck_audio, sr, threshold=0.3, ratio=2, attack=0.005, release=0.1):
+            """Sidechain - duck_audio gets quieter when trigger_audio is loud"""
+            envelope = np.abs(trigger_audio[:, 0]) if trigger_audio.ndim > 1 else np.abs(trigger_audio)
+            
+            # Smooth envelope
+            attack_coef = np.exp(-1 / (sr * attack))
+            release_coef = np.exp(-1 / (sr * release))
+            
+            gain = np.ones(len(duck_audio))
+            for i in range(1, len(envelope)):
+                target = envelope[i]
+                if target > gain[i-1]:
+                    gain[i] = attack_coef * gain[i-1] + (1 - attack_coef) * target
+                else:
+                    gain[i] = release_coef * gain[i-1] + (1 - release_coef) * target
+            
+            # Gain reduction
+            gain_reduction = np.where(gain > threshold, 1.0 / ratio, 1.0)
+            
+            # Apply
+            return duck_audio * gain_reduction[:, None]
+        
+        # Apply subtle sidechain (song2 ducks when song1 is loud)
+        audio2 = apply_sidechain(audio1, audio2, sr1, threshold=0.25, ratio=2, attack=0.005, release=0.1)
+        
         # Match lengths
         min_len = min(len(audio1), len(audio2))
         audio1 = audio1[:min_len]
@@ -232,10 +259,10 @@ def generate():
         
         techniques = [
             'parallel_layering',  # Both songs play together
-            'stereo_panning',  # Song A left, Song B right - distinct identity
-            'eq_carving',  # Cut 200-400Hz to prevent mud
-            'bass_mono_below_150hz',  # Keep bass mono
-            'soft_clipping_tanh',  # Warm sound, not harsh
+            'stereo_panning',  # Song A left, Song B right
+            'sidechain_ducking',  # Pump effect when kick hits
+            'eq_carving',  # Cut 200-400Hz
+            'soft_clipping_tanh',  # Warm sound
             'headroom_minus_6db',  # Professional levels
             'bpm_detection',
             'key_detection', 
