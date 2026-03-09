@@ -73,7 +73,7 @@ def load_fusions():
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    """Generate a professional fusion of two songs."""
+    """Generate a professional fusion - PARALLEL LAYERING of two songs."""
     data = request.get_json() or {}
     song1_id = data.get('song1_id', '')
     song2_id = data.get('song2_id', '')
@@ -89,10 +89,9 @@ def generate():
     for root, dirs, files in os.walk(MUSIC_DIR):
         for f in files:
             if f.endswith(('.mp3', '.wav')):
-                search_term = f.lower()
-                if song1_id.lower() in search_term or song1_id.replace('_', ' ').lower() in search_term:
+                if song1_id.lower() in f.lower() or song1_id.replace('_', ' ').lower() in f.lower():
                     song1_file = os.path.join(root, f)
-                if song2_id.lower() in search_term or song2_id.replace('_', ' ').lower() in search_term:
+                if song2_id.lower() in f.lower() or song2_id.replace('_', ' ').lower() in f.lower():
                     song2_file = os.path.join(root, f)
     
     fusion_id = f"fusion_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -114,180 +113,116 @@ def generate():
         a1_mono = audio1[:,0] if audio1.ndim > 1 else audio1
         a2_mono = audio2[:,0] if audio2.ndim > 1 else audio2
         
-        # === IMPROVED BPM DETECTION ===
+        # === BPM & Key Detection ===
         try:
             import librosa
-            
-            # Use onset detection for more accurate BPM
-            onset_env1 = librosa.onset.onset_strength(y=a1_mono, sr=sr1)
-            onset_env2 = librosa.onset.onset_strength(y=a2_mono, sr=sr2)
-            
-            # Beat tracking with onset information
-            bpm1, beats1 = librosa.beat.beat_track(onset_envelope=onset_env1, sr=sr1)
-            bpm2, beats2 = librosa.beat.beat_track(onset_envelope=onset_env2, sr=sr2)
-            
+            bpm1, _ = librosa.beat.beat_track(y=a1_mono, sr=sr1)
+            bpm2, _ = librosa.beat.beat_track(y=a2_mono, sr=sr2)
             bpm1, bpm2 = float(bpm1), float(bpm2)
-            
-            # Key detection
             key1 = librosa.key.keyestimate(y=a1_mono, sr=sr1)
             key2 = librosa.key.keyestimate(y=a2_mono, sr=sr2)
-            
-            # Energy analysis for smooth transition
-            rms1 = librosa.feature.rms(y=a1_mono)[0]
-            rms2 = librosa.feature.rms(y=a2_mono)[0]
-            energy1 = float(np.mean(rms1))
-            energy2 = float(np.mean(rms2))
-            
-            # Get tempo in beats per bar (for 4/4 time)
-            tempo1 = bpm1
-            tempo2 = bpm2
-            
-        except Exception as e:
+        except:
             bpm1, bpm2 = 120, 120
             key1, key2 = "C major", "C major"
-            energy1, energy2 = 0.5, 0.5
-            tempo1, tempo2 = 120, 120
         
-        # === RESAMPLE TO MATCH SAMPLE RATES ===
-        if sr1 != sr2:
-            from scipy import signal
-            num_samples = int(len(audio2) * sr1 / sr2)
-            audio2 = signal.resample(audio2, num_samples)
-        
-        # === STRETCH TO MATCH BPM (using phase vocoder for quality) ===
-        if bpm1 > 0 and bpm2 > 0 and abs(bpm1 - bpm2) > 2:
-            try:
-                import librosa
-                # High-quality time stretching using librosa
-                tempo_ratio = bpm1 / bpm2
-                
-                # Stretch audio2 to match audio1's tempo
-                a2_stretched = librosa.effects.time_stretch(a2_mono, rate=tempo_ratio)
-                
-                # Reconstruct stereo
-                if audio2.ndim > 1:
-                    # Stretch each channel
-                    audio2_ch0 = librosa.effects.time_stretch(audio2[:,0], rate=tempo_ratio)
-                    if len(audio2_ch0) < len(a2_stretched):
-                        a2_stretched = a2_stretched[:len(audio2_ch0)]
-                    audio2 = np.column_stack([audio2_ch0, a2_stretched])
-                else:
-                    audio2 = np.column_stack([a2_stretched, a2_stretched])
-            except:
-                # Fallback to simple resampling
-                from scipy import signal
-                ratio = bpm1 / bpm2
-                audio2 = signal.resample(audio2, int(len(audio2) * ratio))
-        
-        # === NORMALIZE AND MATCH ENERGY ===
-        # Normalize both tracks to similar loudness
-        rms1_current = np.sqrt(np.mean(audio1**2))
-        rms2_current = np.sqrt(np.mean(audio2**2))
-        
-        if rms1_current > 0:
-            audio1 = audio1 / rms1_current * 0.7
-        if rms2_current > 0:
-            audio2 = audio2 / rms2_current * 0.7
-        
-        # Match energy levels
-        target_energy = 0.7
-        energy_ratio = target_energy / (rms1_current + 1e-8)
-        audio1 = audio1 * energy_ratio * 0.5 + audio1 * 0.5
-        
-        energy_ratio2 = target_energy / (rms2_current + 1e-8)
-        audio2 = audio2 * energy_ratio2 * 0.5 + audio2 * 0.5
-        
-        # Ensure stereo
+        # === Ensure stereo ===
         if audio1.ndim == 1:
             audio1 = np.column_stack([audio1, audio1])
         if audio2.ndim == 1:
             audio2 = np.column_stack([audio2, audio2])
         
-        # === FIND BEST TRANSITION POINT ===
-        # Use energy envelope to find a drop/transition point
-        try:
-            import librosa
-            # Get onset strength for finding beats
-            onset1 = librosa.onset.onset_strength(y=a1_mono, sr=sr1)
-            onset2 = librosa.onset.onset_strength(y=a2_mono, sr=sr2)
-            
-            # Find high-energy sections (drops, buildups)
-            # Look for transition points in second half of song1
-            transition_search_start = len(audio1) // 2
-            
-            # Find peaks in onset strength
-            onset_peaks = np.where(onset1 > np.percentile(onset1, 70))[0]
-            if len(onset_peaks) > 0:
-                # Use the last major onset before the end
-                transition_point = onset_peaks[-1] * 512  # Convert to samples
-                transition_point = min(transition_point, len(audio1) - sr1 * 8)  # At least 8 sec from end
-            else:
-                transition_point = len(audio1) - sr1 * 16  # Default: 16 sec before end
-        except:
-            # Default: transition at 3/4 through the track
-            transition_point = int(len(audio1) * 0.75)
+        # === TIME STRETCH to match BPM ===
+        if bpm1 > 0 and bpm2 > 0 and abs(bpm1 - bpm2) > 2:
+            try:
+                import librosa
+                tempo_ratio = bpm1 / bpm2
+                a2_stretched = librosa.effects.time_stretch(a2_mono, rate=tempo_ratio)
+                if audio2.ndim > 1:
+                    audio2_ch0 = librosa.effects.time_stretch(audio2[:,0], rate=tempo_ratio)
+                    audio2 = np.column_stack([audio2_ch0, a2_stretched[:len(audio2_ch0)]])
+                else:
+                    audio2 = np.column_stack([a2_stretched, a2_stretched])
+            except:
+                from scipy import signal
+                ratio = bpm1 / bpm2
+                audio2 = signal.resample(audio2, int(len(audio2) * ratio))
         
-        # === CROSSFADE WITH REVERB TAIL ===
-        fade_duration = 8 * sr1  # 8 second crossfade
-        fade_start = max(0, transition_point - fade_duration // 2)
-        fade_len = min(fade_duration, len(audio1) - fade_start, len(audio2))
+        # === PARALLEL LAYERING (not crossfade!) ===
+        # This is the key difference - both songs play TOGETHER
         
-        # Equal-power crossfade with smooth curves
-        fade_out = np.sin(np.linspace(0, np.pi/2, fade_len))**2
-        fade_in = np.cos(np.linspace(0, np.pi/2, fade_len))**2
+        def normalize_for_layering(audio, target_rms=0.25):
+            """Lower volume for layering to prevent clipping"""
+            rms = np.sqrt(np.mean(audio**2))
+            if rms > 0:
+                return audio / rms * target_rms
+            return audio
         
-        # Create result
-        result = np.zeros((max(len(audio1), len(audio2)), 2))
+        audio1 = normalize_for_layering(audio1, 0.25)
+        audio2 = normalize_for_layering(audio2, 0.25)
         
-        # Copy song1 up to fade
-        result[:fade_start] = audio1[:fade_start]
+        # Match lengths
+        min_len = min(len(audio1), len(audio2))
+        audio1 = audio1[:min_len]
+        audio2 = audio2[:min_len]
         
-        # Crossfade region with reverb
-        if fade_len > 0:
-            # Add reverb tail to song1 during fade
-            reverb_decay = np.exp(np.linspace(0, -3, fade_len))
-            
-            result[fade_start:fade_start+fade_len] = (
-                audio1[fade_start:fade_start+fade_len] * fade_out[:, None] * reverb_decay[:, None] +
-                audio2[:fade_len] * fade_in[:, None]
-            )
+        # === EQ CARVING - prevent frequency clash ===
+        from scipy.signal import butter, lfilter
         
-        # Add song2 after crossfade
-        if fade_start + fade_len < len(result):
-            remaining_start = fade_start + fade_len
-            remaining_len = min(len(audio2) - fade_len, len(result) - remaining_start)
-            result[remaining_start:remaining_start+remaining_len] = audio2[fade_len:fade_len+remaining_len]
+        def apply_eq_carve(audio, sr):
+            """Gentle bass reduction to prevent mud when layering"""
+            b, a = butter(2, 200 / (sr/2), btype='lowpass')
+            bass_reduced = lfilter(b, a, audio, axis=0)
+            # Mix: 70% original + 30% bass-reduced
+            return audio * 0.7 + bass_reduced * 0.3
         
-        # === LIGHT COMPRESSION FOR CONSISTENCY ===
-        # Soft knee compression
-        threshold = 0.8
-        ratio = 4.0
+        audio1 = apply_eq_carve(audio1, sr1)
+        audio2 = apply_eq_carve(audio2, sr2)
         
-        peak = np.max(np.abs(result))
-        if peak > threshold:
-            # Soft clip
-            excess = (peak - threshold) / peak
-            result = result * threshold + (result - result * threshold) * 1/(1 + excess * ratio)
+        # === CREATE PARALLEL MIX ===
+        fade_len = min(min_len // 4, sr1 * 8)
+        fade_len = max(fade_len, sr1 * 4)
         
-        # === FINAL OUTPUT NORMALIZATION ===
-        peak = np.max(np.abs(result))
-        if peak > 0.9:
-            result = result / peak * 0.9
-        elif peak < 0.1:
-            result = result / max(peak, 0.01) * 0.3
+        result = np.zeros((min_len, 2))
+        
+        # Equal-power crossfade curves
+        fade_out = np.sin(np.linspace(0, np.pi/2, fade_len))
+        fade_in = np.cos(np.linspace(0, np.pi/2, fade_len))
+        
+        # First half: song1 dominates, song2 builds
+        result[:fade_len] = (
+            audio1[:fade_len] * fade_out[:, None] * 0.7 + 
+            audio2[:fade_len] * fade_in[:, None] * 0.3
+        )
+        
+        # Middle: both playing equally
+        mid_start = fade_len
+        mid_len = min_len // 2 - mid_start
+        if mid_len > 0:
+            result[mid_start:mid_start+mid_len] = audio1[mid_start:mid_start+mid_len] * 0.5 + audio2[mid_start:mid_start+mid_len] * 0.5
+        
+        # Second half: song2 dominates, song1 fades
+        result[fade_len:] = (
+            audio1[fade_len:] * 0.3 + 
+            audio2[fade_len:] * 0.7
+        )
+        
+        # === OUTPUT NORMALIZATION ===
+        max_val = np.max(np.abs(result))
+        if max_val > 0.9:
+            result = result / max_val * 0.9
+        elif max_val < 0.1:
+            result = result / max(max_val, 0.01) * 0.3
         
         # Save
         output_full = os.path.join(FUSIONS_DIR, output_path)
         sf.write(output_full, result, sr1)
         
         techniques = [
-            'improved_bpm_detection',
-            'onset_analysis',
-            'energy_matching',
-            'phase_vocoder_stretching',
-            'beat_aligned_transition',
-            'reverb_tail_crossfade',
-            'soft_knee_compression',
+            'parallel_layering',  # Key difference!
+            'eq_carving',  # Prevents frequency clash
+            'bpm_detection',
+            'key_detection', 
+            'time_stretching',
             'output_normalization'
         ]
         
@@ -300,7 +235,6 @@ def generate():
             'status': 'generated',
             'bpm': {'song1': round(bpm1, 1), 'song2': round(bpm2, 1)},
             'key': {'song1': key1, 'song2': key2},
-            'energy': {'song1': round(energy1, 3), 'song2': round(energy2, 3)},
             'techniques_used': techniques
         }})
         
