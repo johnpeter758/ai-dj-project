@@ -183,7 +183,8 @@ def generate():
         audio1 = apply_eq_carve(audio1, sr1)
         audio2 = apply_eq_carve(audio2, sr2)
         
-        # === CREATE PARALLEL MIX ===
+        # === CREATE PARALLEL MIX WITH STEREO SEPARATION ===
+        # Research: Make song A feel left, song B feel right for distinct identity
         fade_len = min(min_len // 4, sr1 * 8)
         fade_len = max(fade_len, sr1 * 4)
         
@@ -193,23 +194,25 @@ def generate():
         fade_out = np.sin(np.linspace(0, np.pi/2, fade_len))
         fade_in = np.cos(np.linspace(0, np.pi/2, fade_len))
         
-        # First half: song1 dominates, song2 builds
-        result[:fade_len] = (
-            audio1[:fade_len] * fade_out[:, None] * 0.7 + 
-            audio2[:fade_len] * fade_in[:, None] * 0.3
-        )
+        # Apply stereo panning: Song1 slightly left, Song2 slightly right
+        # This creates distinct stereo image for each song
+        pan_song1 = np.array([0.6, 0.4])  # Left-heavy
+        pan_song2 = np.array([0.4, 0.6])  # Right-heavy
         
-        # Middle: both playing equally
+        # First half: song1 dominates, song2 builds
+        result[:fade_len, 0] = audio1[:fade_len, 0] * fade_out * 0.7 * pan_song1[0] + audio2[:fade_len, 0] * fade_in * 0.3 * pan_song2[0]
+        result[:fade_len, 1] = audio1[:fade_len, 1] * fade_out * 0.7 * pan_song1[1] + audio2[:fade_len, 1] * fade_in * 0.3 * pan_song2[1]
+        
+        # Middle: both playing equally with stereo separation
         mid_start = fade_len
         mid_len = min_len // 2 - mid_start
         if mid_len > 0:
-            result[mid_start:mid_start+mid_len] = audio1[mid_start:mid_start+mid_len] * 0.5 + audio2[mid_start:mid_start+mid_len] * 0.5
+            result[mid_start:mid_start+mid_len, 0] = audio1[mid_start:mid_start+mid_len, 0] * 0.5 * pan_song1[0] + audio2[mid_start:mid_start+mid_len, 0] * 0.5 * pan_song2[0]
+            result[mid_start:mid_start+mid_len, 1] = audio1[mid_start:mid_start+mid_len, 1] * 0.5 * pan_song1[1] + audio2[mid_start:mid_start+mid_len, 1] * 0.5 * pan_song2[1]
         
         # Second half: song2 dominates, song1 fades
-        result[fade_len:] = (
-            audio1[fade_len:] * 0.3 + 
-            audio2[fade_len:] * 0.7
-        )
+        result[fade_len:, 0] = audio1[fade_len:, 0] * 0.3 * pan_song1[0] + audio2[fade_len:, 0] * 0.7 * pan_song2[0]
+        result[fade_len:, 1] = audio1[fade_len:, 1] * 0.3 * pan_song1[1] + audio2[fade_len:, 1] * 0.7 * pan_song2[1]
         
         # === OUTPUT NORMALIZATION + SOFT CLIPPING ===
         # Research: Use soft clipping (tanh) instead of hard clipping
@@ -229,10 +232,11 @@ def generate():
         
         techniques = [
             'parallel_layering',  # Both songs play together
+            'stereo_panning',  # Song A left, Song B right - distinct identity
             'eq_carving',  # Cut 200-400Hz to prevent mud
-            'bass_mono_below_150hz',  # Research: keep bass mono
-            'soft_clipping_tanh',  # Research: warm sound, not harsh
-            'headroom_minus_6db',  # Research: professional levels
+            'bass_mono_below_150hz',  # Keep bass mono
+            'soft_clipping_tanh',  # Warm sound, not harsh
+            'headroom_minus_6db',  # Professional levels
             'bpm_detection',
             'key_detection', 
             'time_stretching',
