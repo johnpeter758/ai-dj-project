@@ -241,11 +241,11 @@ def generate():
         result[fade_len:, 0] = audio1[fade_len:, 0] * 0.3 * pan_song1[0] + audio2[fade_len:, 0] * 0.7 * pan_song2[0]
         result[fade_len:, 1] = audio1[fade_len:, 1] * 0.3 * pan_song1[1] + audio2[fade_len:, 1] * 0.7 * pan_song2[1]
         
-        # === OUTPUT NORMALIZATION + SOFT CLIPPING ===
-        # Research: Use soft clipping (tanh) instead of hard clipping
+        # === OUTPUT NORMALIZATION + SOFT CLIPPING + LUFS ===
+        # Research: LUFS -14 for Spotify, soft clip, headroom
         max_val = np.max(np.abs(result))
         if max_val > 0.9:
-            # Soft clip using tanh (from research: soft clipping sounds warm, not harsh)
+            # Soft clip using tanh (research: warm sound, not harsh)
             result = np.tanh(result * 1.2) / np.tanh(1.2) * 0.85
         elif max_val < 0.1:
             result = result / max(max_val, 0.01) * 0.3
@@ -253,17 +253,25 @@ def generate():
         # Leave headroom (-6dB per track rule from research)
         result = result * 0.5  # Professional headroom
         
+        # Apply LUFS normalization approximation (target -14 LUFS)
+        # Calculate RMS and normalize
+        rms = np.sqrt(np.mean(result**2))
+        target_rms = 0.15  # Approximate -14 LUFS
+        if rms > 0:
+            result = result * (target_rms / rms)
+        
         # Save
         output_full = os.path.join(FUSIONS_DIR, output_path)
         sf.write(output_full, result, sr1)
         
         techniques = [
-            'parallel_layering',  # Both songs play together
-            'stereo_panning',  # Song A left, Song B right
-            'sidechain_ducking',  # Pump effect when kick hits
-            'eq_carving',  # Cut 200-400Hz
-            'soft_clipping_tanh',  # Warm sound
-            'headroom_minus_6db',  # Professional levels
+            'parallel_layering',
+            'stereo_panning',
+            'sidechain_ducking',
+            'eq_carving',
+            'soft_clipping_tanh',
+            'headroom_minus_6db',
+            'lufs_normalization',  # -14 LUFS for Spotify
             'bpm_detection',
             'key_detection', 
             'time_stretching',
