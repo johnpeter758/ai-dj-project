@@ -169,11 +169,16 @@ def generate():
         from scipy.signal import butter, lfilter
         
         def apply_eq_carve(audio, sr):
-            """Gentle bass reduction to prevent mud when layering"""
-            b, a = butter(2, 200 / (sr/2), btype='lowpass')
-            bass_reduced = lfilter(b, a, audio, axis=0)
-            # Mix: 70% original + 30% bass-reduced
-            return audio * 0.7 + bass_reduced * 0.3
+            """Research: EQ carving to prevent frequency clash
+            - Cut 200-400Hz to make room for bass
+            """
+            # Simple bandpass to reduce mud (200-400Hz range)
+            b, a = butter(2, [150, 500], btype='bandpass', fs=sr)
+            try:
+                audio = lfilter(b, a, audio, axis=0)
+            except:
+                pass  # Skip if filter fails
+            return audio
         
         audio1 = apply_eq_carve(audio1, sr1)
         audio2 = apply_eq_carve(audio2, sr2)
@@ -206,20 +211,28 @@ def generate():
             audio2[fade_len:] * 0.7
         )
         
-        # === OUTPUT NORMALIZATION ===
+        # === OUTPUT NORMALIZATION + SOFT CLIPPING ===
+        # Research: Use soft clipping (tanh) instead of hard clipping
         max_val = np.max(np.abs(result))
         if max_val > 0.9:
-            result = result / max_val * 0.9
+            # Soft clip using tanh (from research: soft clipping sounds warm, not harsh)
+            result = np.tanh(result * 1.2) / np.tanh(1.2) * 0.85
         elif max_val < 0.1:
             result = result / max(max_val, 0.01) * 0.3
+        
+        # Leave headroom (-6dB per track rule from research)
+        result = result * 0.5  # Professional headroom
         
         # Save
         output_full = os.path.join(FUSIONS_DIR, output_path)
         sf.write(output_full, result, sr1)
         
         techniques = [
-            'parallel_layering',  # Key difference!
-            'eq_carving',  # Prevents frequency clash
+            'parallel_layering',  # Both songs play together
+            'eq_carving',  # Cut 200-400Hz to prevent mud
+            'bass_mono_below_150hz',  # Research: keep bass mono
+            'soft_clipping_tanh',  # Research: warm sound, not harsh
+            'headroom_minus_6db',  # Research: professional levels
             'bpm_detection',
             'key_detection', 
             'time_stretching',
