@@ -878,6 +878,9 @@
           showToast(`Playing: ${song.title}`, 'success');
         };
 
+        // Audio element for playback
+        let audioElement = null;
+
         const togglePlay = () => {
           if (!currentTrack.value) {
             if (songs.value.length > 0) {
@@ -886,11 +889,30 @@
             return;
           }
           
+          // Initialize audio element if needed
+          if (currentTrack.value.src && !audioElement) {
+            audioElement = new Audio(currentTrack.value.src);
+            audioElement.volume = volume.value / 100;
+            audioElement.onended = () => {
+              isPlaying.value = false;
+              skipNext();
+            };
+          }
+          
           isPlaying.value = !isPlaying.value;
           initAudioContext();
           
-          if (isPlaying.value && audioContext.state === 'suspended') {
-            audioContext.resume();
+          if (isPlaying.value) {
+            if (audioElement) {
+              audioElement.play().catch(e => console.log('Play error:', e));
+            }
+            if (audioContext && audioContext.state === 'suspended') {
+              audioContext.resume();
+            }
+          } else {
+            if (audioElement) {
+              audioElement.pause();
+            }
           }
         };
 
@@ -914,7 +936,9 @@
         };
 
         const updateVolume = () => {
-          // Volume control implementation
+          if (audioElement) {
+            audioElement.volume = volume.value / 100;
+          }
         };
 
         const toggleEffect = (effectId) => {
@@ -943,7 +967,23 @@
             
             if (response.ok) {
               const result = await response.json();
-              showToast('Fusion created successfully! 🎵', 'success');
+              if (result.fusion && result.fusion.output_path) {
+                // Set up the fusion as current track
+                const fusionPath = result.fusion.output_path;
+                currentTrack.value = {
+                  id: result.fusion.id,
+                  title: `${fusion.value.track1} × ${fusion.value.track2}`,
+                  artist: 'AI DJ Fusion',
+                  src: fusionPath,
+                  duration: 236
+                };
+                // Auto-play the fusion
+                isPlaying.value = true;
+                initAudioContext();
+                showToast('Fusion created & playing! 🎵', 'success');
+              } else {
+                showToast('Fusion created successfully! 🎵', 'success');
+              }
             } else {
               showToast('Fusion created (demo mode)', 'success');
             }
