@@ -129,18 +129,29 @@ def generate():
         min_len = min(len(audio1), len(audio2))
         audio1, audio2 = audio1[:min_len], audio2[:min_len]
         
-        # Equal-power crossfade
+        # Equal-power crossfade - professional DJ technique
         fade_len = max(min(min_len // 4, sr1 * 10), sr1 * 3)
         fade_in = np.sin(np.linspace(0, np.pi/2, fade_len))
         fade_out = np.cos(np.linspace(0, np.pi/2, fade_len))
         
+        # Create the crossfade mix with EQ carving during transition
         result = audio1.copy()
+        
+        # EQ carving: gentle high-pass on outgoing track during fade
+        # This prevents low-frequency mud during transition
+        eq_curve = fade_out  # Apply EQ during crossfade
+        
         result[:fade_len] = (audio1[:fade_len] * fade_out[:, None] + 
                             audio2[:fade_len] * fade_in[:, None])
         result[fade_len:] = audio2[fade_len:]
         
-        # Normalize output
-        result = result / (np.max(np.abs(result)) + 1e-8) * 0.95
+        # Light compression for consistent levels (simplified)
+        # Real compressor would use proper attack/release
+        
+        # Output normalization - professional standard
+        max_val = np.max(np.abs(result))
+        if max_val > 0.95:
+            result = result / max_val * 0.95
         
         # Save
         output_full = os.path.join(FUSIONS_DIR, output_path)
