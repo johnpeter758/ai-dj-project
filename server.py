@@ -24,7 +24,7 @@ MUSIC_DIR = os.path.join(BASE_DIR, 'music')
 # Routes
 @app.route('/')
 def index():
-    return send_from_directory(TEMPLATES_DIR, 'dashboard.html')
+    return send_from_directory(TEMPLATES_DIR, 'index.html')
 
 @app.route('/<path:filename>')
 def serve_static(filename):
