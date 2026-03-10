@@ -29,3 +29,10 @@ Map the active `src/` modules into keep / archive / replace buckets and begin co
 - Added a core layout proposal.
 - Created a canonical `src/core/` scaffold with analysis/planner/render/evaluation subpackages.
 - Created `src/legacy/` as the destination for future controlled demotions.
+- Implemented the first active core code under `src/core/analysis/`:
+  - loader
+  - tempo detection
+  - key detection
+  - SongDNA model
+  - canonical analyzer entrypoint
+- Added the first focused test for the new analysis core.
