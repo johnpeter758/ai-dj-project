@@ -33,6 +33,9 @@ Map the active `src/` modules into keep / archive / replace buckets and begin co
   - loader
   - tempo detection
   - key detection
+  - structure estimation
+  - energy profiling
+  - optional Demucs stems wrapper
   - SongDNA model
   - canonical analyzer entrypoint
-- Added the first focused test for the new analysis core.
+- Added and updated focused tests for the new analysis core.

@@ -11,6 +11,9 @@ class SongDNA:
     duration_seconds: float
     tempo_bpm: float
     key: dict[str, Any]
+    structure: dict[str, Any] = field(default_factory=dict)
+    energy: dict[str, Any] = field(default_factory=dict)
+    stems: dict[str, Any] = field(default_factory=lambda: {"enabled": False, "files": {}})
     analysis_version: str = "0.1.0"
     metadata: dict[str, Any] = field(default_factory=lambda: {"schema_version": "0.1.0"})
 
