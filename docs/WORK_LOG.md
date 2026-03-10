@@ -12,7 +12,7 @@
 - Created initial repo-level triage, status, and target architecture notes.
 
 ## Next step
-Map the active `src/` modules into keep / archive / replace buckets and begin controlled cleanup.
+Build the planner foundation around factorized compatibility and planner artifacts, then enrich analysis outputs with better bar/downbeat-aware structure.
 
 ## Candidate core modules inspected
 - `src/beat_detector.py` — usable seed for tempo/beat extraction
@@ -39,3 +39,9 @@ Map the active `src/` modules into keep / archive / replace buckets and begin co
   - SongDNA model
   - canonical analyzer entrypoint
 - Added and updated focused tests for the new analysis core.
+- Added planner foundation code under `src/core/planner/`:
+  - typed planner models
+  - factorized compatibility scoring
+  - compatibility report artifact
+  - stub arrangement-plan artifact
+- Added focused planner tests.
