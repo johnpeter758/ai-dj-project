@@ -13,3 +13,9 @@
 
 ## Next step
 Map the active `src/` modules into keep / archive / replace buckets and begin controlled cleanup.
+
+## Candidate core modules inspected
+- `src/beat_detector.py` — usable seed for tempo/beat extraction
+- `src/key_detector.py` — stronger-than-average seed for key/camelot analysis
+- `src/stem_splitter.py` — usable Demucs wrapper seed
+- `src/audio_utils.py` — broad utility bulk; probably needs trimming or stricter ownership
