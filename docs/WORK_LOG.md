@@ -19,3 +19,13 @@ Map the active `src/` modules into keep / archive / replace buckets and begin co
 - `src/key_detector.py` — stronger-than-average seed for key/camelot analysis
 - `src/stem_splitter.py` — usable Demucs wrapper seed
 - `src/audio_utils.py` — broad utility bulk; probably needs trimming or stricter ownership
+- `src/auto_dj.py` — not part of the real professional core
+- `src/genre_classifier.py` — possible secondary analysis helper
+- `src/stem_mixer.py` — historical layering experiment, not a final architecture
+- `src/system_cleanup.py` — should be demoted out of the product core
+
+## Structural progress
+- Added module classification and legacy demotion docs.
+- Added a core layout proposal.
+- Created a canonical `src/core/` scaffold with analysis/planner/render/evaluation subpackages.
+- Created `src/legacy/` as the destination for future controlled demotions.
