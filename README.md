@@ -18,15 +18,18 @@ ai-dj-project/
 ## Quick Start
 
 ```bash
-# Start API server
-python3 server.py
+# Analyze one song to JSON
+python3 ai_dj.py analyze path/to/song.wav --output out/song_dna.json
 
-# Generate music
-python3 ai_dj.py generate --genre house
-
-# Run cleanup
-python3 src/system_cleanup.py
+# Run the first end-to-end two-song prototype
+python3 ai_dj.py prototype path/to/song_a.wav path/to/song_b.wav --output-dir runs/prototype-001
 ```
+
+Prototype outputs:
+- `song_a_dna.json`
+- `song_b_dna.json`
+- `compatibility_report.json`
+- `arrangement_plan.json`
 
 ## Modules
 

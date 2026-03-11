@@ -17,8 +17,10 @@ def detect_tempo(audio: np.ndarray, sample_rate: int, hop_length: int = 512) -> 
             cv = float(np.std(valid) / (np.mean(valid) + 1e-8))
             confidence = max(0.0, min(1.0, 1.0 - cv))
 
+    bpm = float(np.asarray(tempo).reshape(-1)[0])
+
     return {
-        "bpm": float(tempo),
+        "bpm": bpm,
         "confidence": float(confidence),
         "beat_times": beat_times.tolist(),
         "method": "librosa",

@@ -12,7 +12,7 @@ This repo has useful ideas but is currently too broad and too flat to function l
 The project will be narrowed around a professional core instead of trying to do every possible AI music feature at once.
 
 ## Active priorities
-1. repo triage
+1. first end-to-end testable prototype workflow
 2. canonical architecture
 3. analysis pipeline
 4. planner design

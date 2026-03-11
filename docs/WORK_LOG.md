@@ -12,7 +12,7 @@
 - Created initial repo-level triage, status, and target architecture notes.
 
 ## Next step
-Build the planner foundation around factorized compatibility and planner artifacts, then enrich analysis outputs with better bar/downbeat-aware structure.
+Finish the first end-to-end testable prototype workflow that takes two songs and emits SongDNA A, SongDNA B, a compatibility report, and an arrangement plan. After that, enrich analysis outputs with better bar/downbeat-aware structure.
 
 ## Candidate core modules inspected
 - `src/beat_detector.py` — usable seed for tempo/beat extraction
