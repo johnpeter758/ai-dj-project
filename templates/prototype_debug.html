@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VocalFusion Prototype Debug UI</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background:#0f1115; color:#e8ecf1; margin:0; padding:24px; }
+    h1,h2,h3 { margin:0 0 12px; }
+    .wrap { max-width: 1200px; margin:0 auto; }
+    .card { background:#171a21; border:1px solid #2a3140; border-radius:12px; padding:20px; margin-bottom:20px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:20px; }
+    label { display:block; margin-bottom:8px; color:#a9b4c7; }
+    select, button { width:100%; padding:12px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#e8ecf1; }
+    button { background:#7c3aed; border:none; font-weight:700; cursor:pointer; }
+    button:hover { background:#6d28d9; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .stage { border-left:4px solid #3b82f6; padding:12px 14px; margin:12px 0; background:#111827; border-radius:8px; }
+    .stage.failed { border-left-color:#ef4444; }
+    .stage.completed { border-left-color:#10b981; }
+    .muted { color:#94a3b8; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+    details { margin:12px 0; background:#111827; border-radius:8px; padding:10px 12px; }
+    summary { cursor:pointer; font-weight:600; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#1f2937; color:#cbd5e1; font-size:12px; margin-right:8px; }
+    .success { color:#10b981; }
+    .error { color:#ef4444; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>VocalFusion Prototype Debug UI</h1>
+      <p class="muted">Run the current two-song prototype and inspect every stage, artifact, and JSON payload.</p>
+    </div>
+
+    <div class="card">
+      <h2>Run Prototype</h2>
+      <div class="grid">
+        <div>
+          <label for="songA">Song A</label>
+          <select id="songA"></select>
+        </div>
+        <div>
+          <label for="songB">Song B</label>
+          <select id="songB"></select>
+        </div>
+      </div>
+      <div style="margin-top:16px;">
+        <button id="runBtn">Run Prototype</button>
+      </div>
+      <p id="status" class="muted" style="margin-top:12px;">Loading songs…</p>
+    </div>
+
+    <div id="results"></div>
+  </div>
+
+  <script>
+    const songA = document.getElementById('songA');
+    const songB = document.getElementById('songB');
+    const runBtn = document.getElementById('runBtn');
+    const statusEl = document.getElementById('status');
+    const results = document.getElementById('results');
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+    }
+
+    function songOption(song) {
+      return `<option value="${escapeHtml(song.id)}">${escapeHtml(song.artist)} — ${escapeHtml(song.title)}</option>`;
+    }
+
+    async function loadSongs() {
+      const res = await fetch('/api/songs');
+      const data = await res.json();
+      const songs = data.songs || [];
+      const options = songs.map(songOption).join('');
+      songA.innerHTML = options;
+      songB.innerHTML = options;
+      if (songs.length > 1) songB.selectedIndex = 1;
+      statusEl.textContent = songs.length ? `Loaded ${songs.length} songs.` : 'No songs found in the repo music folder.';
+      runBtn.disabled = songs.length < 2;
+    }
+
+    function renderStage(stage) {
+      const statusClass = stage.status === 'failed' ? 'failed' : 'completed';
+      return `
+        <div class="stage ${statusClass}">
+          <div><span class="pill">${escapeHtml(stage.status)}</span><strong>${escapeHtml(stage.name)}</strong></div>
+          <div class="mono" style="margin-top:8px;">${escapeHtml(JSON.stringify(stage.details, null, 2))}</div>
+        </div>
+      `;
+    }
+
+    function renderArtifact(name, payload) {
+      return `
+        <details>
+          <summary>${escapeHtml(name)}</summary>
+          <div class="mono" style="margin-top:10px;">${escapeHtml(JSON.stringify(payload, null, 2))}</div>
+        </details>
+      `;
+    }
+
+    async function runPrototype() {
+      results.innerHTML = '';
+      statusEl.textContent = 'Running prototype…';
+      runBtn.disabled = true;
+
+      const res = await fetch('/api/prototype', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ song_a_id: songA.value, song_b_id: songB.value })
+      });
+
+      const data = await res.json();
+      runBtn.disabled = false;
+
+      if (data.status !== 'success') {
+        statusEl.innerHTML = `<span class="error">Prototype failed.</span>`;
+        results.innerHTML = `
+          <div class="card">
+            <h2 class="error">Prototype Failed</h2>
+            ${(data.stages || []).map(renderStage).join('')}
+          </div>
+        `;
+        return;
+      }
+
+      statusEl.innerHTML = `<span class="success">Prototype completed.</span> Output: <span class="mono">${escapeHtml(data.output_dir)}</span>`;
+      results.innerHTML = `
+        <div class="card">
+          <h2>Run Summary</h2>
+          <p><strong>Run ID:</strong> <span class="mono">${escapeHtml(data.run_id)}</span></p>
+          <p><strong>Output Directory:</strong> <span class="mono">${escapeHtml(data.output_dir)}</span></p>
+        </div>
+        <div class="card">
+          <h2>Pipeline Stages</h2>
+          ${(data.stages || []).map(renderStage).join('')}
+        </div>
+        <div class="card">
+          <h2>Artifacts</h2>
+          ${Object.entries(data.artifact_payloads || {}).map(([name, payload]) => renderArtifact(name, payload)).join('')}
+        </div>
+      `;
+    }
+
+    runBtn.addEventListener('click', runPrototype);
+    loadSongs().catch(err => {
+      statusEl.textContent = `Failed to load songs: ${err}`;
+      runBtn.disabled = true;
+    });
+  </script>
+</body>
+</html>

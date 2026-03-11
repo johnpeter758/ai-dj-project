@@ -1,152 +1,197 @@
 #!/usr/bin/env python3
-"""
-AI DJ API Server - Clean Simple Version
-"""
+"""VocalFusion prototype debug server."""
 
-import os
+from __future__ import annotations
+
 import json
+import os
+import traceback
 from datetime import datetime
-import numpy as np
-import soundfile as sf
+from pathlib import Path
+
 from flask import Flask, jsonify, request, send_from_directory
+
+from src.core.analysis import analyze_audio_file
+from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
 
 app = Flask(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
-DATA_DIR = os.path.join(BASE_DIR, 'data')
-FUSIONS_DIR = os.path.join(BASE_DIR, 'fusions')
-MUSIC_DIR = os.path.join(BASE_DIR, 'music')
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+MUSIC_DIR = BASE_DIR / "music"
+RUNS_DIR = BASE_DIR / "runs"
 
 
-@app.route('/')
-def index():
-    return send_from_directory(TEMPLATES_DIR, 'index.html')
+def load_songs() -> list[dict]:
+    songs: list[dict] = []
+    if not MUSIC_DIR.exists():
+        return songs
 
-@app.route('/fusions/<path:filename>')
-def serve_fusion(filename):
-    return send_from_directory(FUSIONS_DIR, filename)
-
-@app.route('/music/<path:filename>')
-def serve_music(filename):
-    return send_from_directory(MUSIC_DIR, filename)
-
-
-def load_songs():
-    songs_file = os.path.join(DATA_DIR, 'songs.json')
-    if os.path.exists(songs_file):
-        with open(songs_file, 'r') as f:
-            return json.load(f)
-    
-    songs = []
-    for root, dirs, files in os.walk(MUSIC_DIR):
-        for f in files:
-            if f.endswith(('.mp3', '.wav')):
-                song_id = f.replace('.mp3', '').replace('.wav', '').replace(' ', '_')
-                songs.append({
-                    'id': song_id,
-                    'title': f.replace('.mp3', '').replace('.wav', ''),
-                    'artist': os.path.basename(os.path.dirname(os.path.join(root, f))),
-                    'file': os.path.relpath(os.path.join(root, f), MUSIC_DIR)
-                })
+    for root, _, files in os.walk(MUSIC_DIR):
+        for filename in files:
+            if filename.lower().endswith((".mp3", ".wav", ".flac", ".m4a", ".aac")):
+                full_path = Path(root) / filename
+                rel_path = full_path.relative_to(MUSIC_DIR)
+                song_id = str(rel_path).replace(os.sep, "__")
+                songs.append(
+                    {
+                        "id": song_id,
+                        "title": full_path.stem,
+                        "artist": rel_path.parts[0] if len(rel_path.parts) > 1 else "Unknown",
+                        "file": str(rel_path),
+                        "absolute_path": str(full_path),
+                    }
+                )
+    songs.sort(key=lambda s: (s["artist"].lower(), s["title"].lower()))
     return songs
 
 
-@app.route('/api/songs')
+def resolve_song_path(song_id: str) -> Path | None:
+    for song in load_songs():
+        if song["id"] == song_id:
+            return Path(song["absolute_path"])
+    return None
+
+
+@app.route("/")
+def index():
+    return send_from_directory(TEMPLATES_DIR, "prototype_debug.html")
+
+
+@app.route("/api/songs")
 def list_songs():
     songs = load_songs()
-    return jsonify({'status': 'success', 'songs': songs, 'count': len(songs)})
+    return jsonify({"status": "success", "songs": songs, "count": len(songs)})
 
 
-@app.route('/generate', methods=['POST'])
-def generate():
-    """Generate a clean, simple fusion of two songs."""
-    data = request.get_json() or {}
-    song1_id = data.get('song1_id', '')
-    song2_id = data.get('song2_id', '')
-    
-    if not song1_id or not song2_id:
-        return jsonify({'error': 'Missing song IDs'}), 400
-    
-    # Find audio files
-    song1_file = None
-    song2_file = None
-    
-    for root, dirs, files in os.walk(MUSIC_DIR):
-        for f in files:
-            if f.endswith(('.mp3', '.wav')):
-                if song1_id.lower() in f.lower():
-                    song1_file = os.path.join(root, f)
-                if song2_id.lower() in f.lower():
-                    song2_file = os.path.join(root, f)
-    
-    fusion_id = f"fusion_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    output_path = f"{fusion_id}.wav"
-    os.makedirs(FUSIONS_DIR, exist_ok=True)
-    
-    if not (song1_file and song2_file):
-        return jsonify({'status': 'error', 'fusion': {'error': 'Files not found'}})
-    
-    try:
-        # Load audio - SIMPLE CLEAN LOAD
-        audio1, sr1 = sf.read(song1_file)
-        audio2, sr2 = sf.read(song2_file)
-        
-        # Convert to stereo
-        if audio1.ndim == 1:
-            audio1 = np.column_stack([audio1, audio1])
-        if audio2.ndim == 1:
-            audio2 = np.column_stack([audio2, audio2])
-        
-        # Match length - take shorter
-        min_len = min(len(audio1), len(audio2))
-        audio1 = audio1[:min_len]
-        audio2 = audio2[:min_len]
-        
-        # Simple clean mix - NO heavy processing
-        # Just a simple crossfade at the midpoint
-        fade_len = min(min_len // 2, sr1 * 10)
-        
-        # Equal power crossfade
-        fade_out = np.sin(np.linspace(0, np.pi/2, fade_len))
-        fade_in = np.cos(np.linspace(0, np.pi/2, fade_len))
-        
-        result = np.zeros((min_len, 2))
-        
-        # Song 1 plays first half, fades out
-        result[:fade_len] = audio1[:fade_len] * fade_out[:, None] + audio2[:fade_len] * fade_in[:, None]
-        
-        # Song 2 plays second half
-        result[fade_len:] = audio2[fade_len:]
-        
-        # Simple peak normalization - NO heavy processing
-        peak = np.max(np.abs(result))
-        if peak > 0.95:
-            result = result / peak * 0.95
-        
-        # Save
-        output_full = os.path.join(FUSIONS_DIR, output_path)
-        sf.write(output_full, result, sr1)
-        
-        return jsonify({'status': 'success', 'fusion': {
-            'id': fusion_id, 
-            'song1_id': song1_id, 
-            'song2_id': song2_id,
-            'output_path': f'/fusions/{output_path}',
-            'status': 'generated',
-            'techniques_used': ['simple_crossfade', 'peak_normalization']
-        }})
-        
-    except Exception as e:
-        return jsonify({'status': 'error', 'fusion': {'error': str(e)}})
-
-
-@app.route('/api/health')
+@app.route("/api/health")
 def health():
-    return jsonify({'status': 'healthy'})
+    return jsonify({"status": "healthy"})
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"🎛️ AI DJ running at http://localhost:{port}")
-    app.run(host='0.0.0.0', port=port, debug=True)
+@app.route("/api/prototype", methods=["POST"])
+def prototype():
+    data = request.get_json() or {}
+    song_a_id = data.get("song_a_id", "")
+    song_b_id = data.get("song_b_id", "")
+
+    if not song_a_id or not song_b_id:
+        return jsonify({"status": "error", "error": "Two songs are required."}), 400
+
+    song_a_path = resolve_song_path(song_a_id)
+    song_b_path = resolve_song_path(song_b_id)
+
+    if song_a_path is None or song_b_path is None:
+        return jsonify({"status": "error", "error": "Could not resolve one or both song paths."}), 404
+
+    run_id = f"prototype_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    outdir = RUNS_DIR / run_id
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    stages: list[dict] = []
+    artifacts: dict[str, str] = {}
+
+    try:
+        stages.append({"name": "resolve_inputs", "status": "completed", "details": {"song_a": str(song_a_path), "song_b": str(song_b_path)}})
+
+        song_a_dna = analyze_audio_file(song_a_path)
+        song_a_payload = song_a_dna.to_dict()
+        song_a_file = outdir / "song_a_dna.json"
+        song_a_file.write_text(json.dumps(song_a_payload, indent=2, sort_keys=True), encoding="utf-8")
+        artifacts["song_a_dna"] = str(song_a_file)
+        stages.append({
+            "name": "analyze_song_a",
+            "status": "completed",
+            "details": {
+                "tempo_bpm": song_a_payload["tempo_bpm"],
+                "key": song_a_payload["key"],
+                "duration_seconds": song_a_payload["duration_seconds"],
+                "artifact": str(song_a_file),
+            },
+        })
+
+        song_b_dna = analyze_audio_file(song_b_path)
+        song_b_payload = song_b_dna.to_dict()
+        song_b_file = outdir / "song_b_dna.json"
+        song_b_file.write_text(json.dumps(song_b_payload, indent=2, sort_keys=True), encoding="utf-8")
+        artifacts["song_b_dna"] = str(song_b_file)
+        stages.append({
+            "name": "analyze_song_b",
+            "status": "completed",
+            "details": {
+                "tempo_bpm": song_b_payload["tempo_bpm"],
+                "key": song_b_payload["key"],
+                "duration_seconds": song_b_payload["duration_seconds"],
+                "artifact": str(song_b_file),
+            },
+        })
+
+        compatibility = build_compatibility_report(song_a_dna, song_b_dna).to_dict()
+        compatibility_file = outdir / "compatibility_report.json"
+        compatibility_file.write_text(json.dumps(compatibility, indent=2, sort_keys=True), encoding="utf-8")
+        artifacts["compatibility_report"] = str(compatibility_file)
+        stages.append({
+            "name": "compatibility_report",
+            "status": "completed",
+            "details": {
+                "overall": compatibility["factors"]["overall"],
+                "factors": compatibility["factors"],
+                "artifact": str(compatibility_file),
+            },
+        })
+
+        arrangement = build_stub_arrangement_plan(song_a_dna, song_b_dna).to_dict()
+        arrangement_file = outdir / "arrangement_plan.json"
+        arrangement_file.write_text(json.dumps(arrangement, indent=2, sort_keys=True), encoding="utf-8")
+        artifacts["arrangement_plan"] = str(arrangement_file)
+        stages.append({
+            "name": "arrangement_plan",
+            "status": "completed",
+            "details": {
+                "section_count": len(arrangement.get("sections", [])),
+                "sections": arrangement.get("sections", []),
+                "artifact": str(arrangement_file),
+            },
+        })
+
+        return jsonify(
+            {
+                "status": "success",
+                "run_id": run_id,
+                "output_dir": str(outdir),
+                "stages": stages,
+                "artifacts": artifacts,
+                "artifact_payloads": {
+                    "song_a_dna": song_a_payload,
+                    "song_b_dna": song_b_payload,
+                    "compatibility_report": compatibility,
+                    "arrangement_plan": arrangement,
+                },
+            }
+        )
+    except Exception as exc:
+        stages.append(
+            {
+                "name": "error",
+                "status": "failed",
+                "details": {
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            }
+        )
+        return jsonify(
+            {
+                "status": "error",
+                "error": str(exc),
+                "run_id": run_id,
+                "output_dir": str(outdir),
+                "stages": stages,
+            }
+        ), 500
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🎛️ VocalFusion prototype debug UI running at http://localhost:{port}")
+    app.run(host="0.0.0.0", port=port, debug=True)
