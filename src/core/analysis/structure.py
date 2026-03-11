@@ -34,8 +34,10 @@ def estimate_structure(audio: np.ndarray, sample_rate: int, hop_length: int = 51
             if end > start:
                 sections.append({"start": float(start), "end": float(end), "label": f"section_{idx}"})
 
+    tempo_bpm = float(np.asarray(tempo).reshape(-1)[0])
+
     return {
-        "tempo_reference_bpm": float(tempo),
+        "tempo_reference_bpm": tempo_bpm,
         "phrase_boundaries_seconds": phrase_boundaries,
         "section_boundaries_seconds": section_times.tolist(),
         "sections": sections,
