@@ -100,7 +100,7 @@ def test_resolve_render_plan_target_timing_contract(tmp_path: Path):
     assert manifest.sections[-1].target.end_sec == max(section.target.end_sec for section in manifest.sections)
 
 
-def test_resolve_render_plan_records_missing_section_fallback(tmp_path: Path):
+def test_build_stub_arrangement_plan_prefers_phrase_labels_over_missing_section_fallback(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'
     sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
@@ -110,8 +110,8 @@ def test_resolve_render_plan_records_missing_section_fallback(tmp_path: Path):
     plan = build_stub_arrangement_plan(a, b)
     manifest = resolve_render_plan(plan, a, b)
     joined = '\n'.join(manifest.warnings + manifest.fallbacks)
-    assert 'missing or unresolved' in joined
-    assert 'phrase-safe fallback' in joined
+    assert all(section.source.source_section_label.startswith('phrase_') for section in manifest.sections)
+    assert 'missing or unresolved' not in joined
 
 
 def test_resolve_render_plan_avoids_full_song_window_for_coarse_section(tmp_path: Path):
@@ -150,6 +150,27 @@ def test_resolve_render_plan_uses_phrase_safe_subwindow_inside_strong_section(tm
     assert source.snapped_start_sec == 4.0
     assert source.snapped_end_sec == 8.0
     assert manifest.sections[0].stretch_ratio == 1.0
+
+
+def test_resolve_render_plan_directly_uses_phrase_window_label(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['phrase_boundaries_seconds'] = [0.0, 4.0, 8.0, 12.0]
+    plan = _single_section_plan(source_parent='A', bar_count=4, source_section_label='phrase_1_3')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    source = manifest.sections[0].source
+    assert source.raw_start_sec == 4.0
+    assert source.raw_end_sec == 12.0
+    assert source.snapped_start_sec == 4.0
+    assert source.snapped_end_sec == 12.0
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
+    assert 'missing or unresolved' not in joined
 
 
 def test_render_resolved_plan_is_deterministic_for_same_inputs(tmp_path: Path):

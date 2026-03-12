@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VocalFusion Simple Fuse</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background:#0f1115; color:#e8ecf1; margin:0; padding:24px; }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    .card { background:#171a21; border:1px solid #2a3140; border-radius:14px; padding:24px; margin-bottom:20px; }
+    h1,h2,h3,p { margin-top:0; }
+    .muted { color:#94a3b8; }
+    input[type=file], button { width:100%; padding:14px; border-radius:10px; border:1px solid #334155; background:#0f172a; color:#e8ecf1; box-sizing:border-box; }
+    button { background:#7c3aed; border:none; font-weight:700; cursor:pointer; margin-top:16px; }
+    button:hover { background:#6d28d9; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+    .ok { color:#10b981; }
+    .err { color:#ef4444; }
+    a { color:#c4b5fd; }
+    .progress { width:100%; height:14px; background:#0b1220; border:1px solid #334155; border-radius:999px; overflow:hidden; margin-top:12px; display:none; }
+    .progress.active { display:block; }
+    .progress-bar { width:35%; height:100%; background:linear-gradient(90deg,#7c3aed,#a78bfa,#7c3aed); background-size:200% 100%; animation: slide 1.2s linear infinite; }
+    .spinner { display:none; width:18px; height:18px; border:3px solid #334155; border-top-color:#a78bfa; border-radius:50%; animation: spin 0.9s linear infinite; vertical-align:middle; margin-right:8px; }
+    .spinner.active { display:inline-block; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:16px; }
+    .stat { background:#111827; border:1px solid #273244; border-radius:12px; padding:14px; min-height:104px; }
+    .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
+    .value { font-weight:700; }
+    .small { font-size:13px; }
+    ul.compact { margin:8px 0 0 18px; padding:0; }
+    .inline-links { display:flex; gap:12px; flex-wrap:wrap; margin-top:12px; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes slide { 0% { transform: translateX(-70%); background-position:0% 0; } 100% { transform: translateX(280%); background-position:200% 0; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>VocalFusion</h1>
+      <p class="muted">Goal: get to a testable two-song fusion workflow with improving musical flow.</p>
+      <div style="margin:14px 0 6px;"><strong>Project progress toward usable test build</strong></div>
+      <div class="progress active" style="display:block;"><div id="goalBar" class="progress-bar" style="width:58%; animation:none; background:linear-gradient(90deg,#10b981,#34d399);"></div></div>
+      <p class="muted" id="goalText" style="margin-top:8px;">Current checkpoint: runnable prototype + fusion output + simple UI. Next gap: better musical flow and planner quality.</p>
+      <div class="inline-links small">
+        <a href="/status">Open full status view</a>
+        <a href="/debug">Open debug prototype UI</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Active Work Loop</h2>
+      <p class="muted">Auto-refreshing snapshot of the current sprint, latest code checkpoint, evaluator result, and most recent run artifact.</p>
+      <div class="grid">
+        <div class="stat">
+          <div class="label">Current sprint</div>
+          <div id="currentTask" class="value small mono">Loading…</div>
+        </div>
+        <div class="stat">
+          <div class="label">Latest commit</div>
+          <div id="latestCommit" class="small mono">Loading…</div>
+        </div>
+        <div class="stat">
+          <div class="label">Latest evaluator</div>
+          <div id="latestEval" class="small mono">Loading…</div>
+        </div>
+        <div class="stat">
+          <div class="label">Latest artifact</div>
+          <div id="lastArtifact" class="small mono">Loading…</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;">
+        <div class="label">Recent progress notes</div>
+        <ul id="recentNotes" class="compact muted"></ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Fuse Two Songs</h2>
+      <form id="fuseForm">
+        <p><strong>Song A</strong></p>
+        <input id="songA" name="song_a" type="file" accept=".mp3,.wav,.flac,.m4a,.aac,audio/*" required />
+        <p style="margin-top:16px;"><strong>Song B</strong></p>
+        <input id="songB" name="song_b" type="file" accept=".mp3,.wav,.flac,.m4a,.aac,audio/*" required />
+        <button id="fuseBtn" type="submit">Fuse</button>
+      </form>
+      <div id="progress" class="progress"><div class="progress-bar"></div></div>
+      <p id="status" class="muted" style="margin-top:14px;"><span id="spinner" class="spinner"></span><span id="statusText">Waiting for files.</span></p>
+    </div>
+    <div id="results"></div>
+  </div>
+  <script>
+    const form = document.getElementById('fuseForm');
+    const btn = document.getElementById('fuseBtn');
+    const statusEl = document.getElementById('status');
+    const statusText = document.getElementById('statusText');
+    const spinner = document.getElementById('spinner');
+    const progress = document.getElementById('progress');
+    const results = document.getElementById('results');
+
+    function esc(s){return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}
+
+    function renderStatus(data) {
+      const commit = data.latest_commit || {};
+      const evaluator = data.latest_evaluator_result || {};
+      const artifact = data.last_artifact || {};
+      document.getElementById('currentTask').textContent = data.current_task || '—';
+      document.getElementById('latestCommit').innerHTML = commit.short_hash
+        ? `<strong>${esc(commit.short_hash)}</strong> — ${esc(commit.message || '')}<div class="muted">${esc(commit.date || '')}</div>`
+        : 'No commit info.';
+      document.getElementById('latestEval').innerHTML = evaluator.path
+        ? `<strong>score ${esc(evaluator.overall_score)}</strong> · ${esc(evaluator.verdict || '')}<div class="muted">${esc((evaluator.top_reasons || [])[0] || evaluator.relative_path || '')}</div>`
+        : 'No evaluator result yet.';
+      document.getElementById('lastArtifact').innerHTML = artifact.path
+        ? `<a href="${esc(artifact.download_url)}">${esc(artifact.name || artifact.relative_path || 'artifact')}</a><div class="muted">${esc(artifact.run_dir || '')} · ${esc(artifact.modified || '')}</div>`
+        : 'No artifact found.';
+      const notes = data.recent_progress_notes || [];
+      document.getElementById('recentNotes').innerHTML = notes.length
+        ? notes.map(note => `<li>${esc(note)}</li>`).join('')
+        : '<li>No recent notes found.</li>';
+    }
+
+    async function loadWorkloop() {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      renderStatus(data);
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      btn.disabled = true;
+      spinner.classList.add('active');
+      progress.classList.add('active');
+      statusText.textContent = 'Fusing... this can take a while.';
+      results.innerHTML = '';
+      const res = await fetch('/api/fuse-upload', { method:'POST', body:fd });
+      const data = await res.json();
+      btn.disabled = false;
+      spinner.classList.remove('active');
+      progress.classList.remove('active');
+      if (data.status !== 'success') {
+        statusEl.innerHTML = '<span class="err">Fusion failed.</span>';
+        results.innerHTML = `<div class="card"><h2 class="err">Error</h2><div class="mono">${esc(data.error || 'Unknown error')}\n\n${esc(data.stderr || data.stdout || '')}</div></div>`;
+        return;
+      }
+      statusEl.innerHTML = '<span class="ok">Fusion complete.</span>';
+      const mp3Path = data.artifacts.master_mp3;
+      const player = mp3Path ? `
+        <p><strong>Play:</strong></p>
+        <audio controls style="width:100%; margin-top:8px;">
+          <source src="/api/artifact?path=${encodeURIComponent(mp3Path)}" type="audio/mpeg">
+          Your browser does not support audio playback.
+        </audio>
+      ` : '<p class="muted">No MP3 available yet.</p>';
+      results.innerHTML = `
+        <div class="card">
+          <h2>Outputs</h2>
+          <p><strong>Run:</strong> <span class="mono">${esc(data.run_id)}</span></p>
+          <p><strong>Folder:</strong> <span class="mono">${esc(data.output_dir)}</span></p>
+          <p><strong>MP3:</strong> <span class="mono">${esc(data.artifacts.master_mp3)}</span></p>
+          <p><strong>WAV:</strong> <span class="mono">${esc(data.artifacts.master_wav)}</span></p>
+          <p><strong>Manifest:</strong> <span class="mono">${esc(data.artifacts.manifest)}</span></p>
+          ${player}
+          <details><summary>CLI output</summary><div class="mono" style="margin-top:10px;">${esc(data.stdout || '')}</div></details>
+        </div>`;
+      loadWorkloop().catch(() => {});
+    });
+
+    loadWorkloop().catch(err => {
+      document.getElementById('currentTask').textContent = `Failed to load status: ${err}`;
+    });
+    setInterval(loadWorkloop, 15000);
+  </script>
+</body>
+</html>

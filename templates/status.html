@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VocalFusion Status</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background:#0f1115; color:#e8ecf1; margin:0; padding:24px; }
+    .wrap { max-width: 980px; margin:0 auto; }
+    .card { background:#171a21; border:1px solid #2a3140; border-radius:14px; padding:20px; margin-bottom:18px; }
+    h1,h2,p { margin-top:0; }
+    .muted { color:#94a3b8; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+    ul { margin:10px 0 0 18px; }
+    a { color:#c4b5fd; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+    .stat { background:#111827; border:1px solid #273244; border-radius:12px; padding:14px; }
+    .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>VocalFusion Status</h1>
+      <p class="muted">Simple live view of the current work loop. Refreshes automatically every 15s.</p>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div class="stat"><div class="label">Current sprint</div><div id="currentTask" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest commit</div><div id="latestCommit" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest evaluator</div><div id="latestEval" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest artifact</div><div id="lastArtifact" class="mono">Loading…</div></div>
+      </div>
+    </div>
+
+    <div class="card"><h2>Currently working on</h2><div id="workingOn" class="mono">Loading…</div></div>
+    <div class="card"><h2>Recent progress notes</h2><ul id="recentNotes"></ul></div>
+    <div class="card"><h2>Latest changed files</h2><ul id="changedFiles"></ul></div>
+    <div class="card"><p><a href="/">Back to Fuse UI</a> · <a href="/debug">Debug UI</a></p></div>
+  </div>
+  <script>
+    function esc(s){return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}
+    async function loadStatus() {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      document.getElementById('currentTask').textContent = data.current_task || '—';
+      document.getElementById('workingOn').textContent = data.currently_working_on || '—';
+
+      const notes = data.recent_progress_notes || [];
+      document.getElementById('recentNotes').innerHTML = notes.length ? notes.map(x => `<li>${esc(x)}</li>`).join('') : '<li class="mono">No recent notes.</li>';
+
+      const files = data.latest_changed_files || [];
+      document.getElementById('changedFiles').innerHTML = files.length ? files.map(x => `<li class="mono">${esc(x)}</li>`).join('') : '<li class="mono">No uncommitted changes.</li>';
+
+      const commit = data.latest_commit || {};
+      document.getElementById('latestCommit').innerHTML = commit.hash ? `<strong>${esc(commit.short_hash || commit.hash.slice(0,7))}</strong>\n${esc(commit.message || '')}\n${esc(commit.date || '')}` : 'No commit info.';
+
+      const art = data.last_artifact;
+      document.getElementById('lastArtifact').innerHTML = art ? `<a href="${esc(art.download_url)}">${esc(art.name || art.relative_path || art.path)}</a>\n${esc(art.run_dir || '')}\n${esc(art.modified || '')}` : 'No artifact found.';
+
+      const ev = data.latest_evaluator_result;
+      document.getElementById('latestEval').textContent = ev ? `score=${ev.overall_score} verdict=${ev.verdict}\n${ev.relative_path || ev.path}\n${(ev.top_reasons||[]).join('\n')}` : 'No evaluator result yet.';
+    }
+    loadStatus();
+    setInterval(loadStatus, 15000);
+  </script>
+</body>
+</html>

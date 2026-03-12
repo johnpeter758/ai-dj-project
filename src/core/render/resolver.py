@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from ..analysis.models import SongDNA
@@ -22,6 +23,7 @@ _HARD_STRETCH_MIN = 0.5
 _HARD_STRETCH_MAX = 2.0
 _GENERIC_SECTION_PREFIXES = ("section_", "part_", "segment_")
 _WEAK_SECTION_SPAN_RATIO = 0.8
+_PHRASE_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)$")
 
 
 def _beat_times(song: SongDNA) -> list[float]:
@@ -97,6 +99,28 @@ def _validate_section_timing(section_info: dict[str, Any], song: SongDNA) -> tup
         warnings.append("section end exceeded song duration; clamped to song end")
         raw_end = float(song.duration_seconds)
     return raw_start, raw_end, warnings
+
+
+def _phrase_label_bounds(requested_label: str | None, song: SongDNA) -> tuple[float, float, list[str]] | None:
+    if not requested_label:
+        return None
+    match = _PHRASE_LABEL_RE.match(requested_label.strip())
+    if not match:
+        return None
+
+    start_idx = int(match.group(1))
+    end_idx = int(match.group(2))
+    phrase_boundaries = sorted(float(x) for x in song.structure.get("phrase_boundaries_seconds", []) if 0.0 <= float(x) <= float(song.duration_seconds))
+    if not phrase_boundaries:
+        return 0.0, float(song.duration_seconds), [f"phrase window label '{requested_label}' could not be resolved because phrase boundaries were missing"]
+    if phrase_boundaries[0] > 0.0:
+        phrase_boundaries = [0.0, *phrase_boundaries]
+    if phrase_boundaries[-1] < float(song.duration_seconds):
+        phrase_boundaries.append(float(song.duration_seconds))
+
+    if start_idx < 0 or end_idx >= len(phrase_boundaries) or end_idx <= start_idx:
+        return 0.0, float(song.duration_seconds), [f"phrase window label '{requested_label}' was out of range for available phrase boundaries"]
+    return float(phrase_boundaries[start_idx]), float(phrase_boundaries[end_idx]), []
 
 
 def _target_duration_seconds(section: PlannedSection, song: SongDNA, config: ResolverConfig) -> float:
@@ -257,6 +281,22 @@ def _resolve_source_window(section: PlannedSection, song: SongDNA, grid: ParentG
     warnings: list[str] = []
     sections = _section_map(song)
     requested_label = (section.source_section_label or "").strip() or None
+
+    phrase_bounds = _phrase_label_bounds(requested_label, song)
+    if phrase_bounds is not None:
+        raw_start, raw_end, phrase_warnings = phrase_bounds
+        warnings.extend(phrase_warnings)
+        if not phrase_warnings:
+            return SourceSectionRef(
+                parent_id=grid.parent_id,
+                source_path=song.source_path,
+                source_section_label=requested_label,
+                raw_start_sec=raw_start,
+                raw_end_sec=raw_end,
+                snapped_start_sec=raw_start,
+                snapped_end_sec=raw_end,
+            ), warnings
+
     section_info = sections.get(requested_label or "")
     if section_info is None:
         raw_start, raw_end = 0.0, float(song.duration_seconds)

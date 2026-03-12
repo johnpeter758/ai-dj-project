@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity")
+
 
 class CliError(RuntimeError):
     """User-facing CLI error."""
@@ -29,6 +31,7 @@ build_compatibility_report = None
 build_stub_arrangement_plan = None
 resolve_render_plan = None
 render_resolved_plan = None
+evaluate_song = None
 
 
 def _write_json(path: str | Path, payload: dict) -> None:
@@ -82,6 +85,12 @@ def _get_render_functions() -> tuple[Any, Any]:
         return resolve_render_plan, render_resolved_plan
     render = _import_or_raise("src.core.render")
     return render.resolve_render_plan, render.render_resolved_plan
+
+
+def _get_evaluate_song() -> Any:
+    if evaluate_song is not None:
+        return evaluate_song
+    return _import_or_raise("src.core.evaluation").evaluate_song
 
 
 def _dependency_status() -> dict[str, dict[str, str | bool]]:
@@ -218,6 +227,196 @@ def prototype(song_a: str, song_b: str, output_dir: str, stems_dir: Optional[str
     return 0
 
 
+def _is_listen_report_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and "overall_score" in payload and all(key in payload for key in LISTEN_COMPONENT_KEYS)
+
+
+def _is_render_manifest_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and "outputs" in payload and isinstance(payload.get("outputs"), dict)
+
+
+def _pick_render_audio_path(manifest: dict[str, Any], manifest_path: Path) -> str:
+    outputs = manifest.get("outputs") or {}
+    for key in ("master_wav", "master_mp3", "raw_wav"):
+        candidate = outputs.get(key)
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if not path.is_absolute():
+            path = (manifest_path.parent / path).resolve()
+        if path.exists() and path.is_file():
+            return str(path)
+    raise CliError(f"render manifest does not point to an existing render output: {manifest_path}")
+
+
+def _load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CliError(f"invalid JSON file: {path}") from exc
+
+
+def _summarize_comparison(left: dict[str, Any], right: dict[str, Any], deltas: dict[str, Any]) -> list[str]:
+    lines = []
+    overall_delta = float(deltas["overall_score_delta"])
+    if abs(overall_delta) < 1e-6:
+        lines.append("Overall result is effectively tied.")
+    elif overall_delta > 0:
+        lines.append(f"Left leads overall by {overall_delta:.1f} points.")
+    else:
+        lines.append(f"Right leads overall by {abs(overall_delta):.1f} points.")
+
+    ranked = sorted(
+        ((key, abs(float(deltas["component_score_deltas"][key]))) for key in LISTEN_COMPONENT_KEYS),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for key, magnitude in ranked[:3]:
+        delta = float(deltas["component_score_deltas"][key])
+        if magnitude < 0.1:
+            continue
+        winner = "left" if delta > 0 else "right"
+        lines.append(f"{winner} is stronger on {key} by {abs(delta):.1f} points.")
+
+    if left.get("verdict") != right.get("verdict"):
+        lines.append(f"Verdicts differ: left={left.get('verdict')} vs right={right.get('verdict')}.")
+    return lines
+
+
+def _resolve_compare_input(input_path: str) -> dict[str, Any]:
+    analyze_audio = _get_analyze_audio_file()
+    evaluate = _get_evaluate_song()
+
+    path = Path(input_path).expanduser().resolve()
+    if not path.exists():
+        raise CliError(f"compare input not found: {path}")
+
+    render_manifest_path: Path | None = None
+    report_origin = "audio"
+    analyzed_path = path
+
+    if path.is_dir():
+        manifest_candidate = path / "render_manifest.json"
+        if not manifest_candidate.exists():
+            raise CliError(f"directory does not contain render_manifest.json: {path}")
+        render_manifest_path = manifest_candidate.resolve()
+        manifest = _load_json(render_manifest_path)
+        analyzed_path = Path(_pick_render_audio_path(manifest, render_manifest_path))
+        report_origin = "render_output"
+    elif path.suffix.lower() == ".json":
+        payload = _load_json(path)
+        if _is_listen_report_payload(payload):
+            return {
+                "input_path": str(path),
+                "report_origin": "listen_report",
+                "resolved_audio_path": payload.get("source_path"),
+                "render_manifest_path": None,
+                "report": payload,
+            }
+        if _is_render_manifest_payload(payload):
+            render_manifest_path = path
+            analyzed_path = Path(_pick_render_audio_path(payload, path))
+            report_origin = "render_output"
+        else:
+            raise CliError(f"JSON input is neither a listen report nor a render manifest: {path}")
+    elif not path.is_file():
+        raise CliError(f"compare input is not a supported file: {path}")
+
+    song = analyze_audio(str(analyzed_path))
+    report = evaluate(song).to_dict()
+    return {
+        "input_path": str(path),
+        "report_origin": report_origin,
+        "resolved_audio_path": str(analyzed_path),
+        "render_manifest_path": str(render_manifest_path) if render_manifest_path else None,
+        "report": report,
+    }
+
+
+def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any]:
+    left = _resolve_compare_input(left_input)
+    right = _resolve_compare_input(right_input)
+    left_report = left["report"]
+    right_report = right["report"]
+
+    component_deltas = {
+        key: round(float(left_report[key]["score"]) - float(right_report[key]["score"]), 1)
+        for key in LISTEN_COMPONENT_KEYS
+    }
+    overall_delta = round(float(left_report["overall_score"]) - float(right_report["overall_score"]), 1)
+
+    if overall_delta > 0:
+        overall_winner = "left"
+    elif overall_delta < 0:
+        overall_winner = "right"
+    else:
+        overall_winner = "tie"
+
+    component_winners = {
+        key: ("left" if delta > 0 else "right" if delta < 0 else "tie")
+        for key, delta in component_deltas.items()
+    }
+
+    comparison = {
+        "schema_version": "0.1.0",
+        "left": left,
+        "right": right,
+        "deltas": {
+            "overall_score_delta": overall_delta,
+            "component_score_deltas": component_deltas,
+        },
+        "winner": {
+            "overall": overall_winner,
+            "components": component_winners,
+        },
+        "summary": _summarize_comparison(left_report, right_report, {
+            "overall_score_delta": overall_delta,
+            "component_score_deltas": component_deltas,
+        }),
+    }
+    return comparison
+
+
+def listen(track: str, output: Optional[str]) -> int:
+    analyze_audio = _get_analyze_audio_file()
+    evaluate = _get_evaluate_song()
+    track_path = _resolve_existing_audio_path(track, "track")
+    song = analyze_audio(track_path)
+    report = evaluate(song).to_dict()
+
+    if output:
+        _write_json(output, report)
+        print(f"Wrote listen report: {output}")
+    else:
+        print(json.dumps(report, indent=2, sort_keys=True))
+
+    print(f"Overall score: {report['overall_score']}")
+    print(f"Verdict: {report['verdict']}")
+    for key in LISTEN_COMPONENT_KEYS:
+        part = report[key]
+        print(f"- {key}: {part['score']} — {part['summary']}")
+    return 0
+
+
+def compare_listen(left: str, right: str, output: Optional[str]) -> int:
+    comparison = _build_listen_comparison(left, right)
+    if output:
+        _write_json(output, comparison)
+        print(f"Wrote listen comparison: {output}")
+    else:
+        print(json.dumps(comparison, indent=2, sort_keys=True))
+
+    print(f"Overall winner: {comparison['winner']['overall']}")
+    print(f"Overall score delta (left-right): {comparison['deltas']['overall_score_delta']}")
+    for key in LISTEN_COMPONENT_KEYS:
+        delta = comparison['deltas']['component_score_deltas'][key]
+        winner = comparison['winner']['components'][key]
+        print(f"- {key}: {winner} ({delta:+.1f})")
+    for line in comparison['summary']:
+        print(f"  {line}")
+    return 0
+
+
 def doctor(output_json: Optional[str] = None) -> int:
     """Report whether the local environment is ready for prototype analysis/render steps."""
     status = _dependency_status()
@@ -268,6 +467,8 @@ def main() -> int:
 Suggested first checkpoint:
   python3 ai_dj.py doctor
   python3 ai_dj.py analyze song.wav --output runs/checkpoint/song_dna.json
+  python3 ai_dj.py listen song.wav --output runs/checkpoint/listen_report.json
+  python3 ai_dj.py compare-listen left.json right.json --output runs/checkpoint/listen_compare.json
   python3 ai_dj.py prototype song_a.wav song_b.wav --output-dir runs/prototype-001
   python3 ai_dj.py fusion song_a.wav song_b.wav --output runs/render-prototype
 ''',
@@ -285,6 +486,15 @@ Suggested first checkpoint:
     ana_parser.add_argument("track", help="Path to track file")
     ana_parser.add_argument("--detailed", "-d", action="store_true", help="Show detailed analysis")
     ana_parser.add_argument("--output", "-o", help="Path to output JSON")
+
+    listen_parser = subparsers.add_parser("listen", help="Evaluate how musically strong/coherent a track appears")
+    listen_parser.add_argument("track", help="Path to track file")
+    listen_parser.add_argument("--output", "-o", help="Path to output JSON")
+
+    compare_parser = subparsers.add_parser("compare-listen", help="Compare two listen reports, audio files, or rendered outputs")
+    compare_parser.add_argument("left", help="Left input: listen JSON, audio file, render manifest JSON, or render output directory")
+    compare_parser.add_argument("right", help="Right input: listen JSON, audio file, render manifest JSON, or render output directory")
+    compare_parser.add_argument("--output", "-o", help="Path to output comparison JSON")
 
     fus_parser = subparsers.add_parser("fusion", help="Render a first-pass fused audio prototype")
     fus_parser.add_argument("track1", help="Path to first track")
@@ -318,6 +528,10 @@ Suggested first checkpoint:
             return fusion(args.track1, args.track2, args.genre, args.bpm, args.key, args.output)
         if args.command == "prototype":
             return prototype(args.song_a, args.song_b, args.output_dir, args.stems_dir)
+        if args.command == "listen":
+            return listen(args.track, args.output)
+        if args.command == "compare-listen":
+            return compare_listen(args.left, args.right, args.output)
         if args.command == "doctor":
             return doctor(args.output)
     except CliError as exc:
