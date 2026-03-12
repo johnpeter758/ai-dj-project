@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import ai_dj
@@ -30,15 +31,44 @@ class DummySongDNA:
 
 
 def test_prototype_writes_expected_artifacts(monkeypatch, tmp_path: Path):
+    song_a = tmp_path / "song_a.wav"
+    song_b = tmp_path / "song_b.wav"
+    song_a.write_bytes(b"fake-audio")
+    song_b.write_bytes(b"fake-audio")
+
     monkeypatch.setattr(ai_dj, "analyze_audio_file", lambda path, stems_dir=None: DummySongDNA(str(path)))
     monkeypatch.setattr(ai_dj, "build_compatibility_report", lambda a, b: type("R", (), {"to_dict": lambda self: {"factors": {"overall": 0.8}}})())
     monkeypatch.setattr(ai_dj, "build_stub_arrangement_plan", lambda a, b: type("P", (), {"to_dict": lambda self: {"sections": [{"label": "intro"}]}})())
 
     outdir = tmp_path / "prototype"
-    code = ai_dj.prototype("song_a.wav", "song_b.wav", str(outdir))
+    code = ai_dj.prototype(str(song_a), str(song_b), str(outdir))
 
     assert code == 0
     assert (outdir / "song_a_dna.json").exists()
     assert (outdir / "song_b_dna.json").exists()
     assert (outdir / "compatibility_report.json").exists()
     assert (outdir / "arrangement_plan.json").exists()
+
+
+def test_doctor_json_output_includes_test_hint(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        ai_dj,
+        "_dependency_status",
+        lambda: {
+            "librosa": {"ok": False, "kind": "python-module", "required_for": "analysis"},
+            "numpy": {"ok": True, "kind": "python-module", "required_for": "analysis"},
+            "soundfile": {"ok": True, "kind": "python-module", "required_for": "analysis"},
+            "pytest": {"ok": True, "kind": "python-module", "required_for": "tests"},
+            "ffmpeg": {"ok": False, "kind": "binary", "required_for": "mp3-export"},
+        },
+    )
+
+    out = tmp_path / "doctor.json"
+    code = ai_dj.doctor(str(out))
+    payload = json.loads(out.read_text())
+
+    assert code == 1
+    assert payload["analysis_ready"] is False
+    assert payload["test_ready"] is True
+    assert payload["render_ready"] is False
+    assert payload["checks"]["pytest"]["required_for"] == "tests"

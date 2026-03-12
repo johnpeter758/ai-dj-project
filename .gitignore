@@ -25,6 +25,7 @@ Thumbs.db
 # Exports
 exports/
 fusions/
+runs/
 
 # Large files
 *.pth

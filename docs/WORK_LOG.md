@@ -11,8 +11,16 @@
   - `src/quality_evaluator.py`
 - Created initial repo-level triage, status, and target architecture notes.
 
+## 2026-03-11
+- Reviewed the current render stack and today’s design notes around resolver behavior, fallback logic, overlap ownership, transition policy, and synthetic test scope.
+- Converged on a resolver-first v1 contract: planner bars stay canonical, beat times are the hard snap grid, phrase boundaries are the extraction scaffold, and coarse section labels are only soft hints.
+- Identified the main real-pair failure mode as weak source-window selection from coarse `section_0` spans; safest next step is phrase-safe target-length window selection with explicit downgrade/fallback recording.
+- Confirmed the first listenable Drake + Relax My Eyes direction should stay Drake-led with one clear Relax spotlight rather than a 50/50 blend.
+- Defined the smallest high-value render test focus: contiguous manifest math, explicit ownership rules, deterministic output, exact duration conservation, bounded overlaps, and safe single-source fallback behavior.
+- Commit-readiness audit: the current render-stack checkpoint is close to coherent, but local handoff is still blocked by unverified test execution in this shell (missing `pytest` / runtime deps like `librosa`) and by unresolved v1 semantics around phrase-safe source-window selection versus coarse full-section snapping.
+
 ## Next step
-Finish the first end-to-end testable prototype workflow that takes two songs and emits SongDNA A, SongDNA B, a compatibility report, and an arrangement plan. After that, enrich analysis outputs with better bar/downbeat-aware structure.
+Iterate on the first deterministic renderer so the Drake + Relax My Eyes pair produces a listenable child output, starting with phrase-safe resolver window selection and explicit ownership/fallback enforcement before richer DSP or mixing logic.
 
 ## Candidate core modules inspected
 - `src/beat_detector.py` — usable seed for tempo/beat extraction

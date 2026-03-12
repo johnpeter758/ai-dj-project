@@ -1,9 +1,10 @@
-# AI DJ Project Dependencies
+# Core runtime + local debug server
 flask>=2.0.0
 numpy>=1.21.0
 soundfile>=0.11.0
 librosa>=0.10.0
 scipy>=1.9.0
 tqdm>=4.65.0
+
+# Test runner used by the local regression suite
 pytest>=7.0.0
-flask>=2.0.0

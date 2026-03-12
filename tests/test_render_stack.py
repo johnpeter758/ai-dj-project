@@ -1,0 +1,334 @@
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+import pytest
+import soundfile as sf
+
+from src.core.analysis.models import SongDNA
+from src.core.planner import build_stub_arrangement_plan
+from src.core.planner.models import ChildArrangementPlan, CompatibilityFactors, ParentReference, PlannedSection
+from src.core.render import resolve_render_plan, render_resolved_plan
+from src.core.render.manifest import ResolvedRenderPlan
+from src.core.render.transitions import transition_overlap_seconds
+
+
+def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
+    return SongDNA(
+        source_path=path,
+        sample_rate=44100,
+        duration_seconds=12.0,
+        tempo_bpm=tempo,
+        key={"tonic": tonic, "mode": mode, "camelot": camelot, "confidence": 0.9},
+        structure={
+            "sections": [{"label": f"section_{i}", "start": 0.0, "end": 12.0} for i in range(sections)],
+            "phrase_boundaries_seconds": [0.0, 4.0, 8.0],
+        },
+        energy={"summary": {"mean_rms": mean_rms}},
+        metadata={"schema_version": "0.1.0", "tempo": {"beat_times": [i * 0.5 for i in range(25)]}},
+        stems={"enabled": False, "files": {}},
+    )
+
+
+def write_sine(path: Path, frequency_hz: float, sr: int = 44100, seconds: float = 12.0, amplitude: float = 0.1) -> Path:
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+    sf.write(path, (amplitude * np.sin(2 * np.pi * frequency_hz * t)).astype(np.float32), sr)
+    return path
+
+
+def clone_manifest(manifest: ResolvedRenderPlan, **updates) -> ResolvedRenderPlan:
+    payload = {
+        "schema_version": manifest.schema_version,
+        "sample_rate": manifest.sample_rate,
+        "target_bpm": manifest.target_bpm,
+        "sections": list(manifest.sections),
+        "work_orders": list(manifest.work_orders),
+        "warnings": list(manifest.warnings),
+        "fallbacks": list(manifest.fallbacks),
+    }
+    payload.update(updates)
+    return ResolvedRenderPlan(**payload)
+
+
+def test_resolve_render_plan_emits_sections_and_work_orders(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+    assert len(manifest.sections) == 3
+    assert len(manifest.work_orders) == 3
+
+
+def test_render_resolved_plan_writes_outputs(tmp_path: Path):
+    sr = 44100
+    t = np.linspace(0, 12.0, sr * 12, endpoint=False)
+    a_audio = 0.1 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+    b_audio = 0.1 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, a_audio, sr)
+    sf.write(p2, b_audio, sr)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+    result = render_resolved_plan(manifest, tmp_path / 'render')
+    assert Path(result.raw_wav_path).exists()
+    assert Path(result.master_wav_path).exists()
+    assert Path(result.manifest_path).exists()
+
+
+def test_resolve_render_plan_target_timing_contract(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+
+    starts = [section.target.start_sec for section in manifest.sections]
+    durations = [section.target.duration_sec for section in manifest.sections]
+    assert starts == sorted(starts)
+    assert all(duration > 0 for duration in durations)
+    assert manifest.sections[-1].target.end_sec == max(section.target.end_sec for section in manifest.sections)
+
+
+def test_resolve_render_plan_records_missing_section_fallback(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks)
+    assert 'missing or unresolved' in joined
+    assert 'phrase-safe fallback' in joined
+
+
+def test_resolve_render_plan_avoids_full_song_window_for_coarse_section(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['sections'] = [{'label': 'section_0', 'start': 0.0, 'end': 12.0}]
+    plan = _single_section_plan(source_parent='A', bar_count=4, source_section_label='section_0')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    source = manifest.sections[0].source
+    assert source.snapped_start_sec == 0.0
+    assert source.snapped_end_sec == 8.0
+    assert (source.snapped_end_sec - source.snapped_start_sec) < a.duration_seconds
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
+    assert 'too coarse for direct use' in joined
+
+
+def test_resolve_render_plan_uses_phrase_safe_subwindow_inside_strong_section(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['sections'] = [{'label': 'verse', 'start': 2.0, 'end': 10.0}]
+    plan = _single_section_plan(source_parent='A', bar_count=2, source_section_label='verse')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    source = manifest.sections[0].source
+    assert source.snapped_start_sec == 4.0
+    assert source.snapped_end_sec == 8.0
+    assert manifest.sections[0].stretch_ratio == 1.0
+
+
+def test_render_resolved_plan_is_deterministic_for_same_inputs(tmp_path: Path):
+    sr = 44100
+    t = np.linspace(0, 12.0, sr * 12, endpoint=False)
+    a_audio = 0.1 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+    b_audio = 0.1 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, a_audio, sr)
+    sf.write(p2, b_audio, sr)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+
+    r1 = render_resolved_plan(manifest, tmp_path / 'render1')
+    r2 = render_resolved_plan(manifest, tmp_path / 'render2')
+    y1, _ = sf.read(r1.master_wav_path, always_2d=True)
+    y2, _ = sf.read(r2.master_wav_path, always_2d=True)
+    assert y1.shape == y2.shape
+    assert np.allclose(y1, y2)
+
+
+def test_render_manifest_contains_outputs_block(tmp_path: Path):
+    sr = 44100
+    t = np.linspace(0, 12.0, sr * 12, endpoint=False)
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, (0.1 * np.sin(2 * np.pi * 220 * t)).astype(np.float32), sr)
+    sf.write(p2, (0.1 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), sr)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+    result = render_resolved_plan(manifest, tmp_path / 'render')
+    payload = json.loads(Path(result.manifest_path).read_text())
+    assert 'outputs' in payload
+    assert payload['outputs']['raw_wav']
+    assert payload['outputs']['master_wav']
+
+
+def _single_section_plan(*, source_parent: str = 'A', start_bar: int = 0, bar_count: int = 8, source_section_label: str | None = 'section_0') -> ChildArrangementPlan:
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    parents = [
+        ParentReference('a.wav', 120.0, 'A', 'minor', 12.0),
+        ParentReference('b.wav', 120.0, 'C', 'major', 12.0),
+    ]
+    sections = [
+        PlannedSection(
+            label='test',
+            start_bar=start_bar,
+            bar_count=bar_count,
+            source_parent=source_parent,
+            source_section_label=source_section_label,
+        )
+    ]
+    return ChildArrangementPlan(parents=parents, compatibility=compatibility, sections=sections)
+
+
+def test_resolve_render_plan_rejects_overlapping_sections(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='first', start_bar=0, bar_count=8, source_parent='A', source_section_label='section_0'),
+            PlannedSection(label='second', start_bar=4, bar_count=8, source_parent='B', source_section_label='section_0'),
+        ],
+    )
+
+    with pytest.raises(ValueError, match='overlaps previous section'):
+        resolve_render_plan(plan, a, b)
+
+
+
+def test_resolve_render_plan_rejects_invalid_source_parent(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = _single_section_plan(source_parent='C')
+
+    with pytest.raises(ValueError, match='unsupported source_parent'):
+        resolve_render_plan(plan, a, b)
+
+
+
+def test_resolve_render_plan_clamps_extreme_stretch_ratio(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['sections'] = [{'label': 'section_0', 'start': 0.0, 'end': 12.0}]
+    plan = _single_section_plan(source_parent='A', bar_count=1, source_section_label='section_0')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[0].stretch_ratio == 2.0
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
+    assert 'outside conservative bounds' in joined
+    assert 'clamped to 2.00' in joined
+
+
+def test_transition_overlap_seconds_is_safe_for_nonpositive_bpm():
+    assert transition_overlap_seconds('blend', 0.0) > 0.0
+    assert transition_overlap_seconds('cut', 0.0) == 0.0
+
+
+
+def test_render_resolved_plan_applies_work_order_gain_deterministically(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 440.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+
+    quieter_orders = [
+        replace(order, gain_db=-6.0 if idx == 0 else order.gain_db)
+        for idx, order in enumerate(manifest.work_orders)
+    ]
+    quieter_manifest = clone_manifest(manifest, work_orders=quieter_orders)
+
+    base = render_resolved_plan(manifest, tmp_path / 'render_base')
+    quiet = render_resolved_plan(quieter_manifest, tmp_path / 'render_quiet')
+    y_base, _ = sf.read(base.raw_wav_path, always_2d=True)
+    y_quiet, _ = sf.read(quiet.raw_wav_path, always_2d=True)
+
+    assert y_base.shape == y_quiet.shape
+    assert not np.allclose(y_base, y_quiet)
+    assert np.max(np.abs(y_quiet)) < np.max(np.abs(y_base))
+
+
+
+def test_render_resolved_plan_rejects_invalid_target_timing_contract(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 440.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+
+    broken_section = manifest.sections[0]
+    broken_section = replace(
+        broken_section,
+        target=replace(broken_section.target, duration_sec=broken_section.target.duration_sec + 0.25),
+    )
+    broken_manifest = clone_manifest(manifest, sections=[broken_section, *manifest.sections[1:]])
+
+    with pytest.raises(ValueError, match='target duration does not match'):
+        render_resolved_plan(broken_manifest, tmp_path / 'render_invalid')
+
+
+
+def test_render_resolved_plan_mp3_fallback_records_missing_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 440.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+
+    monkeypatch.setattr('src.core.render.renderer.subprocess.run', lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError()))
+    result = render_resolved_plan(manifest, tmp_path / 'render_no_ffmpeg')
+    payload = json.loads(Path(result.manifest_path).read_text())
+
+    assert result.master_mp3_path is None
+    assert payload['outputs']['master_mp3'] is None
