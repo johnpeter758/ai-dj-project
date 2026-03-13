@@ -1646,20 +1646,32 @@ def _choose_with_major_section_balance_guard(
     error_delta = alternate.blended_error - chosen.blended_error
     max_delta = 0.42
     max_stretch_gate = 0.0
+    max_stretch_ratio = 1.12
     if spec.label in {'payoff', 'bridge'}:
         max_delta = 1.05
         max_stretch_gate = 0.58
+        max_stretch_ratio = 1.18
 
     alternate_stretch_gate = alternate.score_breakdown.get('stretch_gate', 0.0)
+    alternate_stretch_ratio = alternate.score_breakdown.get('stretch_ratio', 1.0)
     alternate_seam_risk = alternate.score_breakdown.get('seam_risk', 1.0)
     chosen_seam_risk = chosen.score_breakdown.get('seam_risk', 1.0)
     alternate_transition_error = alternate.score_breakdown.get('transition_viability', 1.0)
     chosen_transition_error = chosen.score_breakdown.get('transition_viability', 1.0)
     alternate_role_error = alternate.score_breakdown.get('role_prior', 1.0)
+    alternate_groove_confidence = alternate.score_breakdown.get('listen_groove_confidence', 1.0)
+    chosen_groove_confidence = chosen.score_breakdown.get('listen_groove_confidence', 1.0)
+    alternate_groove_penalty = alternate.score_breakdown.get('groove_continuity', 0.0)
 
     if error_delta > max_delta:
         return chosen, None
     if alternate_stretch_gate > max_stretch_gate:
+        return chosen, None
+    if alternate_stretch_ratio > max_stretch_ratio:
+        return chosen, None
+    if alternate_groove_confidence < max(0.58, chosen_groove_confidence - 0.08):
+        return chosen, None
+    if alternate_groove_penalty > 0.22:
         return chosen, None
     if alternate_seam_risk > min(0.78, chosen_seam_risk + 0.14):
         return chosen, None
@@ -1670,7 +1682,8 @@ def _choose_with_major_section_balance_guard(
 
     note = (
         f"major-section balance guard: {spec.label} switched to {alternate.parent_id}:{alternate.candidate.label} "
-        f"to avoid a full one-parent major-section monopoly; alt delta {error_delta:.2f}"
+        f"to avoid a full one-parent major-section monopoly; alt delta {error_delta:.2f}; "
+        f"guarded safe by stretch {alternate_stretch_ratio:.2f} and groove {alternate_groove_confidence:.2f}"
     )
     return alternate, note
 
@@ -1692,6 +1705,80 @@ def _infer_transition_mode(
     return "crossfade_support"
 
 
+def _apply_section_level_authenticity_guard(
+    section_specs: list[_SectionSpec],
+    chosen_selections: list[_WindowSelection],
+    ranked_choices: list[list[_WindowSelection]],
+) -> tuple[list[_WindowSelection], list[str]]:
+    if len({selection.parent_id for selection in chosen_selections}) > 1:
+        return chosen_selections, []
+
+    dominant_parent = chosen_selections[0].parent_id if chosen_selections else None
+    if dominant_parent is None:
+        return chosen_selections, []
+    alternate_parent = 'B' if dominant_parent == 'A' else 'A'
+
+    def _is_safe_authenticity_alternate(current: _WindowSelection, alternate: _WindowSelection, spec: _SectionSpec) -> bool:
+        error_delta = alternate.blended_error - current.blended_error
+        max_delta = 0.48
+        max_stretch_ratio = 1.12
+        max_stretch_gate = 0.0
+        max_seam_risk = min(0.76, current.score_breakdown.get('seam_risk', 1.0) + 0.12)
+        max_transition_error = min(0.82, current.score_breakdown.get('transition_viability', 1.0) + 0.18)
+        max_role_error = 0.74
+        max_groove_penalty = 0.24
+        min_groove_confidence = max(0.56, current.score_breakdown.get('listen_groove_confidence', 1.0) - 0.10)
+
+        if spec.label in {'payoff', 'bridge'}:
+            max_delta = 1.10
+            max_stretch_ratio = 1.18
+            max_stretch_gate = 0.58
+            max_role_error = 0.78
+            max_groove_penalty = 0.28
+
+        return not (
+            error_delta > max_delta
+            or alternate.score_breakdown.get('stretch_gate', 0.0) > max_stretch_gate
+            or alternate.score_breakdown.get('stretch_ratio', 1.0) > max_stretch_ratio
+            or alternate.score_breakdown.get('seam_risk', 1.0) > max_seam_risk
+            or alternate.score_breakdown.get('transition_viability', 1.0) > max_transition_error
+            or alternate.score_breakdown.get('role_prior', 1.0) > max_role_error
+            or alternate.score_breakdown.get('groove_continuity', 0.0) > max_groove_penalty
+            or alternate.score_breakdown.get('listen_groove_confidence', 1.0) < min_groove_confidence
+        )
+
+    priority_labels = {'payoff': 0, 'bridge': 1, 'build': 2, 'verse': 3, 'outro': 4, 'intro': 5}
+    candidate_swaps: list[tuple[int, _WindowSelection, _WindowSelection, _SectionSpec]] = []
+    for idx, (spec, current, ranked) in enumerate(zip(section_specs, chosen_selections, ranked_choices)):
+        alternate = next((item for item in ranked if item.parent_id == alternate_parent), None)
+        if alternate is None:
+            continue
+        if not _is_safe_authenticity_alternate(current, alternate, spec):
+            continue
+        candidate_swaps.append((idx, current, alternate, spec))
+
+    if not candidate_swaps:
+        return chosen_selections, []
+
+    idx, current, alternate, spec = min(
+        candidate_swaps,
+        key=lambda item: (
+            priority_labels.get(item[3].label, 99),
+            item[2].blended_error - item[1].blended_error,
+            item[0],
+        ),
+    )
+    updated = list(chosen_selections)
+    updated[idx] = alternate
+    note = (
+        f"section-level authenticity guard: {spec.label} switched to {alternate.parent_id}:{alternate.candidate.label} "
+        f"to avoid a full one-parent section collapse; alt delta {alternate.blended_error - current.blended_error:.2f}; "
+        f"guarded safe by stretch {alternate.score_breakdown.get('stretch_ratio', 1.0):.2f} "
+        f"and groove {alternate.score_breakdown.get('listen_groove_confidence', 1.0):.2f}"
+    )
+    return updated, [note]
+
+
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrangementPlan:
     report = build_compatibility_report(song_a, song_b)
 
@@ -1701,15 +1788,33 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         'B': _planner_listen_feedback(song_b),
     }
 
-    sections: list[PlannedSection] = []
     selection_notes: list[str] = []
-    selection_diagnostics: list[dict[str, Any]] = []
     previous: _WindowSelection | None = None
     selection_history: list[_WindowSelection] = []
+    chosen_selections: list[_WindowSelection] = []
+    ranked_choices: list[list[_WindowSelection]] = []
     song_map = {'A': song_a, 'B': song_b}
     for spec in section_specs:
         ranked = _enumerate_section_choices(spec, song_a, song_b, previous, prior_selections=selection_history)
         chosen, balance_guard_note = _choose_with_major_section_balance_guard(spec, ranked, selection_history)
+        ranked_choices.append(ranked)
+        chosen_selections.append(chosen)
+        if balance_guard_note is not None:
+            selection_notes.append(f"{spec.label}: {balance_guard_note}")
+        selection_history.append(chosen)
+        previous = chosen
+
+    chosen_selections, authenticity_guard_notes = _apply_section_level_authenticity_guard(
+        section_specs,
+        chosen_selections,
+        ranked_choices,
+    )
+    selection_notes.extend(authenticity_guard_notes)
+
+    sections: list[PlannedSection] = []
+    selection_diagnostics: list[dict[str, Any]] = []
+    previous = None
+    for spec, chosen in zip(section_specs, chosen_selections):
         candidate = chosen.candidate
         transition_mode = _infer_transition_mode(spec, chosen, previous, previous.section_label if previous else None)
         sections.append(
@@ -1729,8 +1834,6 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         selection_notes.append(
             f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
         )
-        if balance_guard_note is not None:
-            selection_notes.append(f"{spec.label}: {balance_guard_note}")
         feedback = parent_feedback[chosen.parent_id]
         selection_diagnostics.append(
             {
@@ -1756,7 +1859,6 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 },
             }
         )
-        selection_history.append(chosen)
         previous = chosen
 
     program_signature = ' -> '.join(f"{spec.label}({spec.bar_count})" for spec in section_specs)

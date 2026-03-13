@@ -2,7 +2,7 @@ from collections import Counter
 
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _choose_with_major_section_balance_guard, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
+from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _build_section_program, _choose_with_major_section_balance_guard, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -617,6 +617,40 @@ def test_build_stub_arrangement_plan_pushes_for_more_than_token_second_parent_pr
     assert major_parent_counts["B"] >= 2
 
 
+def test_section_level_authenticity_guard_breaks_full_section_monopoly_when_other_parent_has_safe_late_major_option():
+    intro = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A")
+    verse = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
+    build = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="B", transition_in="blend", transition_out="swap")
+    payoff = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+
+    dominant_song = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.21)
+    alternate_song = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+    dominant_candidate = _pick_candidate(dominant_song, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+    alternate_candidate = _pick_candidate(alternate_song, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+
+    chosen = [
+        _WindowSelection(parent_id="B", song=dominant_song, candidate=dominant_candidate, blended_error=0.40, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.20, "transition_viability": 0.18, "role_prior": 0.15, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="intro"),
+        _WindowSelection(parent_id="B", song=dominant_song, candidate=dominant_candidate, blended_error=0.52, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.24, "transition_viability": 0.20, "role_prior": 0.18, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="verse"),
+        _WindowSelection(parent_id="B", song=dominant_song, candidate=dominant_candidate, blended_error=0.60, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.26, "transition_viability": 0.22, "role_prior": 0.20, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="build"),
+        _WindowSelection(parent_id="B", song=dominant_song, candidate=dominant_candidate, blended_error=0.72, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.24, "role_prior": 0.22, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="payoff"),
+    ]
+    ranked_choices = [
+        [chosen[0]],
+        [chosen[1]],
+        [chosen[2], _WindowSelection(parent_id="A", song=alternate_song, candidate=alternate_candidate, blended_error=0.84, score_breakdown={"stretch_ratio": 1.02, "stretch_gate": 0.0, "seam_risk": 0.30, "transition_viability": 0.28, "role_prior": 0.24, "groove_continuity": 0.0, "listen_groove_confidence": 0.80}, section_label="build")],
+        [chosen[3], _WindowSelection(parent_id="A", song=alternate_song, candidate=alternate_candidate, blended_error=0.90, score_breakdown={"stretch_ratio": 1.01, "stretch_gate": 0.0, "seam_risk": 0.32, "transition_viability": 0.26, "role_prior": 0.25, "groove_continuity": 0.0, "listen_groove_confidence": 0.79}, section_label="payoff")],
+    ]
+
+    updated, notes = _apply_section_level_authenticity_guard(
+        [intro, verse, build, payoff],
+        chosen,
+        ranked_choices,
+    )
+
+    assert {selection.parent_id for selection in updated} == {"A", "B"}
+    assert updated[-1].parent_id == "A"
+    assert any("section-level authenticity guard" in note for note in notes)
+
 
 def test_enumerate_section_choices_penalizes_token_non_major_second_parent_presence_when_major_identity_is_still_one_sided():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.22)
@@ -701,7 +735,15 @@ def test_major_section_balance_guard_switches_to_other_parent_before_full_major_
         song=b,
         candidate=_pick_candidate(b, target_position="late", bar_count=16, target_energy=0.84, role="payoff"),
         blended_error=1.10,
-        score_breakdown={"stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.22, "role_prior": 0.18},
+        score_breakdown={
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.02,
+            "seam_risk": 0.28,
+            "transition_viability": 0.22,
+            "role_prior": 0.18,
+            "listen_groove_confidence": 0.83,
+            "groove_continuity": 0.0,
+        },
         section_label="payoff",
     )
     alternate = _WindowSelection(
@@ -709,7 +751,15 @@ def test_major_section_balance_guard_switches_to_other_parent_before_full_major_
         song=a,
         candidate=_pick_candidate(a, target_position="late", bar_count=16, target_energy=0.82, role="payoff"),
         blended_error=1.48,
-        score_breakdown={"stretch_gate": 0.0, "seam_risk": 0.34, "transition_viability": 0.30, "role_prior": 0.24},
+        score_breakdown={
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.04,
+            "seam_risk": 0.34,
+            "transition_viability": 0.30,
+            "role_prior": 0.24,
+            "listen_groove_confidence": 0.79,
+            "groove_continuity": 0.0,
+        },
         section_label="payoff",
     )
 
@@ -722,6 +772,73 @@ def test_major_section_balance_guard_switches_to_other_parent_before_full_major_
     assert picked.parent_id == "A"
     assert note is not None
     assert "major-section monopoly" in note
+    assert "stretch 1.04" in note
+    assert "groove 0.79" in note
+
+
+
+def test_major_section_balance_guard_does_not_force_second_parent_when_alternate_is_not_groove_safe():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 5, 0.23)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 5, 0.24)
+
+    prior_major_1 = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="mid", bar_count=8, target_energy=0.42, role="verse"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="verse",
+    )
+    prior_major_2 = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="mid", bar_count=8, target_energy=0.58, role="build"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="build",
+    )
+
+    chosen = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="late", bar_count=16, target_energy=0.84, role="payoff"),
+        blended_error=1.10,
+        score_breakdown={
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.02,
+            "seam_risk": 0.28,
+            "transition_viability": 0.22,
+            "role_prior": 0.18,
+            "listen_groove_confidence": 0.84,
+            "groove_continuity": 0.0,
+        },
+        section_label="payoff",
+    )
+    groove_unsafe_alternate = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="late", bar_count=16, target_energy=0.82, role="payoff"),
+        blended_error=1.30,
+        score_breakdown={
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.05,
+            "seam_risk": 0.32,
+            "transition_viability": 0.28,
+            "role_prior": 0.22,
+            "listen_groove_confidence": 0.49,
+            "groove_continuity": 0.0,
+        },
+        section_label="payoff",
+    )
+
+    picked, note = _choose_with_major_section_balance_guard(
+        _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend"),
+        [chosen, groove_unsafe_alternate],
+        [prior_major_1, prior_major_2],
+    )
+
+    assert picked.parent_id == "B"
+    assert note is None
 
 
 
