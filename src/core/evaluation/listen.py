@@ -60,10 +60,17 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     seam_risk_sections = 0
     stretch_warning_sections = 0
     transition_risk_rows: list[dict[str, Any]] = []
+    section_primary_counts = {'A': 0, 'B': 0}
+    foreground_owner_counts = {'A': 0, 'B': 0}
+    background_only_presence_counts = {'A': 0, 'B': 0}
+    major_section_primary_counts = {'A': 0, 'B': 0}
+    major_labels = {'verse', 'build', 'payoff', 'bridge'}
 
     for section in sections:
         allowed_overlap = bool(section.get('allowed_overlap', False))
         overlap_beats = float(section.get('overlap_beats_max', 0.0) or 0.0)
+        label = str(section.get('label') or '')
+        primary_owner = section.get('source_parent') or section.get('foreground_owner')
         fg = section.get('foreground_owner')
         bg = section.get('background_owner')
         low = section.get('low_end_owner')
@@ -72,6 +79,15 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         transition_out = section.get('transition_out')
         stretch_ratio = abs(float(section.get('stretch_ratio', 1.0) or 1.0) - 1.0)
         collapse_if_conflict = bool(section.get('collapse_if_conflict', False))
+
+        if primary_owner in section_primary_counts:
+            section_primary_counts[primary_owner] += 1
+            if label in major_labels:
+                major_section_primary_counts[primary_owner] += 1
+        if fg in foreground_owner_counts:
+            foreground_owner_counts[fg] += 1
+        if bg in background_only_presence_counts and bg not in {primary_owner, fg, low}:
+            background_only_presence_counts[bg] += 1
 
         overlap_risk = 0.0
         if allowed_overlap:
@@ -141,6 +157,15 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         conservative_collapses = max(conservative_collapses, 1)
 
     section_count = max(len(sections), 1)
+    true_two_parent_section_ratio = round(min(section_primary_counts.values()) / section_count, 3)
+    true_two_parent_major_section_ratio = round(min(major_section_primary_counts.values()) / section_count, 3)
+    background_only_presence_ratio = round(sum(background_only_presence_counts.values()) / section_count, 3)
+    minority_parent = min(section_primary_counts, key=section_primary_counts.get)
+    background_only_identity_gap = round(
+        max(0.0, (background_only_presence_counts[minority_parent] / section_count) - true_two_parent_section_ratio),
+        3,
+    )
+
     aggregate = {
         'section_count': len(sections),
         'overlap_section_ratio': round(overlap_sections / section_count, 3),
@@ -152,11 +177,22 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         'seam_risk_ratio': round(seam_risk_sections / section_count, 3),
         'stretch_warning_ratio': round(stretch_warning_sections / section_count, 3),
         'collapse_ratio': round(conservative_collapses / section_count, 3),
+        'true_two_parent_section_ratio': true_two_parent_section_ratio,
+        'true_two_parent_major_section_ratio': true_two_parent_major_section_ratio,
+        'background_only_presence_ratio': background_only_presence_ratio,
+        'background_only_identity_gap': background_only_identity_gap,
         'warning_count': len(warnings),
         'fallback_count': len(fallbacks),
     }
     return {
         'aggregate_metrics': aggregate,
+        'fusion_identity': {
+            'section_primary_counts': section_primary_counts,
+            'major_section_primary_counts': major_section_primary_counts,
+            'foreground_owner_counts': foreground_owner_counts,
+            'background_only_presence_counts': background_only_presence_counts,
+            'minority_parent': minority_parent,
+        },
         'risky_sections': sorted(transition_risk_rows, key=lambda row: row['risk'], reverse=True)[:5],
         'warnings': warnings[:5],
         'fallbacks': fallbacks[:5],

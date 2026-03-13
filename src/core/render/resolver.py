@@ -137,6 +137,28 @@ def _apply_transition_mode_constraints(
     return overlap_beats, True, f"transition_mode={transition_mode} disabled donor background ownership for an explicit single-owner handoff"
 
 
+def _resolve_incoming_gain_db(
+    transition_in: str | None,
+    transition_mode: str | None,
+    overlap_beats: float,
+    previous_label: str | None,
+    current_label: str | None,
+) -> float:
+    gain_db = incoming_gain_db(transition_in, transition_mode)
+    prev = (previous_label or "").strip().lower()
+    curr = (current_label or "").strip().lower()
+
+    if overlap_beats >= 4.0 and transition_mode == "same_parent_flow":
+        gain_db -= 0.75
+    elif overlap_beats >= 4.0 and transition_in in {"blend", "lift"}:
+        gain_db -= 0.5
+
+    if prev == "payoff" and curr in {"bridge", "outro"} and overlap_beats > 0.0:
+        gain_db -= 0.75
+
+    return gain_db
+
+
 def _phrase_label_bounds(requested_label: str | None, song: SongDNA) -> tuple[float, float, list[str]] | None:
     if not requested_label:
         return None
@@ -514,7 +536,13 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             target_duration_sec=target_duration_sec,
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
-            gain_db=incoming_gain_db(sec.transition_in, sec.transition_mode),
+            gain_db=_resolve_incoming_gain_db(
+                sec.transition_in,
+                sec.transition_mode,
+                overlap_beats,
+                previous_label,
+                sec.label,
+            ),
             fade_in_sec=fade_in_sec,
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
             transition_type=sec.transition_in,

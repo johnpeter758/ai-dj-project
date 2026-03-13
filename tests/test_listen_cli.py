@@ -462,6 +462,40 @@ def test_compare_listen_accepts_directory_output(monkeypatch, tmp_path: Path):
     assert out.exists()
 
 
+def test_manifest_identity_metrics_distinguish_true_two_parent_ownership_from_background_only_presence(tmp_path: Path):
+    run_dir = tmp_path / 'identity_run'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    manifest = run_dir / 'render_manifest.json'
+    manifest.write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0},
+    {"index": 1, "label": "verse", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0},
+    {"index": 2, "label": "build", "source_parent": "A", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "A", "background_owner": null, "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 3, "label": "payoff", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0}
+  ],
+  "work_orders": []
+}""" % audio.as_posix())
+
+    song = DummySong(str(audio))
+    report = evaluate_song(song)
+    manifest_metrics = report.mix_sanity.details['manifest_metrics']
+    aggregate = manifest_metrics['aggregate_metrics']
+    identity = manifest_metrics['fusion_identity']
+
+    assert aggregate['true_two_parent_section_ratio'] == 0.25
+    assert aggregate['true_two_parent_major_section_ratio'] == 0.25
+    assert aggregate['background_only_presence_ratio'] == 0.75
+    assert aggregate['background_only_identity_gap'] == 0.5
+    assert identity['section_primary_counts'] == {'A': 1, 'B': 3}
+    assert identity['major_section_primary_counts'] == {'A': 1, 'B': 2}
+    assert identity['background_only_presence_counts'] == {'A': 3, 'B': 0}
+    assert identity['minority_parent'] == 'A'
+
+
+
 def test_manifest_aware_transition_and_mix_penalties(tmp_path: Path):
     run_dir = tmp_path / 'run'
     run_dir.mkdir()

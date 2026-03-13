@@ -1700,7 +1700,7 @@ def _infer_transition_mode(
         return "same_parent_flow"
     if previous_label == "payoff" and spec.label in {"bridge", "outro"}:
         return "arrival_handoff"
-    if spec.transition_in in {"swap", "drop"} or spec.label == "payoff":
+    if spec.transition_in in {"swap", "drop"} or spec.label in {"build", "payoff"}:
         return "single_owner_handoff"
     return "crossfade_support"
 

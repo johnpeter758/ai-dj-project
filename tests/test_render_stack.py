@@ -342,7 +342,7 @@ def test_resolve_render_plan_applies_transition_aware_incoming_gain(tmp_path: Pa
 
     assert manifest.sections[0].allowed_overlap is True
     assert manifest.sections[0].overlap_beats_max == transition_overlap_beats('blend')
-    assert manifest.work_orders[0].gain_db == incoming_gain_db('blend')
+    assert manifest.work_orders[0].gain_db == pytest.approx(incoming_gain_db('blend') - 0.5)
     assert manifest.work_orders[0].gain_db < 0.0
     assert manifest.sections[0].background_owner is None
 
@@ -431,6 +431,33 @@ def test_resolve_render_plan_honors_single_owner_handoff_mode(tmp_path: Path):
 
 
 
+def test_resolve_render_plan_trims_long_same_parent_flow_arrival_gain(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='verse', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='build', start_bar=4, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='blend', transition_mode='same_parent_flow'),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[1].overlap_beats_max == transition_overlap_beats('blend')
+    assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend') - 0.75)
+
+
+
 def test_resolve_render_plan_caps_late_payoff_handoff_blend_overlap(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'
@@ -458,7 +485,7 @@ def test_resolve_render_plan_caps_late_payoff_handoff_blend_overlap(tmp_path: Pa
     assert manifest.sections[1].background_owner is None
     assert manifest.sections[1].transition_mode == 'arrival_handoff'
     assert manifest.work_orders[1].fade_in_sec == pytest.approx(0.25)
-    assert manifest.work_orders[1].gain_db == incoming_gain_db('blend', 'arrival_handoff')
+    assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend', 'arrival_handoff') - 0.75)
     joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
     assert 'late payoff handoff overlap capped from 8.0 to 0.5 beats' in joined
     assert 'transition_mode=arrival_handoff' in joined
@@ -492,6 +519,7 @@ def test_resolve_render_plan_tightens_late_payoff_bridge_handoff_for_explicit_si
     assert manifest.sections[1].background_owner is None
     assert manifest.sections[1].transition_mode == 'single_owner_handoff'
     assert manifest.work_orders[1].fade_in_sec == pytest.approx(0.25)
+    assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend', 'single_owner_handoff') - 0.75)
     joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
     assert 'late payoff handoff overlap capped from 8.0 to 0.5 beats' in joined
     assert 'transition_mode=single_owner_handoff' in joined

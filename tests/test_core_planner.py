@@ -2,7 +2,7 @@ from collections import Counter
 
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _build_section_program, _choose_with_major_section_balance_guard, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
+from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _build_section_program, _choose_with_major_section_balance_guard, _enumerate_section_choices, _infer_transition_mode, _pick_candidate, _planner_listen_feedback
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -209,6 +209,30 @@ def test_build_role_prior_prefers_consistent_ramp_over_flashy_late_spike():
     candidate = _pick_candidate(song, target_position="mid", bar_count=8, target_energy=0.55, role="build")
 
     assert candidate.label == "phrase_4_6"
+
+
+def test_infer_transition_mode_prefers_single_owner_handoff_for_cross_parent_build():
+    song_a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    song_b = make_song("b.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    previous = _WindowSelection(
+        parent_id="A",
+        song=song_a,
+        candidate=_pick_candidate(song_a, target_position="mid", bar_count=8, target_energy=0.42, role="verse"),
+        blended_error=0.10,
+        score_breakdown={},
+        section_label="verse",
+    )
+    chosen = _WindowSelection(
+        parent_id="B",
+        song=song_b,
+        candidate=_pick_candidate(song_b, target_position="mid", bar_count=8, target_energy=0.58, role="build"),
+        blended_error=0.12,
+        score_breakdown={},
+        section_label="build",
+    )
+    spec = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="B", transition_in="blend", transition_out="swap")
+
+    assert _infer_transition_mode(spec, chosen, previous, "verse") == "single_owner_handoff"
 
 
 def test_build_plan_uses_sequential_transition_viability_to_keep_energy_rising_into_payoff():
