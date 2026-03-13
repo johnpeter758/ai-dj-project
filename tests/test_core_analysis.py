@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 
 from src.core.analysis import analyzer
+from src.core.analysis.energy import compute_energy_profile
 
 
 def test_analyze_audio_file_returns_song_dna(monkeypatch):
@@ -20,3 +21,25 @@ def test_analyze_audio_file_returns_song_dna(monkeypatch):
     assert result["key"]["camelot"] == "8A"
     assert result["structure"]["sections"][0]["label"] == "section_0"
     assert result["analysis_version"] == "0.1.0"
+
+
+def test_compute_energy_profile_emits_bar_and_derived_signals():
+    sr = 22050
+    duration = 8.0
+    t = np.linspace(0.0, duration, int(sr * duration), endpoint=False)
+    envelope = np.concatenate([
+        np.linspace(0.15, 0.35, int(t.size * 0.25), endpoint=False),
+        np.linspace(0.35, 0.85, int(t.size * 0.25), endpoint=False),
+        np.linspace(0.20, 0.30, int(t.size * 0.25), endpoint=False),
+        np.linspace(0.70, 0.95, t.size - int(t.size * 0.75), endpoint=False),
+    ])
+    audio = envelope * np.sin(2 * np.pi * 220 * t)
+
+    profile = compute_energy_profile(audio.astype(float), sr)
+
+    assert profile["bar_rms"]
+    assert profile["bar_onset_density"]
+    assert "derived" in profile
+    assert profile["derived"]["energy_confidence"] >= 0.0
+    assert "hook_strength" in profile["summary"]
+    assert "payoff_strength" in profile["summary"]

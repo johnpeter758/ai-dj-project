@@ -42,6 +42,9 @@ class _RoleFeatures:
     novelty: float
     novelty_density: float
     section_progress: float
+    hook_strength: float
+    payoff_strength: float
+    energy_confidence: float
 
 
 @dataclass(frozen=True)
@@ -147,15 +150,27 @@ def _safe_float_list(values) -> list[float]:
 
 
 def _window_energy(song: SongDNA, start: float, end: float) -> float:
+    bar_times = _safe_float_list(song.energy.get('bar_times', []))
+    bar_rms = _safe_float_list(song.energy.get('bar_rms', []))
+    pairs = [(t, e) for t, e in zip(bar_times, bar_rms) if start <= t < end]
+    if pairs:
+        return sum(e for _, e in pairs) / len(pairs)
+
     beat_times = _safe_float_list(song.energy.get('beat_times', []))
     beat_rms = _safe_float_list(song.energy.get('beat_rms', []))
     pairs = [(t, e) for t, e in zip(beat_times, beat_rms) if start <= t < end]
     if pairs:
         return sum(e for _, e in pairs) / len(pairs)
-    return float(song.energy.get('summary', {}).get('mean_rms', 0.0))
+    return float(song.energy.get('summary', {}).get('mean_bar_rms', song.energy.get('summary', {}).get('mean_rms', 0.0)))
 
 
 def _window_energy_slope(song: SongDNA, start: float, end: float) -> float:
+    bar_times = _safe_float_list(song.energy.get('bar_times', []))
+    bar_rms = _safe_float_list(song.energy.get('bar_rms', []))
+    window = [e for t, e in zip(bar_times, bar_rms) if start <= t < end]
+    if len(window) >= 2:
+        return float(window[-1] - window[0])
+
     beat_times = _safe_float_list(song.energy.get('beat_times', []))
     beat_rms = _safe_float_list(song.energy.get('beat_rms', []))
     window = [e for t, e in zip(beat_times, beat_rms) if start <= t < end]
@@ -283,9 +298,9 @@ def _score_slope_flat(value: float) -> float:
 
 
 def _window_profile(song: SongDNA, start: float, end: float, bins: int = 4) -> list[float]:
-    beat_times = _safe_float_list(song.energy.get('beat_times', []))
-    beat_rms = _safe_float_list(song.energy.get('beat_rms', []))
-    window = [(t, e) for t, e in zip(beat_times, beat_rms) if start <= t < end]
+    times = _safe_float_list(song.energy.get('bar_times', [])) or _safe_float_list(song.energy.get('beat_times', []))
+    values = _safe_float_list(song.energy.get('bar_rms', [])) or _safe_float_list(song.energy.get('beat_rms', []))
+    window = [(t, e) for t, e in zip(times, values) if start <= t < end]
     if not window:
         mean_energy = _window_energy(song, start, end)
         return [mean_energy] * bins
@@ -295,12 +310,28 @@ def _window_profile(song: SongDNA, start: float, end: float, bins: int = 4) -> l
     for idx in range(bins):
         bin_start = start + (duration * idx / bins)
         bin_end = start + (duration * (idx + 1) / bins)
-        values = [e for t, e in window if bin_start <= t < bin_end]
-        if values:
-            out.append(sum(values) / len(values))
+        chunk = [e for t, e in window if bin_start <= t < bin_end]
+        if chunk:
+            out.append(sum(chunk) / len(chunk))
         else:
             out.append(out[-1] if out else _window_energy(song, start, end))
     return out
+
+
+def _signal_overlap_strength(song: SongDNA, candidate: _SectionCandidate, signal_key: str) -> float:
+    derived = song.energy.get('derived', {}) or {}
+    windows = derived.get(signal_key, []) or []
+    best = 0.0
+    for window in windows:
+        start = float(window.get('start', 0.0))
+        end = float(window.get('end', 0.0))
+        overlap = min(candidate.end, end) - max(candidate.start, start)
+        if overlap <= 0.0:
+            continue
+        coverage = overlap / max(candidate.duration, 1e-6)
+        score = float(window.get('score', 0.0))
+        best = max(best, min(1.0, coverage * score))
+    return best
 
 
 def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate], candidate: _SectionCandidate) -> _RoleFeatures:
@@ -362,11 +393,15 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
         novelty=novelty,
         novelty_density=novelty_density,
         section_progress=section_progress,
+        hook_strength=_signal_overlap_strength(song, candidate, 'hook_windows'),
+        payoff_strength=_signal_overlap_strength(song, candidate, 'payoff_windows'),
+        energy_confidence=float((song.energy.get('derived', {}) or {}).get('energy_confidence', 0.0)),
     )
 
 
 def _role_prior_score(role: str, features: _RoleFeatures) -> float:
-    weights = ROLE_PRIOR_WEIGHTS.get(ROLE_ALIAS.get(role, role))
+    canonical_role = ROLE_ALIAS.get(role, role)
+    weights = ROLE_PRIOR_WEIGHTS.get(canonical_role)
     if not weights:
         return 0.0
 
@@ -386,6 +421,20 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
     score += weights.get('section_early', 0.0) * _score_position_low(features.position)
     score += weights.get('section_mid', 0.0) * _score_position_mid(features.position, center=0.55, width=0.30)
     score += weights.get('section_late', 0.0) * _score_position_high(features.position)
+
+    signal_confidence = 0.55 + (0.45 * features.energy_confidence)
+    if canonical_role == 'chorus_payoff':
+        score += 1.15 * features.payoff_strength * signal_confidence
+        score += 0.55 * features.hook_strength * signal_confidence
+    elif canonical_role == 'pre':
+        score += 0.35 * features.payoff_strength * signal_confidence
+    elif canonical_role == 'verse':
+        score += 0.45 * features.hook_strength * signal_confidence
+    elif canonical_role == 'bridge':
+        score += 0.20 * features.hook_strength * signal_confidence
+    elif canonical_role == 'intro':
+        score -= 0.15 * features.payoff_strength * signal_confidence
+
     return score
 
 
@@ -572,7 +621,14 @@ def _transition_viability(previous: _WindowSelection | None, current_parent: str
         return max(0.0, min(1.0, 0.45 + (0.55 * max(0.0, delta))))
     if transition_in == 'blend':
         same_parent_bonus = 0.10 if current_parent == previous.parent_id else 0.0
-        return max(0.0, min(1.0, 1.0 - (abs_delta / 0.30) + same_parent_bonus))
+        if delta >= 0.0:
+            # A build-friendly blend can tolerate a measured lift in energy;
+            # punish steep upward jumps less aggressively than drops so the
+            # planner does not flatten the arc just to keep adjacent windows similar.
+            score = 0.88 - (abs_delta / 0.55)
+        else:
+            score = 0.95 - (abs_delta / 0.30)
+        return max(0.0, min(1.0, score + same_parent_bonus))
     if transition_in == 'swap':
         parent_bonus = 0.10 if current_parent != previous.parent_id else 0.0
         return max(0.0, min(1.0, 0.90 - (abs_delta / 0.40) + parent_bonus))
@@ -683,13 +739,65 @@ def _pick_candidate(song: SongDNA, target_position: str, bar_count: int, target_
     return min(candidates, key=score)
 
 
+def _selection_reuse_penalty(
+    prior_selections: list[_WindowSelection],
+    parent_id: str,
+    candidate: _SectionCandidate,
+) -> tuple[float, dict[str, float]]:
+    if not prior_selections:
+        return 0.0, {
+            'exact_window_reuse': 0.0,
+            'window_overlap_reuse': 0.0,
+            'parent_streak': 0.0,
+        }
+
+    exact_window_reuse = 0.0
+    overlap_reuse = 0.0
+    parent_streak = 0.0
+
+    streak = 0
+    for selection in reversed(prior_selections):
+        if selection.parent_id != parent_id:
+            break
+        streak += 1
+    if streak >= 2:
+        parent_streak = min(1.0, 0.35 + (0.20 * (streak - 2)))
+
+    for selection in prior_selections:
+        if selection.parent_id != parent_id:
+            continue
+        prior = selection.candidate
+        if prior.label == candidate.label and abs(prior.start - candidate.start) < 1e-6 and abs(prior.end - candidate.end) < 1e-6:
+            exact_window_reuse = 1.0
+            overlap_reuse = max(overlap_reuse, 1.0)
+            continue
+
+        overlap_start = max(prior.start, candidate.start)
+        overlap_end = min(prior.end, candidate.end)
+        if overlap_end <= overlap_start:
+            continue
+        overlap = overlap_end - overlap_start
+        candidate_ratio = overlap / max(candidate.duration, 1e-6)
+        prior_ratio = overlap / max(prior.duration, 1e-6)
+        overlap_reuse = max(overlap_reuse, min(1.0, max(candidate_ratio, prior_ratio)))
+
+    penalty = min(1.0, (0.70 * exact_window_reuse) + (0.45 * overlap_reuse) + (0.20 * parent_streak))
+    return penalty, {
+        'exact_window_reuse': exact_window_reuse,
+        'window_overlap_reuse': overlap_reuse,
+        'parent_streak': parent_streak,
+    }
+
+
 def _enumerate_section_choices(
     spec: _SectionSpec,
     song_a: SongDNA,
     song_b: SongDNA,
     previous: _WindowSelection | None,
+    prior_selections: list[_WindowSelection] | None = None,
 ) -> list[_WindowSelection]:
     target_position = SECTION_TARGET_POSITION.get(spec.label, spec.label)
+    prior_selections = list(prior_selections or [])
     by_parent = {
         'A': (song_a, song_b),
         'B': (song_b, song_a),
@@ -724,6 +832,7 @@ def _enumerate_section_choices(
             transition_error = 1.0 - _transition_viability(previous, parent_id, candidate, spec.transition_in)
             arc_error = 1.0 - _energy_arc_viability(previous, candidate, spec)
             seam_risk, seam_metrics = _planner_seam_risk(previous, song, candidate)
+            reuse_penalty, reuse_metrics = _selection_reuse_penalty(prior_selections, parent_id, candidate)
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
 
             if target_position == 'early':
@@ -746,6 +855,7 @@ def _enumerate_section_choices(
                 + (1.05 * arc_error)
                 + (1.75 * seam_risk)
                 + (1.35 * seam_gate_error)
+                + (1.10 * reuse_penalty)
                 + (0.35 * preference_error)
             )
             selections.append(
@@ -764,6 +874,10 @@ def _enumerate_section_choices(
                         'energy_arc': arc_error,
                         'seam_risk': seam_risk,
                         'seam_gate': seam_gate_error,
+                        'selection_reuse': reuse_penalty,
+                        'reuse_exact_window': reuse_metrics['exact_window_reuse'],
+                        'reuse_window_overlap': reuse_metrics['window_overlap_reuse'],
+                        'reuse_parent_streak': reuse_metrics['parent_streak'],
                         'parent_preference': preference_error,
                         'seam_energy_jump': seam_metrics['energy_jump'],
                         'seam_spectral_jump': seam_metrics['spectral_jump'],
@@ -799,9 +913,10 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     sections: list[PlannedSection] = []
     selection_notes: list[str] = []
     previous: _WindowSelection | None = None
+    selection_history: list[_WindowSelection] = []
     song_map = {'A': song_a, 'B': song_b}
     for spec in section_specs:
-        ranked = _enumerate_section_choices(spec, song_a, song_b, previous)
+        ranked = _enumerate_section_choices(spec, song_a, song_b, previous, prior_selections=selection_history)
         chosen = ranked[0]
         candidate = chosen.candidate
         sections.append(
@@ -820,11 +935,13 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         selection_notes.append(
             f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
         )
+        selection_history.append(chosen)
         previous = chosen
 
     notes = [
         'Planner now ranks explicit phrase windows section-by-section across both parents instead of relying on coarse early/mid/late anchor picking.',
-        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, and evaluator-style seam-risk priors, with sequential selection so neighboring handoff quality can change the winner.',
+        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, evaluator-style seam-risk priors, history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
+        'Sequential selection now discourages replaying the exact same source window or heavily overlapping window later in the child timeline unless the musical fit is clearly stronger.',
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',
         *selection_notes,
