@@ -367,6 +367,36 @@ def test_resolve_render_plan_caps_overlap_for_overstretched_transition(tmp_path:
     assert 'transition overlap capped to 2.0 beats' in joined
 
 
+def test_resolve_render_plan_caps_late_payoff_handoff_blend_overlap(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='payoff', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='outro', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend'),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[1].allowed_overlap is True
+    assert manifest.sections[1].overlap_beats_max == 2.0
+    assert manifest.work_orders[1].fade_in_sec == pytest.approx(1.0)
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
+    assert 'late payoff handoff overlap capped from 8.0 to 2.0 beats' in joined
+
+
+
 def test_render_resolved_plan_applies_work_order_gain_deterministically(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 440.0)

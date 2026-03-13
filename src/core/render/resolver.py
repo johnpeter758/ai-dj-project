@@ -101,6 +101,14 @@ def _validate_section_timing(section_info: dict[str, Any], song: SongDNA) -> tup
     return raw_start, raw_end, warnings
 
 
+def _cap_late_payoff_handoff_overlap(previous_label: str | None, current_label: str | None, overlap_beats: float) -> tuple[float, str | None]:
+    prev = (previous_label or "").strip().lower()
+    curr = (current_label or "").strip().lower()
+    if prev == "payoff" and curr in {"outro", "bridge"} and overlap_beats > 2.0:
+        return 2.0, f"late payoff handoff overlap capped from {overlap_beats:.1f} to 2.0 beats to reduce seam crowding"
+    return overlap_beats, None
+
+
 def _phrase_label_bounds(requested_label: str | None, song: SongDNA) -> tuple[float, float, list[str]] | None:
     if not requested_label:
         return None
@@ -411,6 +419,10 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
 
         other_parent = "B" if parent_id == "A" else "A"
         overlap_beats = transition_overlap_beats(sec.transition_in, config=config, stretch_ratio=stretch_ratio)
+        previous_label = resolved_sections[-1].label if resolved_sections else None
+        overlap_beats, late_handoff_warning = _cap_late_payoff_handoff_overlap(previous_label, sec.label, overlap_beats)
+        if late_handoff_warning:
+            section_warnings.append(late_handoff_warning)
         if overlap_beats > 0.0 and (stretch_ratio < _CONSERVATIVE_STRETCH_MIN or stretch_ratio > _CONSERVATIVE_STRETCH_MAX):
             section_warnings.append(
                 f"transition overlap capped to {overlap_beats:.1f} beats because stretch ratio {stretch_ratio:.3f} is outside conservative bounds"
@@ -444,6 +456,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         )
         resolved_sections.append(resolved)
 
+        fade_in_sec = overlap_beats * 60.0 / max(anchor_bpm, 1e-6)
         work_orders.append(AudioWorkOrder(
             order_id=f"section_{idx}_base",
             section_index=idx,
@@ -458,7 +471,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
             gain_db=incoming_gain_db(sec.transition_in),
-            fade_in_sec=transition_overlap_seconds(sec.transition_in, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
+            fade_in_sec=fade_in_sec,
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
             transition_type=sec.transition_in,
             foreground_state="owner",
