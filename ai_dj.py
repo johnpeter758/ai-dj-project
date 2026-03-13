@@ -606,6 +606,101 @@ def compare_listen(left: str, right: str, output: Optional[str]) -> int:
     return 0
 
 
+def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
+    if len(inputs) < 2:
+        raise CliError("listen benchmark requires at least two inputs")
+
+    resolved = [_resolve_compare_input(path) for path in inputs]
+    scoreboard = {
+        item['input_label']: {
+            'label': item['input_label'],
+            'input_path': item['input_path'],
+            'report_origin': item['report_origin'],
+            'overall_score': float(item['report']['overall_score']),
+            'verdict': item['report'].get('verdict'),
+            'wins': 0,
+            'ties': 0,
+            'losses': 0,
+            'net_score_delta': 0.0,
+            'pairwise': {},
+        }
+        for item in resolved
+    }
+    comparisons: list[dict[str, Any]] = []
+
+    for index, left in enumerate(resolved):
+        for right in resolved[index + 1:]:
+            comparison = _build_listen_comparison(left['input_path'], right['input_path'])
+            left_label = comparison['left']['input_label']
+            right_label = comparison['right']['input_label']
+            delta = float(comparison['deltas']['overall_score_delta'])
+            winner = comparison['winner']['overall']
+
+            scoreboard[left_label]['net_score_delta'] = round(float(scoreboard[left_label]['net_score_delta']) + delta, 1)
+            scoreboard[right_label]['net_score_delta'] = round(float(scoreboard[right_label]['net_score_delta']) - delta, 1)
+            scoreboard[left_label]['pairwise'][right_label] = {
+                'winner': winner,
+                'overall_score_delta': delta,
+            }
+            mirrored_winner = 'right' if winner == 'left' else 'left' if winner == 'right' else 'tie'
+            scoreboard[right_label]['pairwise'][left_label] = {
+                'winner': mirrored_winner,
+                'overall_score_delta': round(-delta, 1),
+            }
+
+            if winner == 'left':
+                scoreboard[left_label]['wins'] += 1
+                scoreboard[right_label]['losses'] += 1
+            elif winner == 'right':
+                scoreboard[right_label]['wins'] += 1
+                scoreboard[left_label]['losses'] += 1
+            else:
+                scoreboard[left_label]['ties'] += 1
+                scoreboard[right_label]['ties'] += 1
+
+            comparisons.append(
+                {
+                    'left': left_label,
+                    'right': right_label,
+                    'winner': winner,
+                    'overall_score_delta': delta,
+                    'decision': comparison.get('decision', {}),
+                }
+            )
+
+    ranking = sorted(
+        scoreboard.values(),
+        key=lambda row: (-int(row['wins']), -float(row['net_score_delta']), -float(row['overall_score']), row['label']),
+    )
+
+    return {
+        'schema_version': '0.1.0',
+        'inputs': [item['input_path'] for item in resolved],
+        'ranking': ranking,
+        'comparisons': comparisons,
+        'winner': ranking[0]['label'] if ranking else None,
+    }
+
+
+def benchmark_listen(inputs: list[str], output: Optional[str]) -> int:
+    benchmark = _build_listen_benchmark(inputs)
+    resolved_output = _resolve_output_path(output, default_filename='listen_benchmark.json')
+    if resolved_output:
+        _write_json(resolved_output, benchmark)
+        print(f"Wrote listen benchmark: {resolved_output}")
+
+    if output is None:
+        print(json.dumps(benchmark, indent=2, sort_keys=True))
+
+    print(f"Benchmark winner: {benchmark['winner']}")
+    for row in benchmark['ranking']:
+        print(
+            f"- {row['label']}: wins={row['wins']} ties={row['ties']} losses={row['losses']} "
+            f"net_delta={row['net_score_delta']:+.1f} overall={row['overall_score']:.1f}"
+        )
+    return 0
+
+
 def doctor(output_json: Optional[str] = None) -> int:
     """Report whether the local environment is ready for prototype analysis/render steps."""
     status = _dependency_status()
@@ -658,6 +753,7 @@ Suggested first checkpoint:
   python3 ai_dj.py analyze song.wav --output runs/checkpoint/song_dna.json
   python3 ai_dj.py listen song.wav --output runs/checkpoint/listen_report.json
   python3 ai_dj.py compare-listen left.json right.json --output runs/checkpoint/listen_compare.json
+  python3 ai_dj.py benchmark-listen runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listen_benchmark.json
   python3 ai_dj.py prototype song_a.wav song_b.wav --output-dir runs/prototype-001
   python3 ai_dj.py fusion song_a.wav song_b.wav --output runs/render-prototype
 ''',
@@ -684,6 +780,10 @@ Suggested first checkpoint:
     compare_parser.add_argument("left", help="Left input: listen JSON, audio file, render manifest JSON, or render output directory")
     compare_parser.add_argument("right", help="Right input: listen JSON, audio file, render manifest JSON, or render output directory")
     compare_parser.add_argument("--output", "-o", help="Path to output comparison JSON")
+
+    benchmark_parser = subparsers.add_parser("benchmark-listen", help="Round-robin benchmark multiple listen reports, audio files, or rendered outputs")
+    benchmark_parser.add_argument("inputs", nargs="+", help="Two or more inputs: listen JSON, audio file, render manifest JSON, or render output directory")
+    benchmark_parser.add_argument("--output", "-o", help="Path to output benchmark JSON")
 
     fus_parser = subparsers.add_parser("fusion", help="Render a first-pass fused audio prototype")
     fus_parser.add_argument("track1", help="Path to first track")
@@ -721,6 +821,8 @@ Suggested first checkpoint:
             return listen(args.track, args.output)
         if args.command == "compare-listen":
             return compare_listen(args.left, args.right, args.output)
+        if args.command == "benchmark-listen":
+            return benchmark_listen(args.inputs, args.output)
         if args.command == "doctor":
             return doctor(args.output)
     except CliError as exc:

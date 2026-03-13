@@ -185,3 +185,104 @@ def test_compare_listen_benchmark_exposes_component_reason_for_a_win(tmp_path: P
     assert comparison['winner']['components']['energy_arc'] == 'left'
     assert comparison['deltas']['component_score_deltas']['energy_arc'] == 25.0
     assert any('energy arc' in line.lower() for line in comparison['summary'])
+
+
+def test_build_listen_benchmark_returns_ranked_scoreboard(tmp_path: Path):
+    producer = BenchmarkCase(
+        name='producer_grade',
+        overall_score=88.0,
+        component_scores={
+            'structure': 89.0,
+            'groove': 87.0,
+            'energy_arc': 90.0,
+            'transition': 86.0,
+            'coherence': 88.0,
+            'mix_sanity': 89.0,
+        },
+        verdict='promising',
+    )
+    weak = BenchmarkCase(
+        name='weak',
+        overall_score=66.0,
+        component_scores={
+            'structure': 68.0,
+            'groove': 65.0,
+            'energy_arc': 60.0,
+            'transition': 64.0,
+            'coherence': 67.0,
+            'mix_sanity': 69.0,
+        },
+        verdict='weak',
+    )
+    middling = BenchmarkCase(
+        name='middling',
+        overall_score=78.0,
+        component_scores={
+            'structure': 79.0,
+            'groove': 78.0,
+            'energy_arc': 76.0,
+            'transition': 77.0,
+            'coherence': 79.0,
+            'mix_sanity': 80.0,
+        },
+        verdict='mixed',
+    )
+
+    benchmark = ai_dj._build_listen_benchmark(
+        [
+            str(_write_case(tmp_path, weak)),
+            str(_write_case(tmp_path, producer)),
+            str(_write_case(tmp_path, middling)),
+        ]
+    )
+
+    assert benchmark['winner'] == 'producer_grade.json'
+    assert [row['label'] for row in benchmark['ranking']] == ['producer_grade.json', 'middling.json', 'weak.json']
+    top = benchmark['ranking'][0]
+    assert top['wins'] == 2
+    assert top['losses'] == 0
+    assert top['net_score_delta'] == 32.0
+    assert top['pairwise']['middling.json']['winner'] == 'left'
+    assert top['pairwise']['weak.json']['overall_score_delta'] == 22.0
+    assert len(benchmark['comparisons']) == 3
+
+
+def test_benchmark_listen_writes_json_artifact(tmp_path: Path):
+    left = BenchmarkCase(
+        name='left',
+        overall_score=82.0,
+        component_scores={
+            'structure': 83.0,
+            'groove': 82.0,
+            'energy_arc': 84.0,
+            'transition': 81.0,
+            'coherence': 82.0,
+            'mix_sanity': 80.0,
+        },
+        verdict='promising',
+    )
+    right = BenchmarkCase(
+        name='right',
+        overall_score=74.0,
+        component_scores={
+            'structure': 75.0,
+            'groove': 74.0,
+            'energy_arc': 73.0,
+            'transition': 74.0,
+            'coherence': 75.0,
+            'mix_sanity': 73.0,
+        },
+        verdict='mixed',
+    )
+
+    output = tmp_path / 'benchmark.json'
+    rc = ai_dj.benchmark_listen(
+        [str(_write_case(tmp_path, left)), str(_write_case(tmp_path, right))],
+        str(output),
+    )
+
+    assert rc == 0
+    payload = json.loads(output.read_text(encoding='utf-8'))
+    assert payload['winner'] == 'left.json'
+    assert payload['ranking'][0]['label'] == 'left.json'
+    assert payload['ranking'][1]['label'] == 'right.json'
