@@ -307,6 +307,45 @@ def test_build_plan_allows_blend_transition_to_choose_stronger_upward_lift_when_
     assert best.candidate.label == "phrase_2_4"
 
 
+def test_payoff_drop_transition_prefers_stronger_safe_landing_over_flatter_option():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 48.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0]
+        song.energy["rms"] = song.energy["beat_rms"] = [0.18, 0.20, 0.24, 0.26, 0.30, 0.34, 0.40, 0.44, 0.50, 0.54, 0.60, 0.64]
+        song.energy["spectral_centroid"] = [1800, 1820, 1840, 1860, 1880, 1900, 1920, 1940, 1960, 1980, 2000, 2020]
+        song.energy["spectral_rolloff"] = [3400, 3420, 3440, 3460, 3480, 3500, 3520, 3540, 3560, 3580, 3600, 3620]
+        song.energy["onset_density"] = [0.18, 0.19, 0.20, 0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27, 0.28, 0.29]
+        song.energy["low_band_ratio"] = [0.28, 0.29, 0.30, 0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39]
+        song.energy["spectral_flatness"] = [0.12, 0.12, 0.13, 0.13, 0.14, 0.14, 0.15, 0.15, 0.16, 0.16, 0.17, 0.17]
+
+    a.energy["beat_rms"] = a.energy["rms"] = [0.10, 0.12, 0.18, 0.22, 0.28, 0.34, 0.38, 0.44, 0.48, 0.54, 0.58, 0.62]
+    b.energy["beat_rms"] = b.energy["rms"] = [0.16, 0.18, 0.24, 0.28, 0.34, 0.38, 0.52, 0.56, 0.64, 0.68, 0.70, 0.74]
+
+    previous = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="mid", bar_count=8, target_energy=0.58, role="build"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="build",
+    )
+    spec = _SectionSpec(label="payoff", start_bar=16, bar_count=8, target_energy=0.86, source_parent_preference=None, transition_in="drop")
+    ranked = _enumerate_section_choices(spec, a, b, previous)
+
+    flatter_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_2_4")
+    stronger_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_3_5")
+
+    assert stronger_b.score_breakdown["transition_impact"] < flatter_b.score_breakdown["transition_impact"]
+    assert stronger_b.blended_error < flatter_b.blended_error
+    assert ranked[0].parent_id == "B"
+    assert ranked[0].candidate.label in {"phrase_3_5", "phrase_4_6"}
+
+
 def test_extended_stub_arrangement_plan_includes_bridge_and_second_payoff_when_capacity_is_high():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.18)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
@@ -578,6 +617,35 @@ def test_build_stub_arrangement_plan_pushes_for_more_than_token_second_parent_pr
 
 
 
+def test_build_stub_arrangement_plan_gives_underused_parent_a_late_major_handoff_when_plausible():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.24)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+
+    for song in (a, b):
+        song.duration_seconds = 56.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {"energy_confidence": 0.9, "payoff_strength": 0.80, "hook_strength": 0.66, "hook_repetition": 0.56}
+
+    # A has the stronger early story and is still competitive late, but B has a real late payoff lane.
+    a.energy["beat_rms"] = [0.08, 0.10, 0.18, 0.22, 0.34, 0.38, 0.48, 0.54, 0.64, 0.70, 0.84, 0.88, 0.96, 1.00]
+    b.energy["beat_rms"] = [0.09, 0.11, 0.16, 0.20, 0.30, 0.34, 0.42, 0.48, 0.60, 0.66, 0.80, 0.86, 0.94, 0.98]
+
+    plan = build_stub_arrangement_plan(a, b).to_dict()
+
+    late_major_sections = [section for section in plan["sections"] if section["label"] in {"payoff", "bridge"}]
+    late_major_parents = {section["source_parent"] for section in late_major_sections}
+
+    assert len(late_major_sections) >= 1
+    assert "B" in late_major_parents
+
+    if len(late_major_sections) > 1:
+        assert late_major_parents == {"A", "B"}
+
+
+
 def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_timeline():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.20)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
@@ -674,6 +742,50 @@ def test_bridge_selection_prefers_real_reset_after_hot_payoff_over_staying_stuck
 
     assert reset_b.score_breakdown["energy_arc"] < hot_b.score_breakdown["energy_arc"]
     assert reset_b.blended_error < hot_b.blended_error
+
+
+def test_final_payoff_delivery_prefers_post_bridge_window_that_finishes_strong_without_rewinding():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+        song.energy["derived"] = {
+            "energy_confidence": 0.95,
+            "payoff_windows": [{"start": 40.0, "end": 64.0, "score": 0.95}],
+            "hook_windows": [{"start": 40.0, "end": 64.0, "score": 0.72}],
+        }
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.24, 0.28, 0.34, 0.38, 0.44, 0.48, 0.40, 0.36, 0.52, 0.56, 0.72, 0.76]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.22, 0.32, 0.36, 0.48, 0.52, 0.84, 0.88, 0.48, 0.42, 0.94, 0.56, 0.74, 0.96]
+
+    previous_bridge = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="late", bar_count=8, target_energy=0.52, role="bridge"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="bridge",
+    )
+    assert previous_bridge.candidate.label in {"phrase_4_6", "phrase_5_7"}
+
+    spec = _SectionSpec(label="payoff", start_bar=48, bar_count=16, target_energy=0.90, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    ranked = _enumerate_section_choices(spec, a, b, previous_bridge, prior_selections=[previous_bridge])
+
+    rewind_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_4_8")
+    forward_a = next(item for item in ranked if item.parent_id == "A" and item.candidate.label == "phrase_4_8")
+
+    assert rewind_b.score_breakdown["final_payoff_delivery"] > 0.0
+    assert (
+        rewind_b.score_breakdown["reuse_source_rewind"] > 0.0
+        or rewind_b.score_breakdown["reuse_source_containment"] > 0.0
+    )
+    assert forward_a.score_breakdown["final_payoff_delivery"] < rewind_b.score_breakdown["final_payoff_delivery"]
+    assert forward_a.blended_error < rewind_b.blended_error
+    assert ranked[0].candidate.label == "phrase_4_8"
 
 
 def test_planner_listen_feedback_reads_existing_analysis_signals():

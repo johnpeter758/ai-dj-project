@@ -837,6 +837,47 @@ def _transition_viability(previous: _WindowSelection | None, current_parent: str
     return max(0.0, min(1.0, 0.95 - (abs_delta / 0.35)))
 
 
+def _transition_impact_fit(
+    previous: _WindowSelection | None,
+    candidate: _SectionCandidate,
+    spec: _SectionSpec,
+    seam_risk: float,
+    seam_metrics: dict[str, float],
+    stretch_ratio: float,
+) -> float:
+    if previous is None:
+        return 0.5
+
+    delta = candidate.energy - previous.candidate.energy
+    transition_in = spec.transition_in
+    if transition_in not in {'lift', 'drop'}:
+        return 0.5
+
+    if delta <= 0.0:
+        return 0.0
+
+    if transition_in == 'drop':
+        target_delta = 0.24 if spec.label == 'payoff' else 0.18
+        delta_width = 0.22
+    else:
+        target_delta = 0.14 if spec.label == 'build' else 0.10
+        delta_width = 0.16
+
+    delta_fit = max(0.0, 1.0 - (abs(delta - target_delta) / delta_width))
+    safety_fit = max(
+        0.0,
+        min(
+            1.0,
+            1.0
+            - (0.55 * seam_risk)
+            - (0.20 * min(seam_metrics.get('onset_jump', 0.0), 1.5) / 1.5)
+            - (0.15 * min(seam_metrics.get('spectral_jump', 0.0), 1.5) / 1.5)
+            - (0.10 * _clamp01((stretch_ratio - 1.0) / 0.12)),
+        ),
+    )
+    return _clamp01((0.62 * delta_fit) + (0.38 * safety_fit))
+
+
 def _energy_arc_viability(previous: _WindowSelection | None, candidate: _SectionCandidate, spec: _SectionSpec) -> float:
     target_energy = max(0.0, min(1.0, spec.target_energy))
     current_energy = max(0.0, min(1.0, candidate.energy))
@@ -1057,6 +1098,7 @@ def _selection_fusion_balance_penalty(
             'preferred_parent_miss': 0.0,
             'major_section_lockout': 0.0,
             'second_parent_presence_gap': 0.0,
+            'late_major_handoff_gap': 0.0,
         }
 
     same_parent_count = sum(1 for selection in prior_selections if selection.parent_id == parent_id)
@@ -1081,7 +1123,9 @@ def _selection_fusion_balance_penalty(
             preferred_parent_miss = min(1.0, (same_parent_count - preferred_parent_count) / max(len(prior_selections), 1))
 
     major_labels = {'verse', 'build', 'payoff', 'bridge'}
+    late_major_labels = {'payoff', 'bridge'}
     current_is_major = current_section_label in major_labels
+    current_is_late_major = current_section_label in late_major_labels
     prior_major = [selection for selection in prior_selections if selection.section_label in major_labels]
     same_parent_major_count = sum(1 for selection in prior_major if selection.parent_id == parent_id)
     other_parent_major_count = len(prior_major) - same_parent_major_count
@@ -1107,13 +1151,28 @@ def _selection_fusion_balance_penalty(
             else:
                 second_parent_presence_gap = 0.55 if current_is_major else 0.35
 
+    prior_late_major = [selection for selection in prior_selections if selection.section_label in late_major_labels]
+    same_parent_late_major_count = sum(1 for selection in prior_late_major if selection.parent_id == parent_id)
+    other_parent_late_major_count = len(prior_late_major) - same_parent_late_major_count
+    late_major_handoff_gap = 0.0
+    if current_is_late_major and total_after_selection >= 4 and same_parent_count >= other_parent_count:
+        if len(prior_late_major) == 0:
+            late_major_handoff_gap = 0.85
+            if source_parent_preference is not None and parent_id != source_parent_preference:
+                late_major_handoff_gap = min(1.0, late_major_handoff_gap + 0.10)
+        elif same_parent_late_major_count == len(prior_late_major) and other_parent_late_major_count == 0:
+            late_major_handoff_gap = min(1.0, 0.60 + (0.18 * len(prior_late_major)))
+            if source_parent_preference is not None and parent_id != source_parent_preference:
+                late_major_handoff_gap = min(1.0, late_major_handoff_gap + 0.10)
+
     penalty = min(
         1.0,
         (0.45 * share_imbalance)
         + (0.30 * same_parent_run_bias)
         + (0.25 * preferred_parent_miss)
         + (0.70 * major_section_lockout)
-        + (0.60 * second_parent_presence_gap),
+        + (0.60 * second_parent_presence_gap)
+        + (0.75 * late_major_handoff_gap),
     )
     return penalty, {
         'parent_share_imbalance': share_imbalance,
@@ -1121,6 +1180,7 @@ def _selection_fusion_balance_penalty(
         'preferred_parent_miss': preferred_parent_miss,
         'major_section_lockout': major_section_lockout,
         'second_parent_presence_gap': second_parent_presence_gap,
+        'late_major_handoff_gap': late_major_handoff_gap,
     }
 
 
@@ -1197,7 +1257,7 @@ def _enumerate_section_choices(
     for parent_id, (song, other_song) in by_parent.items():
         feedback = _planner_listen_feedback(song)
         alternate_feedback = _planner_listen_feedback(other_song)
-        candidates, _, role_scores = _collect_parent_candidates(song, target_position, spec.bar_count, spec.target_energy, spec.label)
+        candidates, features_map, role_scores = _collect_parent_candidates(song, target_position, spec.bar_count, spec.target_energy, spec.label)
         energies = [candidate.energy for candidate in candidates]
         min_energy = min(energies) if energies else 0.0
         max_energy = max(energies) if energies else 0.0
@@ -1242,7 +1302,27 @@ def _enumerate_section_choices(
             stretch_gate = 0.0
             if stretch_ratio > _CONSERVATIVE_STRETCH_MAX:
                 stretch_gate = _clamp01((stretch_ratio - _CONSERVATIVE_STRETCH_MAX) / max(1e-6, _HARD_STRETCH_MAX - _CONSERVATIVE_STRETCH_MAX))
+            transition_impact_error = 1.0 - _transition_impact_fit(previous, candidate, spec, seam_risk, seam_metrics, stretch_ratio)
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
+            final_payoff_delivery_penalty = 0.0
+            if spec.label == 'payoff' and previous is not None and previous.section_label == 'bridge':
+                features = features_map[candidate.label]
+                final_payoff_delivery_penalty = max(
+                    0.0,
+                    0.62
+                    - (
+                        (0.34 * features.end_focus)
+                        + (0.26 * features.plateau_stability)
+                        + (0.20 * features.payoff_strength)
+                        + (0.12 * features.hook_strength)
+                        + (0.08 * features.lift_strength)
+                    ),
+                )
+                if parent_id == previous.parent_id and candidate.start < previous.candidate.end:
+                    final_payoff_delivery_penalty += min(
+                        0.35,
+                        (previous.candidate.end - candidate.start) / max(candidate.duration, 1e-6),
+                    )
             listen_feedback_penalty = 0.0
             if spec.label in {'build', 'payoff'}:
                 listen_feedback_penalty += max(0.0, 0.65 - feedback.energy_arc_strength)
@@ -1270,12 +1350,14 @@ def _enumerate_section_choices(
                 + (0.85 * boundary_error)
                 + (1.10 * compatibility_error)
                 + (1.20 * transition_error)
+                + (0.85 * transition_impact_error)
                 + (1.05 * arc_error)
                 + (1.25 * stretch_penalty)
                 + (1.75 * stretch_gate)
                 + (1.75 * seam_risk)
                 + (1.35 * seam_gate_error)
                 + (0.95 * listen_feedback_penalty)
+                + (0.85 * final_payoff_delivery_penalty)
                 + (1.10 * reuse_penalty)
                 + (0.85 * fusion_balance_penalty)
                 + (0.90 * groove_continuity_penalty)
@@ -1295,6 +1377,7 @@ def _enumerate_section_choices(
                         'boundary_confidence': boundary_error,
                         'compatibility': compatibility_error,
                         'transition_viability': transition_error,
+                        'transition_impact': transition_impact_error,
                         'energy_arc': arc_error,
                         'stretch_ratio': stretch_ratio,
                         'stretch_penalty': stretch_penalty,
@@ -1302,6 +1385,7 @@ def _enumerate_section_choices(
                         'seam_risk': seam_risk,
                         'seam_gate': seam_gate_error,
                         'listen_feedback': listen_feedback_penalty,
+                        'final_payoff_delivery': final_payoff_delivery_penalty,
                         'listen_groove_confidence': feedback.groove_confidence,
                         'listen_energy_arc_strength': feedback.energy_arc_strength,
                         'listen_transition_readiness': feedback.transition_readiness,
@@ -1319,6 +1403,7 @@ def _enumerate_section_choices(
                         'fusion_preferred_parent_miss': fusion_balance_metrics['preferred_parent_miss'],
                         'fusion_major_section_lockout': fusion_balance_metrics['major_section_lockout'],
                         'fusion_second_parent_presence_gap': fusion_balance_metrics['second_parent_presence_gap'],
+                        'fusion_late_major_handoff_gap': fusion_balance_metrics['late_major_handoff_gap'],
                         'groove_continuity': groove_continuity_penalty,
                         'groove_same_parent_streak': groove_continuity_metrics['same_parent_streak'],
                         'groove_alternate_groove_edge': groove_continuity_metrics['alternate_groove_edge'],
