@@ -24,6 +24,7 @@ RUNS_DIR = BASE_DIR / "runs"
 UPLOADS_DIR = RUNS_DIR / "ui_uploads"
 PROJECT_PYTHON = Path("/Users/johnpeter/venvs/vocalfusion-env/bin/python")
 VAULT_DIR = Path("/Users/johnpeter/VocalFusionVault")
+TOOLS_LOG_PATH = VAULT_DIR / "memory" / "TOOLS_RUNNING_LOG.md"
 MEMORY_DIR = VAULT_DIR / "memory"
 
 
@@ -145,6 +146,67 @@ def _changed_files() -> list[str]:
         return []
 
 
+def _relative_to_runs(path: Path) -> str:
+    try:
+        return str(path.relative_to(RUNS_DIR))
+    except ValueError:
+        return str(path)
+
+
+def _artifact_entry(path: Path) -> dict:
+    run_dir = path.parent.name if path.parent != RUNS_DIR else None
+    return {
+        "path": str(path),
+        "name": path.name,
+        "run_dir": run_dir,
+        "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(sep=" ", timespec="seconds"),
+        "relative_path": _relative_to_runs(path),
+        "download_url": f"/api/artifact?path={path}",
+    }
+
+
+def _load_json_file(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _find_latest_json(predicate) -> tuple[Path, dict] | None:
+    try:
+        candidates = sorted(
+            [p for p in RUNS_DIR.rglob("*.json") if p.is_file() and "ui_uploads" not in p.parts],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            payload = _load_json_file(path)
+            if isinstance(payload, dict) and predicate(path, payload):
+                return path, payload
+    except Exception:
+        pass
+    return None
+
+
+def _summarize_manifest_diagnostics(manifest: dict) -> dict:
+    sections = manifest.get("sections") or []
+    work_orders = manifest.get("work_orders") or []
+    warnings = [str(item) for item in (manifest.get("warnings") or [])]
+    fallbacks = [str(item) for item in (manifest.get("fallbacks") or [])]
+    overlap_sections = [section for section in sections if section.get("allowed_overlap")]
+    stretch_risks = [section for section in sections if float(section.get("stretch_ratio") or 1.0) > 1.25 or float(section.get("stretch_ratio") or 1.0) < 0.75]
+    return {
+        "section_count": len(sections),
+        "work_order_count": len(work_orders),
+        "warning_count": len(warnings),
+        "fallback_count": len(fallbacks),
+        "overlap_section_count": len(overlap_sections),
+        "stretch_risk_count": len(stretch_risks),
+        "top_warnings": warnings[:3],
+        "top_fallbacks": fallbacks[:3],
+    }
+
+
 def _latest_artifact() -> dict | None:
     try:
         preferred_suffixes = {".mp3", ".wav", ".json"}
@@ -159,43 +221,106 @@ def _latest_artifact() -> dict | None:
         if not files:
             return None
         latest = max(files, key=lambda p: p.stat().st_mtime)
-        run_dir = latest.parent.name if latest.parent != RUNS_DIR else None
-        return {
-            "path": str(latest),
-            "name": latest.name,
-            "run_dir": run_dir,
-            "modified": datetime.fromtimestamp(latest.stat().st_mtime).isoformat(sep=" ", timespec="seconds"),
-            "relative_path": str(latest.relative_to(RUNS_DIR)),
-            "download_url": f"/api/artifact?path={latest}",
-        }
+        return _artifact_entry(latest)
     except Exception:
         return None
+
+
+def _latest_listen_result() -> dict | None:
+    match = _find_latest_json(lambda _path, payload: "overall_score" in payload and "verdict" in payload)
+    if not match:
+        return None
+    path, payload = match
+    result = _artifact_entry(path)
+    result.update({
+        "overall_score": payload.get("overall_score"),
+        "verdict": payload.get("verdict"),
+        "top_reasons": payload.get("top_reasons", [])[:3],
+        "top_fixes": payload.get("top_fixes", [])[:3],
+        "source_path": payload.get("source_path"),
+    })
+    return result
+
+
+def _latest_compare_listen_result() -> dict | None:
+    match = _find_latest_json(lambda _path, payload: "winner" in payload and "deltas" in payload and "summary" in payload)
+    if not match:
+        return None
+    path, payload = match
+    component_deltas = (payload.get("deltas") or {}).get("component_score_deltas") or {}
+    biggest_component = None
+    if component_deltas:
+        biggest_component = max(component_deltas.items(), key=lambda item: abs(float(item[1] or 0.0)))
+    result = _artifact_entry(path)
+    result.update({
+        "summary": payload.get("summary"),
+        "overall_winner": (payload.get("winner") or {}).get("overall"),
+        "overall_score_delta": (payload.get("deltas") or {}).get("overall_score_delta"),
+        "biggest_component_delta": {
+            "component": biggest_component[0],
+            "delta": biggest_component[1],
+        } if biggest_component else None,
+    })
+    return result
+
+
+def _latest_manifest_summary() -> dict | None:
+    match = _find_latest_json(lambda path, payload: path.name == "render_manifest.json" and "sections" in payload and "work_orders" in payload)
+    if not match:
+        return None
+    path, payload = match
+    result = _artifact_entry(path)
+    result["diagnostics"] = _summarize_manifest_diagnostics(payload)
+    outputs = payload.get("outputs") or {}
+    result["outputs"] = {
+        key: {
+            "path": value,
+            "download_url": f"/api/artifact?path={value}",
+        }
+        for key, value in outputs.items()
+        if value
+    }
+    return result
+
+
+def _latest_run_summary() -> dict | None:
+    manifest = _latest_manifest_summary()
+    listen = _latest_listen_result()
+    if not manifest and not listen:
+        return None
+    reference = manifest or listen
+    run_dir_name = reference.get("run_dir")
+    if not run_dir_name:
+        return reference
+    run_dir = RUNS_DIR / run_dir_name
+    if not run_dir.exists():
+        return reference
+    files = sorted([p for p in run_dir.iterdir() if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
+    summary = {
+        "run_dir": run_dir_name,
+        "path": str(run_dir),
+        "artifact_count": len(files),
+        "artifacts": [_artifact_entry(p) for p in files[:8]],
+    }
+    if manifest:
+        summary["manifest"] = manifest
+    if listen and listen.get("run_dir") == run_dir_name:
+        summary["listen"] = listen
+    return summary
 
 
 def _latest_evaluator_result() -> dict | None:
-    try:
-        listen_files = sorted(RUNS_DIR.glob("listen*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not listen_files:
-            return None
-        path = listen_files[0]
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return {
-            "path": str(path),
-            "relative_path": str(path.relative_to(RUNS_DIR)),
-            "overall_score": payload.get("overall_score"),
-            "verdict": payload.get("verdict"),
-            "top_reasons": payload.get("top_reasons", [])[:3],
-            "top_fixes": payload.get("top_fixes", [])[:2],
-        }
-    except Exception:
-        return None
+    return _latest_listen_result()
 
 
 def _workloop_status() -> dict:
     task = _extract_current_task()
     latest_commit = _latest_commit()
     latest_eval = _latest_evaluator_result()
+    latest_compare = _latest_compare_listen_result()
     latest_artifact = _latest_artifact()
+    latest_manifest = _latest_manifest_summary()
+    latest_run = _latest_run_summary()
     changed = _changed_files()
 
     return {
@@ -209,6 +334,9 @@ def _workloop_status() -> dict:
         "latest_commit": latest_commit,
         "last_artifact": latest_artifact,
         "latest_evaluator_result": latest_eval,
+        "latest_compare_listen_result": latest_compare,
+        "latest_manifest": latest_manifest,
+        "latest_run_summary": latest_run,
         "links": {
             "fuse_ui": "/",
             "debug_ui": "/debug",
@@ -232,6 +360,11 @@ def status_page():
     return send_from_directory(TEMPLATES_DIR, "status.html")
 
 
+@app.route("/updates")
+def updates_page():
+    return send_from_directory(TEMPLATES_DIR, "updates.html")
+
+
 @app.route("/api/songs")
 def list_songs():
     songs = load_songs()
@@ -246,6 +379,19 @@ def health():
 @app.route("/api/status")
 def api_status():
     return jsonify(_workloop_status())
+
+
+@app.route("/api/updates")
+def api_updates():
+    entries = []
+    try:
+        if TOOLS_LOG_PATH.exists():
+            lines = [line.strip() for line in TOOLS_LOG_PATH.read_text(encoding='utf-8').splitlines() if line.strip().startswith('- ')]
+            for line in lines[-30:]:
+                entries.append(line[2:])
+    except Exception:
+        entries = []
+    return jsonify({"status": "ok", "entries": list(reversed(entries))})
 
 
 @app.route("/api/fuse-upload", methods=["POST"])

@@ -7,6 +7,7 @@ Generate, analyze, and fuse music tracks with AI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import shutil
@@ -256,15 +257,46 @@ def _load_json(path: Path) -> Any:
         raise CliError(f"invalid JSON file: {path}") from exc
 
 
-def _summarize_comparison(left: dict[str, Any], right: dict[str, Any], deltas: dict[str, Any]) -> list[str]:
+def _short_label(path_str: Optional[str], fallback: str) -> str:
+    if not path_str:
+        return fallback
+    return Path(path_str).name or fallback
+
+
+def _stable_compare_output_path(left_input: str, right_input: str) -> Path:
+    left_name = Path(left_input).expanduser().name or "left"
+    right_name = Path(right_input).expanduser().name or "right"
+    slug_left = ''.join(ch if ch.isalnum() else '_' for ch in left_name.lower()).strip('_') or 'left'
+    slug_right = ''.join(ch if ch.isalnum() else '_' for ch in right_name.lower()).strip('_') or 'right'
+    digest = hashlib.sha1(f"{Path(left_input).expanduser().resolve()}||{Path(right_input).expanduser().resolve()}".encode("utf-8")).hexdigest()[:10]
+    return (Path("runs") / "compare_listen" / f"{slug_left}__vs__{slug_right}__{digest}.json").resolve()
+
+
+def _resolve_output_path(output: Optional[str], default_path: Optional[Path] = None, default_filename: Optional[str] = None) -> Optional[Path]:
+    if output is None:
+        return default_path.resolve() if default_path else None
+
+    output_path = Path(output).expanduser()
+    if output_path.exists() and output_path.is_dir():
+        if not default_filename:
+            raise CliError(f"output path is a directory but no default filename is available: {output_path}")
+        return (output_path / default_filename).resolve()
+    if output.endswith(("/", "\\")):
+        if not default_filename:
+            raise CliError(f"output path looks like a directory but no default filename is available: {output_path}")
+        return (output_path / default_filename).resolve()
+    return output_path.resolve()
+
+
+def _summarize_comparison(left: dict[str, Any], right: dict[str, Any], deltas: dict[str, Any], left_label: str, right_label: str) -> list[str]:
     lines = []
     overall_delta = float(deltas["overall_score_delta"])
     if abs(overall_delta) < 1e-6:
-        lines.append("Overall result is effectively tied.")
+        lines.append(f"Overall: tie — {left_label} and {right_label} land on the same listen score.")
     elif overall_delta > 0:
-        lines.append(f"Left leads overall by {overall_delta:.1f} points.")
+        lines.append(f"Overall: {left_label} wins by {overall_delta:.1f} listen points over {right_label}.")
     else:
-        lines.append(f"Right leads overall by {abs(overall_delta):.1f} points.")
+        lines.append(f"Overall: {right_label} wins by {abs(overall_delta):.1f} listen points over {left_label}.")
 
     ranked = sorted(
         ((key, abs(float(deltas["component_score_deltas"][key]))) for key in LISTEN_COMPONENT_KEYS),
@@ -275,11 +307,13 @@ def _summarize_comparison(left: dict[str, Any], right: dict[str, Any], deltas: d
         delta = float(deltas["component_score_deltas"][key])
         if magnitude < 0.1:
             continue
-        winner = "left" if delta > 0 else "right"
-        lines.append(f"{winner} is stronger on {key} by {abs(delta):.1f} points.")
+        winner = left_label if delta > 0 else right_label
+        loser = right_label if delta > 0 else left_label
+        metric_label = key.replace("_", " ")
+        lines.append(f"Edge: {winner} is stronger on {metric_label} by {abs(delta):.1f} points vs {loser}.")
 
     if left.get("verdict") != right.get("verdict"):
-        lines.append(f"Verdicts differ: left={left.get('verdict')} vs right={right.get('verdict')}.")
+        lines.append(f"Verdict shift: {left_label}={left.get('verdict')} while {right_label}={right.get('verdict')}.")
     return lines
 
 
@@ -287,6 +321,7 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
     analyze_audio = _get_analyze_audio_file()
     evaluate = _get_evaluate_song()
 
+    raw_input = str(Path(input_path).expanduser())
     path = Path(input_path).expanduser().resolve()
     if not path.exists():
         raise CliError(f"compare input not found: {path}")
@@ -308,6 +343,7 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
         if _is_listen_report_payload(payload):
             return {
                 "input_path": str(path),
+                "input_label": _short_label(raw_input, path.name or "listen_report"),
                 "report_origin": "listen_report",
                 "resolved_audio_path": payload.get("source_path"),
                 "render_manifest_path": None,
@@ -326,6 +362,7 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
     report = evaluate(song).to_dict()
     return {
         "input_path": str(path),
+        "input_label": _short_label(raw_input, path.name or report_origin),
         "report_origin": report_origin,
         "resolved_audio_path": str(analyzed_path),
         "render_manifest_path": str(render_manifest_path) if render_manifest_path else None,
@@ -357,6 +394,8 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
         for key, delta in component_deltas.items()
     }
 
+    left_label = left.get("input_label") or "left"
+    right_label = right.get("input_label") or "right"
     comparison = {
         "schema_version": "0.1.0",
         "left": left,
@@ -369,10 +408,16 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
             "overall": overall_winner,
             "components": component_winners,
         },
-        "summary": _summarize_comparison(left_report, right_report, {
-            "overall_score_delta": overall_delta,
-            "component_score_deltas": component_deltas,
-        }),
+        "summary": _summarize_comparison(
+            left_report,
+            right_report,
+            {
+                "overall_score_delta": overall_delta,
+                "component_score_deltas": component_deltas,
+            },
+            left_label,
+            right_label,
+        ),
     }
     return comparison
 
@@ -384,12 +429,14 @@ def listen(track: str, output: Optional[str]) -> int:
     song = analyze_audio(track_path)
     report = evaluate(song).to_dict()
 
-    if output:
-        _write_json(output, report)
-        print(f"Wrote listen report: {output}")
+    resolved_output = _resolve_output_path(output)
+    if resolved_output:
+        _write_json(resolved_output, report)
+        print(f"Wrote listen report: {resolved_output}")
     else:
         print(json.dumps(report, indent=2, sort_keys=True))
 
+    print(f"Track: {Path(track_path).name}")
     print(f"Overall score: {report['overall_score']}")
     print(f"Verdict: {report['verdict']}")
     for key in LISTEN_COMPONENT_KEYS:
@@ -400,18 +447,28 @@ def listen(track: str, output: Optional[str]) -> int:
 
 def compare_listen(left: str, right: str, output: Optional[str]) -> int:
     comparison = _build_listen_comparison(left, right)
-    if output:
-        _write_json(output, comparison)
-        print(f"Wrote listen comparison: {output}")
-    else:
+    resolved_output = _resolve_output_path(
+        output,
+        default_path=_stable_compare_output_path(left, right),
+        default_filename="listen_compare.json",
+    )
+    if resolved_output:
+        _write_json(resolved_output, comparison)
+        print(f"Wrote listen comparison: {resolved_output}")
+
+    if output is None:
         print(json.dumps(comparison, indent=2, sort_keys=True))
 
+    left_label = comparison['left'].get('input_label', 'left')
+    right_label = comparison['right'].get('input_label', 'right')
+    print(f"Compare: {left_label} vs {right_label}")
     print(f"Overall winner: {comparison['winner']['overall']}")
-    print(f"Overall score delta (left-right): {comparison['deltas']['overall_score_delta']}")
+    print(f"Overall score delta ({left_label} - {right_label}): {comparison['deltas']['overall_score_delta']:+.1f}")
     for key in LISTEN_COMPONENT_KEYS:
         delta = comparison['deltas']['component_score_deltas'][key]
         winner = comparison['winner']['components'][key]
-        print(f"- {key}: {winner} ({delta:+.1f})")
+        winner_label = left_label if winner == 'left' else right_label if winner == 'right' else 'tie'
+        print(f"- {key.replace('_', ' ')}: {winner_label} ({delta:+.1f})")
     for line in comparison['summary']:
         print(f"  {line}")
     return 0

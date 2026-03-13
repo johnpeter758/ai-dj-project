@@ -6,9 +6,9 @@
   <title>VocalFusion Status</title>
   <style>
     body { font-family: Inter, Arial, sans-serif; background:#0f1115; color:#e8ecf1; margin:0; padding:24px; }
-    .wrap { max-width: 980px; margin:0 auto; }
+    .wrap { max-width: 1180px; margin:0 auto; }
     .card { background:#171a21; border:1px solid #2a3140; border-radius:14px; padding:20px; margin-bottom:18px; }
-    h1,h2,p { margin-top:0; }
+    h1,h2,h3,p { margin-top:0; }
     .muted { color:#94a3b8; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
     ul { margin:10px 0 0 18px; }
@@ -16,31 +16,77 @@
     .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
     .stat { background:#111827; border:1px solid #273244; border-radius:12px; padding:14px; }
     .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
+    .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#1f2937; color:#cbd5e1; font-size:12px; margin-right:8px; }
+    .two-col { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h1>VocalFusion Status</h1>
-      <p class="muted">Simple live view of the current work loop. Refreshes automatically every 15s.</p>
+      <p class="muted">Local evaluator + artifact checkpoint view. Refreshes automatically every 15s.</p>
     </div>
 
     <div class="card">
       <div class="grid">
         <div class="stat"><div class="label">Current sprint</div><div id="currentTask" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest commit</div><div id="latestCommit" class="mono">Loading…</div></div>
-        <div class="stat"><div class="label">Latest evaluator</div><div id="latestEval" class="mono">Loading…</div></div>
-        <div class="stat"><div class="label">Latest artifact</div><div id="lastArtifact" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest listen</div><div id="latestEval" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest compare-listen</div><div id="latestCompare" class="mono">Loading…</div></div>
       </div>
     </div>
 
     <div class="card"><h2>Currently working on</h2><div id="workingOn" class="mono">Loading…</div></div>
+
+    <div class="card two-col">
+      <div>
+        <h2>Manifest-aware diagnostics</h2>
+        <div id="latestManifest" class="mono">Loading…</div>
+      </div>
+      <div>
+        <h2>Latest run artifacts</h2>
+        <div id="latestRun" class="mono">Loading…</div>
+      </div>
+    </div>
+
     <div class="card"><h2>Recent progress notes</h2><ul id="recentNotes"></ul></div>
     <div class="card"><h2>Latest changed files</h2><ul id="changedFiles"></ul></div>
     <div class="card"><p><a href="/">Back to Fuse UI</a> · <a href="/debug">Debug UI</a></p></div>
   </div>
   <script>
     function esc(s){return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}
+    function artifactLink(item) {
+      if (!item) return '—';
+      const href = item.download_url || '#';
+      const label = item.name || item.relative_path || item.path || 'artifact';
+      return `<a href="${esc(href)}">${esc(label)}</a>`;
+    }
+    function renderListen(ev) {
+      if (!ev) return 'No listen result yet.';
+      const reasons = (ev.top_reasons || []).map(x => `- ${esc(x)}`).join('<br>');
+      const fixes = (ev.top_fixes || []).map(x => `- ${esc(x)}`).join('<br>');
+      return `${artifactLink(ev)}<br><span class="pill">score ${esc(ev.overall_score ?? '—')}</span><span class="pill">${esc(ev.verdict || 'unknown')}</span><br>${esc(ev.relative_path || '')}${ev.source_path ? `<br>${esc(ev.source_path)}` : ''}${reasons ? `<br><br><strong>Reasons</strong><br>${reasons}` : ''}${fixes ? `<br><br><strong>Top fixes</strong><br>${fixes}` : ''}`;
+    }
+    function renderCompare(comp) {
+      if (!comp) return 'No compare-listen result yet.';
+      const biggest = comp.biggest_component_delta;
+      return `${artifactLink(comp)}<br><span class="pill">winner ${esc(comp.overall_winner || 'tie')}</span><span class="pill">Δ overall ${esc(comp.overall_score_delta ?? '—')}</span>${biggest ? `<br>Biggest component delta: ${esc(biggest.component)} (${esc(biggest.delta)})` : ''}${comp.summary ? `<br><br>${esc(comp.summary)}` : ''}`;
+    }
+    function renderManifest(manifest) {
+      if (!manifest) return 'No render manifest found yet.';
+      const d = manifest.diagnostics || {};
+      const outputs = manifest.outputs || {};
+      const outputLinks = Object.entries(outputs).map(([key, value]) => `<li>${esc(key)}: <a href="${esc(value.download_url)}">${esc(value.path.split('/').pop())}</a></li>`).join('');
+      const warnings = (d.top_warnings || []).map(x => `<li>${esc(x)}</li>`).join('');
+      const fallbacks = (d.top_fallbacks || []).map(x => `<li>${esc(x)}</li>`).join('');
+      return `${artifactLink(manifest)}<br><span class="pill">sections ${esc(d.section_count ?? 0)}</span><span class="pill">work orders ${esc(d.work_order_count ?? 0)}</span><span class="pill">warnings ${esc(d.warning_count ?? 0)}</span><span class="pill">fallbacks ${esc(d.fallback_count ?? 0)}</span><span class="pill">overlap ${esc(d.overlap_section_count ?? 0)}</span><span class="pill">stretch risks ${esc(d.stretch_risk_count ?? 0)}</span>${outputLinks ? `<br><br><strong>Outputs</strong><ul>${outputLinks}</ul>` : ''}${warnings ? `<strong>Top warnings</strong><ul>${warnings}</ul>` : ''}${fallbacks ? `<strong>Top fallbacks</strong><ul>${fallbacks}</ul>` : ''}`;
+    }
+    function renderRun(run) {
+      if (!run) return 'No recent run summary yet.';
+      const artifacts = (run.artifacts || []).map(item => `<li>${artifactLink(item)} <span class="muted">${esc(item.modified || '')}</span></li>`).join('');
+      return `<div class="mono">${esc(run.run_dir || run.path || '—')}</div><div class="muted">${esc(run.artifact_count ?? 0)} files indexed in run dir</div>${artifacts ? `<ul>${artifacts}</ul>` : ''}`;
+    }
     async function loadStatus() {
       const res = await fetch('/api/status');
       const data = await res.json();
@@ -54,13 +100,11 @@
       document.getElementById('changedFiles').innerHTML = files.length ? files.map(x => `<li class="mono">${esc(x)}</li>`).join('') : '<li class="mono">No uncommitted changes.</li>';
 
       const commit = data.latest_commit || {};
-      document.getElementById('latestCommit').innerHTML = commit.hash ? `<strong>${esc(commit.short_hash || commit.hash.slice(0,7))}</strong>\n${esc(commit.message || '')}\n${esc(commit.date || '')}` : 'No commit info.';
-
-      const art = data.last_artifact;
-      document.getElementById('lastArtifact').innerHTML = art ? `<a href="${esc(art.download_url)}">${esc(art.name || art.relative_path || art.path)}</a>\n${esc(art.run_dir || '')}\n${esc(art.modified || '')}` : 'No artifact found.';
-
-      const ev = data.latest_evaluator_result;
-      document.getElementById('latestEval').textContent = ev ? `score=${ev.overall_score} verdict=${ev.verdict}\n${ev.relative_path || ev.path}\n${(ev.top_reasons||[]).join('\n')}` : 'No evaluator result yet.';
+      document.getElementById('latestCommit').innerHTML = commit.hash ? `<strong>${esc(commit.short_hash || commit.hash.slice(0,7))}</strong><br>${esc(commit.message || '')}<br>${esc(commit.date || '')}` : 'No commit info.';
+      document.getElementById('latestEval').innerHTML = renderListen(data.latest_evaluator_result);
+      document.getElementById('latestCompare').innerHTML = renderCompare(data.latest_compare_listen_result);
+      document.getElementById('latestManifest').innerHTML = renderManifest(data.latest_manifest);
+      document.getElementById('latestRun').innerHTML = renderRun(data.latest_run_summary);
     }
     loadStatus();
     setInterval(loadStatus, 15000);

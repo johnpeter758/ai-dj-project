@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VocalFusion Updates</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background:#0f1115; color:#e8ecf1; margin:0; padding:24px; }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    .card { background:#171a21; border:1px solid #2a3140; border-radius:14px; padding:20px; margin-bottom:18px; }
+    h1,p { margin-top:0; }
+    .muted { color:#94a3b8; }
+    .entry { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; padding:10px 0; border-bottom:1px solid #243041; }
+    .entry:last-child { border-bottom:none; }
+    a { color:#c4b5fd; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>VocalFusion Updates</h1>
+      <p class="muted">Live timestamped feed from the running tools/work log.</p>
+      <p><a href="/status">Status</a> · <a href="/">Fuse UI</a></p>
+    </div>
+    <div class="card" id="feed">Loading…</div>
+  </div>
+  <script>
+    async function loadUpdates() {
+      const res = await fetch('/api/updates');
+      const data = await res.json();
+      const entries = data.entries || [];
+      document.getElementById('feed').innerHTML = entries.length
+        ? entries.map(e => `<div class="entry">${String(e).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}</div>`).join('')
+        : '<div class="muted">No updates yet.</div>';
+    }
+    loadUpdates();
+    setInterval(loadUpdates, 5000);
+  </script>
+</body>
+</html>

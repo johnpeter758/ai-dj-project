@@ -169,6 +169,44 @@ def test_compare_listen_can_resolve_render_output_directories(monkeypatch, tmp_p
     assert payload['left']['resolved_audio_path'] == str(left_audio)
     assert payload['right']['resolved_audio_path'] == str(right_audio)
     assert payload['winner']['overall'] == 'tie'
+    assert payload['left']['input_label'] == 'render_a'
+    assert payload['right']['input_label'] == 'render_b'
+    assert payload['summary'][0].startswith('Overall: tie')
+
+
+def test_compare_listen_writes_stable_default_artifact(monkeypatch, tmp_path: Path):
+    left = tmp_path / 'left.wav'
+    right = tmp_path / 'right.wav'
+    left.write_bytes(b'fake')
+    right.write_bytes(b'fake')
+
+    monkeypatch.setattr(ai_dj, 'analyze_audio_file', lambda path, stems_dir=None: DummySong(str(path)))
+
+    rc = ai_dj.compare_listen(str(left), str(right), None)
+    assert rc == 0
+
+    out = ai_dj._stable_compare_output_path(str(left), str(right))
+    assert out.exists()
+    payload = json.loads(out.read_text(encoding='utf-8'))
+    assert payload['left']['input_label'] == 'left.wav'
+    assert payload['right']['input_label'] == 'right.wav'
+
+
+def test_compare_listen_accepts_directory_output(monkeypatch, tmp_path: Path):
+    left = tmp_path / 'left.wav'
+    right = tmp_path / 'right.wav'
+    left.write_bytes(b'fake')
+    right.write_bytes(b'fake')
+
+    monkeypatch.setattr(ai_dj, 'analyze_audio_file', lambda path, stems_dir=None: DummySong(str(path)))
+
+    out_dir = tmp_path / 'compare_dir'
+    out_dir.mkdir()
+    rc = ai_dj.compare_listen(str(left), str(right), str(out_dir))
+    assert rc == 0
+
+    out = out_dir / 'listen_compare.json'
+    assert out.exists()
 
 
 def test_manifest_aware_transition_and_mix_penalties(tmp_path: Path):

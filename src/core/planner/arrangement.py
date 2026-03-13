@@ -47,6 +47,7 @@ class _RoleFeatures:
 @dataclass(frozen=True)
 class _WindowSelection:
     parent_id: str
+    song: SongDNA
     candidate: _SectionCandidate
     blended_error: float
     score_breakdown: dict[str, float]
@@ -423,6 +424,127 @@ def _normalize_scores(values: dict[str, float]) -> dict[str, float]:
     return {key: (value - low) / span for key, value in values.items()}
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _series_values(song: SongDNA, *keys: str) -> list[float]:
+    for key in keys:
+        values = _safe_float_list(song.energy.get(key, []))
+        if values:
+            return values
+    return []
+
+
+def _series_window_mean(song: SongDNA, keys: tuple[str, ...], start: float, end: float) -> float:
+    values = _series_values(song, *keys)
+    if not values:
+        if keys == ('rms', 'beat_rms'):
+            return _window_energy(song, start, end)
+        return 0.0
+
+    times = _safe_float_list(song.energy.get('beat_times', []))
+    if len(times) == len(values):
+        window = [value for t, value in zip(times, values) if start <= t < end]
+        if window:
+            return sum(window) / len(window)
+
+    duration = max(float(song.duration_seconds), 1e-6)
+    step = duration / max(len(values), 1)
+    indexed = []
+    for idx, value in enumerate(values):
+        center = (idx + 0.5) * step
+        if start <= center < end:
+            indexed.append(value)
+    if indexed:
+        return sum(indexed) / len(indexed)
+
+    center = 0.5 * (start + end)
+    index = min(max(int(center / step), 0), len(values) - 1)
+    return values[index]
+
+
+def _normalized_delta(pre: float, post: float, floor: float = 1e-6) -> float:
+    scale = max(abs(pre), abs(post), floor)
+    return abs(post - pre) / scale
+
+
+def _planner_seam_risk(previous: _WindowSelection | None, current_song: SongDNA, current_candidate: _SectionCandidate) -> tuple[float, dict[str, float]]:
+    if previous is None:
+        return 0.10, {
+            'energy_jump': 0.0,
+            'spectral_jump': 0.0,
+            'onset_jump': 0.0,
+            'low_end_crowding_risk': 0.0,
+            'texture_shift': 0.0,
+            'foreground_collision_risk': 0.0,
+            'vocal_competition_risk': 0.0,
+            'seam_risk': 0.10,
+        }
+
+    prev_song = previous.song
+    prev_candidate = previous.candidate
+    left_start = max(prev_candidate.start, prev_candidate.end - min(prev_candidate.duration, 8.0))
+    right_end = min(current_candidate.end, current_candidate.start + min(current_candidate.duration, 8.0))
+
+    pre_energy = _series_window_mean(prev_song, ('rms', 'beat_rms'), left_start, prev_candidate.end)
+    post_energy = _series_window_mean(current_song, ('rms', 'beat_rms'), current_candidate.start, right_end)
+    pre_centroid = _series_window_mean(prev_song, ('spectral_centroid',), left_start, prev_candidate.end)
+    post_centroid = _series_window_mean(current_song, ('spectral_centroid',), current_candidate.start, right_end)
+    pre_rolloff = _series_window_mean(prev_song, ('spectral_rolloff',), left_start, prev_candidate.end)
+    post_rolloff = _series_window_mean(current_song, ('spectral_rolloff',), current_candidate.start, right_end)
+    pre_onset = _series_window_mean(prev_song, ('onset_density', 'onset_strength'), left_start, prev_candidate.end)
+    post_onset = _series_window_mean(current_song, ('onset_density', 'onset_strength'), current_candidate.start, right_end)
+    pre_low = _series_window_mean(prev_song, ('low_band_ratio', 'bass_ratio', 'low_band_energy'), left_start, prev_candidate.end)
+    post_low = _series_window_mean(current_song, ('low_band_ratio', 'bass_ratio', 'low_band_energy'), current_candidate.start, right_end)
+    pre_flat = _series_window_mean(prev_song, ('spectral_flatness',), left_start, prev_candidate.end)
+    post_flat = _series_window_mean(current_song, ('spectral_flatness',), current_candidate.start, right_end)
+
+    energy_jump = _normalized_delta(pre_energy, post_energy, floor=0.01)
+    spectral_jump = max(
+        _normalized_delta(pre_centroid, post_centroid, floor=100.0),
+        _normalized_delta(pre_rolloff, post_rolloff, floor=200.0),
+    )
+    onset_jump = _normalized_delta(pre_onset, post_onset, floor=0.05)
+    low_end_crowding_risk = 0.0
+    if pre_low > 0.0 or post_low > 0.0:
+        overlap_low = min(max(pre_low, 0.0), max(post_low, 0.0))
+        low_end_crowding_risk = overlap_low / max(max(pre_low, post_low, 0.0), 1e-6)
+    texture_shift = max(
+        _normalized_delta(pre_flat, post_flat, floor=0.01),
+        _normalized_delta(pre_centroid + pre_onset, post_centroid + post_onset, floor=100.0),
+    )
+    foreground_collision_risk = _clamp01(
+        0.45 * min(pre_energy, post_energy) / max(max(pre_energy, post_energy), 0.01)
+        + 0.35 * min(pre_onset, post_onset) / max(max(pre_onset, post_onset), 0.05)
+        + 0.20 * min(pre_centroid, post_centroid) / max(max(pre_centroid, post_centroid), 100.0)
+    )
+    vocal_competition_risk = _clamp01(
+        0.50 * min(max(pre_centroid, 0.0), max(post_centroid, 0.0)) / max(max(pre_centroid, post_centroid, 0.0), 100.0)
+        + 0.30 * min(max(pre_onset, 0.0), max(post_onset, 0.0)) / max(max(pre_onset, post_onset, 0.0), 0.05)
+        + 0.20 * (1.0 - min(1.0, abs(pre_centroid - post_centroid) / max(max(pre_centroid, post_centroid), 100.0)))
+    )
+    seam_risk = _clamp01(
+        0.22 * min(energy_jump, 1.5)
+        + 0.18 * min(spectral_jump, 1.5)
+        + 0.15 * min(onset_jump, 1.5)
+        + 0.14 * min(low_end_crowding_risk, 1.5)
+        + 0.11 * min(texture_shift, 1.5)
+        + 0.10 * min(foreground_collision_risk, 1.5)
+        + 0.10 * min(vocal_competition_risk, 1.5)
+    )
+    return seam_risk, {
+        'energy_jump': energy_jump,
+        'spectral_jump': spectral_jump,
+        'onset_jump': onset_jump,
+        'low_end_crowding_risk': low_end_crowding_risk,
+        'texture_shift': texture_shift,
+        'foreground_collision_risk': foreground_collision_risk,
+        'vocal_competition_risk': vocal_competition_risk,
+        'seam_risk': seam_risk,
+    }
+
+
 def _song_pair_compatibility(song_a: SongDNA, song_b: SongDNA) -> float:
     report = build_compatibility_report(song_a, song_b)
     return report.factors.overall
@@ -601,6 +723,7 @@ def _enumerate_section_choices(
             compatibility_error = 1.0 - best_cross_map[candidate.label]
             transition_error = 1.0 - _transition_viability(previous, parent_id, candidate, spec.transition_in)
             arc_error = 1.0 - _energy_arc_viability(previous, candidate, spec)
+            seam_risk, seam_metrics = _planner_seam_risk(previous, song, candidate)
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
 
             if target_position == 'early':
@@ -611,6 +734,7 @@ def _enumerate_section_choices(
                 normalized_energy = (candidate.energy - min_energy) / energy_span
                 shape_error = abs(normalized_energy - 0.6)
 
+            seam_gate_error = max(0.0, seam_risk - 0.60) / 0.40
             blended_error = (
                 (0.75 * position_error)
                 + (1.15 * energy_error)
@@ -620,11 +744,14 @@ def _enumerate_section_choices(
                 + (1.10 * compatibility_error)
                 + (1.20 * transition_error)
                 + (1.05 * arc_error)
+                + (1.75 * seam_risk)
+                + (1.35 * seam_gate_error)
                 + (0.35 * preference_error)
             )
             selections.append(
                 _WindowSelection(
                     parent_id=parent_id,
+                    song=song,
                     candidate=candidate,
                     blended_error=blended_error,
                     score_breakdown={
@@ -635,7 +762,15 @@ def _enumerate_section_choices(
                         'compatibility': compatibility_error,
                         'transition_viability': transition_error,
                         'energy_arc': arc_error,
+                        'seam_risk': seam_risk,
+                        'seam_gate': seam_gate_error,
                         'parent_preference': preference_error,
+                        'seam_energy_jump': seam_metrics['energy_jump'],
+                        'seam_spectral_jump': seam_metrics['spectral_jump'],
+                        'seam_onset_jump': seam_metrics['onset_jump'],
+                        'seam_low_end_crowding': seam_metrics['low_end_crowding_risk'],
+                        'seam_foreground_collision': seam_metrics['foreground_collision_risk'],
+                        'seam_vocal_competition': seam_metrics['vocal_competition_risk'],
                     },
                 )
             )
@@ -689,7 +824,8 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
 
     notes = [
         'Planner now ranks explicit phrase windows section-by-section across both parents instead of relying on coarse early/mid/late anchor picking.',
-        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, and transition viability, with sequential selection so neighboring handoff quality can change the winner.',
+        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, and evaluator-style seam-risk priors, with sequential selection so neighboring handoff quality can change the winner.',
+        'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',
         *selection_notes,
     ]

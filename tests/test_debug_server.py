@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+
+import server
 from server import app
 
 
@@ -8,8 +12,60 @@ def test_health_route():
     assert response.get_json()['status'] == 'healthy'
 
 
-def test_index_route_serves_debug_ui():
+def test_index_route_serves_main_ui():
     client = app.test_client()
     response = client.get('/')
     assert response.status_code == 200
-    assert b'VocalFusion Prototype Debug UI' in response.data
+    assert b'VocalFusion' in response.data
+
+
+def test_status_includes_listen_compare_and_manifest_summaries(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    run_dir = runs_dir / 'fusion_case'
+    run_dir.mkdir(parents=True)
+
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    manifest = run_dir / 'render_manifest.json'
+    manifest.write_text(json.dumps({
+        'outputs': {'master_wav': str(audio)},
+        'sections': [
+            {'index': 0, 'allowed_overlap': True, 'stretch_ratio': 1.32},
+            {'index': 1, 'allowed_overlap': False, 'stretch_ratio': 1.0},
+        ],
+        'work_orders': [{'section_index': 0}, {'section_index': 1}],
+        'warnings': ['warning 1'],
+        'fallbacks': ['fallback 1'],
+    }), encoding='utf-8')
+
+    listen = runs_dir / 'listen_latest.json'
+    listen.write_text(json.dumps({
+        'overall_score': 78.0,
+        'verdict': 'promising',
+        'top_reasons': ['Strong groove'],
+        'top_fixes': ['Tighten transitions'],
+        'source_path': str(audio),
+    }), encoding='utf-8')
+
+    compare = runs_dir / 'listen_compare_latest.json'
+    compare.write_text(json.dumps({
+        'summary': 'Left wins on groove and mix.',
+        'winner': {'overall': 'left', 'components': {'groove': 'left'}},
+        'deltas': {'overall_score_delta': 6.0, 'component_score_deltas': {'groove': 8.0, 'mix_sanity': 2.0}},
+    }), encoding='utf-8')
+
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+    monkeypatch.setattr(server, '_extract_current_task', lambda: {'summary': 'Evaluator surfacing', 'source': None, 'details': []})
+    monkeypatch.setattr(server, '_latest_commit', lambda: {})
+    monkeypatch.setattr(server, '_changed_files', lambda: [])
+
+    payload = server._workloop_status()
+
+    assert payload['latest_evaluator_result']['overall_score'] == 78.0
+    assert payload['latest_compare_listen_result']['overall_winner'] == 'left'
+    assert payload['latest_compare_listen_result']['biggest_component_delta']['component'] == 'groove'
+    assert payload['latest_manifest']['diagnostics']['warning_count'] == 1
+    assert payload['latest_manifest']['diagnostics']['overlap_section_count'] == 1
+    assert payload['latest_manifest']['diagnostics']['stretch_risk_count'] == 1
+    assert payload['latest_run_summary']['run_dir'] == 'fusion_case'
+    assert payload['latest_run_summary']['manifest']['name'] == 'render_manifest.json'
