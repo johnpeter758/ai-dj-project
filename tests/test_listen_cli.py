@@ -32,6 +32,18 @@ class DummySong:
             "onset_density": [0.20, 0.22, 0.21, 0.24, 0.27, 0.30, 0.34, 0.35, 0.33, 0.31, 0.30, 0.32],
             "low_band_ratio": [0.33, 0.34, 0.35, 0.35, 0.36, 0.38, 0.39, 0.39, 0.37, 0.36, 0.36, 0.37],
             "spectral_flatness": [0.12, 0.12, 0.13, 0.14, 0.15, 0.15, 0.16, 0.16, 0.15, 0.15, 0.14, 0.14],
+            "bar_rms": [0.10, 0.11, 0.12, 0.13, 0.16, 0.18, 0.21, 0.24, 0.28, 0.31, 0.35, 0.38, 0.42, 0.44, 0.45, 0.44],
+            "bar_onset_density": [0.15, 0.16, 0.16, 0.17, 0.20, 0.22, 0.24, 0.26, 0.28, 0.31, 0.34, 0.36, 0.40, 0.42, 0.42, 0.41],
+            "bar_low_band_ratio": [0.25, 0.25, 0.26, 0.26, 0.28, 0.29, 0.30, 0.31, 0.33, 0.34, 0.35, 0.36, 0.38, 0.39, 0.39, 0.38],
+            "bar_spectral_flatness": [0.22, 0.22, 0.21, 0.21, 0.20, 0.19, 0.18, 0.17, 0.16, 0.15, 0.14, 0.14, 0.13, 0.13, 0.13, 0.14],
+            "derived": {
+                "payoff_strength": 0.82,
+                "hook_strength": 0.70,
+                "hook_repetition": 0.66,
+                "energy_confidence": 0.88,
+                "payoff_windows": [{"start_bar": 12, "end_bar": 16, "score": 0.82}],
+                "hook_windows": [{"start_bar": 8, "end_bar": 12, "score": 0.70}],
+            },
         }
         self.metadata = {
             "tempo": {
@@ -54,6 +66,33 @@ def test_listen_command_writes_json(monkeypatch, tmp_path: Path):
     assert 'structure' in payload
     assert 'coherence' in payload
     assert 'mix_sanity' in payload
+
+
+def test_energy_arc_prefers_late_sustained_payoff_over_flat_profile():
+    strong_song = DummySong('strong.wav')
+    flat_song = DummySong('flat.wav')
+    flat_song.energy['bar_rms'] = [0.20] * 16
+    flat_song.energy['bar_onset_density'] = [0.22] * 16
+    flat_song.energy['bar_low_band_ratio'] = [0.30] * 16
+    flat_song.energy['bar_spectral_flatness'] = [0.18] * 16
+    flat_song.energy['derived'] = {
+        'payoff_strength': 0.05,
+        'hook_strength': 0.08,
+        'hook_repetition': 0.10,
+        'energy_confidence': 0.85,
+        'payoff_windows': [],
+        'hook_windows': [],
+    }
+
+    strong_report = evaluate_song(strong_song)
+    flat_report = evaluate_song(flat_song)
+
+    assert strong_report.energy_arc.score > flat_report.energy_arc.score
+    assert strong_report.energy_arc.score >= 75.0
+    assert flat_report.energy_arc.score < 60.0
+    assert strong_report.energy_arc.details['aggregate_metrics']['late_lift'] > 0.08
+    assert flat_report.energy_arc.details['aggregate_metrics']['contrast'] < 0.05
+    assert any('macro-dynamic contrast' in fix.lower() for fix in flat_report.energy_arc.fixes)
 
 
 def test_transition_score_emits_boundary_seam_metrics():

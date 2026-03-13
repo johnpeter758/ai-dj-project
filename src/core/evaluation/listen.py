@@ -218,6 +218,29 @@ def _normalized_delta(pre: float, post: float, floor: float = 1e-6) -> float:
     return abs(post - pre) / scale
 
 
+def _smooth_series(values: np.ndarray, window: int = 3) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    if values.size == 0 or window <= 1:
+        return values
+    window = min(int(window), int(values.size))
+    if window <= 1:
+        return values
+    kernel = np.ones(window, dtype=float) / float(window)
+    padded = np.pad(values, (window // 2, window - 1 - window // 2), mode='edge')
+    return np.convolve(padded, kernel, mode='valid')
+
+
+def _energy_series(song: SongDNA, stem: str) -> np.ndarray:
+    energy = song.energy or {}
+    preferred = _safe_array(energy.get(f"bar_{stem}"))
+    if preferred.size:
+        return preferred
+    beat = _safe_array(energy.get(f"beat_{stem}"))
+    if beat.size:
+        return beat
+    return _safe_array(energy.get(stem))
+
+
 def _safe_float_list(values: Iterable[float]) -> list[float]:
     return [float(v) for v in values]
 
@@ -332,33 +355,125 @@ def _groove_score(song: SongDNA) -> ListenSubscore:
 
 
 def _energy_arc_score(song: SongDNA) -> ListenSubscore:
-    values = np.asarray(song.energy.get("rms", []) or [], dtype=float)
+    energy = song.energy or {}
+    bar_rms = _energy_series(song, "rms")
+    bar_onset = _energy_series(song, "onset_density")
+    bar_low = _energy_series(song, "low_band_ratio")
+    bar_flat = _energy_series(song, "spectral_flatness")
+    derived = energy.get("derived") or {}
     evidence: list[str] = []
     fixes: list[str] = []
-    if values.size < 16:
+
+    if bar_rms.size < 8:
         return ListenSubscore(
             score=35.0,
             summary="Energy contour is too sparse to judge confidently.",
-            evidence=[f"only {values.size} RMS windows available"],
+            evidence=[f"only {bar_rms.size} energy windows available"],
             fixes=["Emit denser bar- or phrase-level energy summaries for stronger arc evaluation."],
         )
 
-    thirds = np.array_split(values, 3)
-    means = [float(np.mean(x)) for x in thirds]
-    spread = float(np.max(means) - np.min(means))
-    ramp = means[-1] - means[0]
-    spread_score = _score_band(spread, 0.02, 0.20, 0.12)
-    ramp_score = _score_band(ramp, 0.00, 0.18, 0.15)
-    score = round(100.0 * (0.55 * spread_score + 0.45 * ramp_score), 1)
+    def _norm(arr: np.ndarray, invert: bool = False) -> np.ndarray:
+        if arr.size == 0:
+            return np.zeros(bar_rms.size, dtype=float)
+        low = float(np.min(arr))
+        high = float(np.max(arr))
+        span = max(high - low, 1e-6)
+        normed = (arr - low) / span
+        if invert:
+            normed = 1.0 - normed
+        return normed
 
-    evidence.append(f"section energy means: start={means[0]:.4f}, mid={means[1]:.4f}, end={means[2]:.4f}")
-    evidence.append(f"energy spread {spread:.4f}, end-start ramp {ramp:.4f}")
-    if spread < 0.015:
-        fixes.append("Increase macro-dynamic contrast so sections feel more distinct and payoff sections land harder.")
-    if ramp < -0.02:
-        fixes.append("Revisit arrangement arc so energy does not sag toward the end unless intentionally settling out.")
-    summary = "Energy arc shows usable contrast." if score >= 70 else "Energy arc is weak, flat, or poorly shaped."
-    return ListenSubscore(score=score, summary=summary, evidence=evidence, fixes=fixes)
+    composite = (
+        0.45 * _norm(bar_rms)
+        + 0.25 * _norm(bar_onset)
+        + 0.20 * _norm(bar_low)
+        + 0.10 * _norm(bar_flat, invert=True)
+    )
+    smoothed = _smooth_series(composite, window=3)
+    quartiles = np.array_split(smoothed, 4)
+    quartile_means = [float(np.mean(chunk)) for chunk in quartiles if chunk.size]
+    early_mean = quartile_means[0] if quartile_means else 0.0
+    mid_mean = float(np.mean(quartile_means[1:3])) if len(quartile_means) >= 3 else early_mean
+    late_mean = quartile_means[-1] if quartile_means else early_mean
+
+    contrast = float(np.percentile(smoothed, 90) - np.percentile(smoothed, 10)) if smoothed.size else 0.0
+    late_lift = late_mean - early_mean
+    peak_idx = int(np.argmax(smoothed)) if smoothed.size else 0
+    peak_position = peak_idx / max(len(smoothed) - 1, 1)
+    step_deltas = np.abs(np.diff(smoothed)) if smoothed.size >= 2 else np.asarray([], dtype=float)
+    step_median = float(np.median(step_deltas)) if step_deltas.size else 0.0
+    step_p90 = float(np.percentile(step_deltas, 90)) if step_deltas.size else 0.0
+
+    payoff_strength = float(derived.get("payoff_strength") or 0.0)
+    hook_strength = float(derived.get("hook_strength") or 0.0)
+    hook_repetition = float(derived.get("hook_repetition") or 0.0)
+    energy_confidence = float(derived.get("energy_confidence") or 0.0)
+
+    contrast_score = _clamp01((contrast - 0.10) / 0.35)
+    late_lift_score = _clamp01((late_lift - 0.04) / 0.28)
+    peak_late_bonus = _score_band(peak_position, 0.45, 0.95, 0.25)
+    trajectory_score = 0.65 * late_lift_score + 0.35 * peak_late_bonus
+    payoff_score = _clamp01(0.50 * payoff_strength + 0.30 * hook_strength + 0.20 * hook_repetition)
+    stability_score = (
+        0.65 * _score_band(step_median, 0.015, 0.14, 0.08)
+        + 0.35 * _score_band(step_p90, 0.04, 0.32, 0.12)
+    )
+
+    raw_score = (
+        0.30 * contrast_score
+        + 0.30 * trajectory_score
+        + 0.25 * payoff_score
+        + 0.15 * stability_score
+    )
+    confidence_gate = 0.70 + 0.30 * _clamp01(energy_confidence)
+    final_norm = _clamp01(raw_score) * confidence_gate
+    score = round(100.0 * final_norm, 1)
+
+    evidence.append(
+        f"bar-energy contrast {contrast:.3f}; quartile means early={early_mean:.3f}, mid={mid_mean:.3f}, late={late_mean:.3f}; late lift {late_lift:.3f}"
+    )
+    evidence.append(
+        f"peak energy occurs at {peak_position * 100.0:.0f}% of song duration; payoff {payoff_strength:.3f}, hook {hook_strength:.3f}, hook repetition {hook_repetition:.3f}, confidence {energy_confidence:.3f}"
+    )
+    evidence.append(f"bar-energy step stability median {step_median:.3f}, p90 {step_p90:.3f}")
+
+    if contrast < 0.12:
+        fixes.append("Increase macro-dynamic contrast so payoff sections separate clearly from setup sections.")
+    if late_lift < 0.04 or peak_position < 0.35:
+        fixes.append("Rework the energy journey so the strongest material arrives later instead of peaking too early.")
+    if payoff_score < 0.35:
+        fixes.append("Strengthen recurring payoff windows; current energy rises without a convincing chorus/drop identity.")
+    if step_p90 > 0.38:
+        fixes.append("Concentrate bigger energy moves at phrase/section turns instead of constant bar-to-bar churn.")
+    if energy_confidence < 0.35:
+        fixes.append("Energy extraction confidence is weak; improve bar-level analysis so arc judgments are more trustworthy.")
+
+    if score >= 75:
+        summary = "Energy arc shows clear build, identifiable payoff windows, and useful macro contrast."
+    elif score >= 60:
+        summary = "Energy arc is usable but still underpowered, early-peaking, or not sustained enough."
+    else:
+        summary = "Energy arc is weak, flat, front-loaded, or poorly shaped."
+
+    details = {
+        "aggregate_metrics": {
+            "contrast": round(contrast, 3),
+            "early_mean": round(early_mean, 3),
+            "mid_mean": round(mid_mean, 3),
+            "late_mean": round(late_mean, 3),
+            "late_lift": round(late_lift, 3),
+            "peak_position": round(peak_position, 3),
+            "median_step_delta": round(step_median, 3),
+            "p90_step_delta": round(step_p90, 3),
+            "payoff_strength": round(payoff_strength, 3),
+            "hook_strength": round(hook_strength, 3),
+            "hook_repetition": round(hook_repetition, 3),
+            "energy_confidence": round(energy_confidence, 3),
+        },
+        "top_payoff_windows": (derived.get("payoff_windows") or [])[:3],
+        "top_hook_windows": (derived.get("hook_windows") or [])[:3],
+    }
+    return ListenSubscore(score=score, summary=summary, evidence=evidence, fixes=fixes, details=details)
 
 
 def _ownership_clutter_metrics(song: SongDNA) -> dict[str, float]:
