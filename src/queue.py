@@ -14,6 +14,8 @@ A robust, thread-safe queue management system featuring:
 import json
 import threading
 import random
+import importlib.util
+import sysconfig
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Callable, Any
@@ -21,6 +23,30 @@ from datetime import datetime
 from enum import Enum
 from collections import deque
 from copy import deepcopy
+
+
+def _load_stdlib_queue_module():
+    """Load the stdlib queue module without recursing into this local file."""
+    stdlib_path = Path(sysconfig.get_path("stdlib")) / "queue.py"
+    spec = importlib.util.spec_from_file_location("_vocalfusion_stdlib_queue", stdlib_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load stdlib queue module from {stdlib_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_stdlib_queue = _load_stdlib_queue_module()
+
+# Re-export stdlib queue symbols so internal Python modules (for example
+# concurrent.futures / multiprocessing) still work even if this file is
+# imported as top-level `queue` because the repo's src directory is on sys.path.
+Empty = _stdlib_queue.Empty
+Full = _stdlib_queue.Full
+Queue = _stdlib_queue.Queue
+PriorityQueue = _stdlib_queue.PriorityQueue
+LifoQueue = _stdlib_queue.LifoQueue
+SimpleQueue = getattr(_stdlib_queue, "SimpleQueue", None)
 
 
 class RepeatMode(Enum):

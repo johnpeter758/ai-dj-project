@@ -473,6 +473,81 @@ def test_payoff_role_prior_prefers_sustained_late_plateau_over_spiky_peak():
     assert candidate.label == "phrase_3_7"
 
 
+def test_enumerate_section_choices_penalizes_one_parent_dominating_when_other_parent_can_cover_the_role():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 56.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {"energy_confidence": 0.9, "payoff_strength": 0.75, "hook_strength": 0.6, "hook_repetition": 0.5}
+
+    # A is slightly stronger overall, but B is still a musically plausible build source.
+    a.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.20, 0.34, 0.38, 0.54, 0.58, 0.66, 0.70, 0.78, 0.82, 0.88, 0.92]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.20, 0.30, 0.34, 0.48, 0.52, 0.60, 0.64, 0.72, 0.76, 0.82, 0.86]
+
+    prior_intro = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="early", bar_count=8, target_energy=0.25, role="intro"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="intro",
+    )
+    prior_verse = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="mid", bar_count=8, target_energy=0.42, role="verse"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="verse",
+    )
+
+    spec = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="B", transition_in="blend", transition_out="swap")
+    ranked = _enumerate_section_choices(spec, a, b, previous=prior_verse, prior_selections=[prior_intro, prior_verse])
+
+    best = ranked[0]
+    best_a = next(item for item in ranked if item.parent_id == "A")
+    best_b = next(item for item in ranked if item.parent_id == "B")
+
+    assert best.parent_id == "B"
+    assert best_a.score_breakdown["fusion_balance"] > 0.0
+    assert best_a.score_breakdown["fusion_same_parent_run_bias"] > 0.0
+    assert best_a.score_breakdown["fusion_preferred_parent_miss"] > 0.0
+    assert best_a.score_breakdown["fusion_major_section_lockout"] > 0.0
+    assert best_a.blended_error > best_b.blended_error
+
+
+def test_build_stub_arrangement_plan_breaks_single_parent_major_section_collapse_when_other_parent_is_plausible():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.22)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.21)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {"energy_confidence": 0.9, "payoff_strength": 0.76, "hook_strength": 0.62, "hook_repetition": 0.55}
+
+    # A stays a little stronger overall, but B has credible verse/build/payoff material.
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.26, 0.30, 0.38, 0.44, 0.56, 0.62, 0.74, 0.80, 0.88, 0.92, 0.48, 0.38]
+    b.energy["beat_rms"] = [0.09, 0.11, 0.18, 0.22, 0.28, 0.34, 0.42, 0.48, 0.52, 0.58, 0.70, 0.76, 0.84, 0.88, 0.44, 0.34]
+
+    plan = build_stub_arrangement_plan(a, b).to_dict()
+
+    major_sections = [section for section in plan["sections"] if section["label"] in {"verse", "build", "payoff", "bridge"}]
+    major_parents = {section["source_parent"] for section in major_sections}
+    build = next(section for section in plan["sections"] if section["label"] == "build")
+
+    assert len(major_sections) >= 3
+    assert major_parents == {"A", "B"}
+    assert build["source_parent"] == "B"
+
+
 def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_timeline():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.20)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
@@ -504,6 +579,40 @@ def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_t
     assert rewind_b.score_breakdown["reuse_source_rewind"] > 0.0
     assert rewind_b.score_breakdown["selection_reuse"] > forward_b.score_breakdown["selection_reuse"]
     assert rewind_b.blended_error > forward_b.blended_error
+
+
+def test_enumerate_section_choices_penalizes_overstretched_phrase_windows_before_resolver():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 4, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 4, 0.20)
+
+    # Parent A has normal 8s phrases for an 8-bar target at 128 BPM (~7.5s).
+    a.duration_seconds = 32.0
+    a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0]
+    a.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0]
+    a.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0]
+    a.energy["beat_rms"] = [0.10, 0.12, 0.22, 0.26, 0.46, 0.50, 0.74, 0.78]
+
+    # Parent B exposes only 12s phrases. That makes any 8-bar pickup land at ~1.6x stretch,
+    # which previously could still win on role/energy shape.
+    b.duration_seconds = 48.0
+    b.structure["phrase_boundaries_seconds"] = [0.0, 12.0, 24.0, 36.0, 48.0]
+    b.structure["section_boundaries_seconds"] = [12.0, 24.0, 36.0]
+    b.energy["beat_times"] = [3.0, 9.0, 15.0, 21.0, 27.0, 33.0, 39.0, 45.0]
+    b.energy["beat_rms"] = [0.08, 0.10, 0.24, 0.30, 0.54, 0.60, 0.92, 0.96]
+
+    spec = _SectionSpec(label="build", start_bar=16, bar_count=4, target_energy=0.58, source_parent_preference=None, transition_in="blend", transition_out="swap")
+    ranked = _enumerate_section_choices(spec, a, b, previous=None)
+
+    best = ranked[0]
+    overstretched_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_2_3")
+    normal_a = next(item for item in ranked if item.parent_id == "A" and item.candidate.label == "phrase_2_3")
+
+    assert overstretched_b.score_breakdown["stretch_ratio"] > 1.25
+    assert overstretched_b.score_breakdown["stretch_gate"] > 0.0
+    assert overstretched_b.score_breakdown["stretch_penalty"] > normal_a.score_breakdown["stretch_penalty"]
+    assert normal_a.blended_error < overstretched_b.blended_error
+    assert best.parent_id == "A"
+
 
 
 def test_bridge_selection_prefers_real_reset_after_hot_payoff_over_staying_stuck_in_plateau():
@@ -554,6 +663,94 @@ def test_planner_listen_feedback_reads_existing_analysis_signals():
     assert feedback.energy_arc_strength > 0.7
     assert feedback.transition_readiness > 0.7
     assert feedback.payoff_readiness > 0.6
+
+
+
+def test_enumerate_section_choices_penalizes_stretch_heavy_build_window_to_protect_groove():
+    a = make_song("a.wav", 120.0, "A", "minor", "8A", 6, 0.20)
+    b = make_song("b.wav", 120.0, "A", "minor", "8A", 6, 0.20)
+
+    a.duration_seconds = 63.0
+    a.structure["phrase_boundaries_seconds"] = [0.0, 10.5, 21.0, 31.5, 42.0, 52.5, 63.0]
+    a.structure["section_boundaries_seconds"] = [10.5, 21.0, 31.5, 42.0, 52.5]
+    b.duration_seconds = 48.0
+    b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+    b.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0]
+
+    a.energy["beat_times"] = [2.5, 7.5, 13.0, 18.0, 23.5, 28.5, 34.0, 39.0, 44.5, 49.5, 55.0, 60.0]
+    b.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0]
+
+    # A has the flashier mid-build energy profile, but its phrase windows are ~21s for an 8-bar target
+    # (~16s at 120 BPM), which caused the real run's groove-damaging stretch warnings.
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.30, 0.34, 0.56, 0.60, 0.68, 0.72, 0.78, 0.82]
+    b.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.28, 0.32, 0.46, 0.50, 0.58, 0.62, 0.68, 0.72]
+
+    previous = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="early", bar_count=8, target_energy=0.25, role="intro"),
+        blended_error=0.0,
+        score_breakdown={},
+    )
+    spec = _SectionSpec(label="build", start_bar=8, bar_count=8, target_energy=0.58, source_parent_preference=None, transition_in="blend", transition_out="swap")
+    ranked = _enumerate_section_choices(spec, a, b, previous)
+
+    a_build = next(item for item in ranked if item.parent_id == "A" and item.candidate.label == "phrase_2_4")
+    b_build = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_2_4")
+
+    assert a_build.score_breakdown["stretch_ratio"] > 1.25
+    assert a_build.score_breakdown["stretch_penalty"] > b_build.score_breakdown["stretch_penalty"]
+    assert a_build.blended_error > b_build.blended_error
+    assert ranked[0].parent_id == "B"
+
+
+
+def test_enumerate_section_choices_penalizes_same_parent_streak_when_other_parent_has_better_groove_continuity():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 56.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+        song.energy["derived"] = {"energy_confidence": 0.9, "payoff_strength": 0.7, "hook_strength": 0.6, "hook_repetition": 0.5}
+
+    a.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.22, 0.30, 0.34, 0.42, 0.46, 0.54, 0.58, 0.66, 0.70, 0.78, 0.82]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.22, 0.28, 0.32, 0.40, 0.44, 0.52, 0.56, 0.64, 0.68, 0.76, 0.80]
+
+    # A has visibly shakier beat spacing, so keeping the section streak on A should now pay a
+    # groove-continuity cost once B is still plausible for the next blend handoff.
+    a.metadata["tempo"] = {"beat_times": [0.0, 0.52, 0.97, 1.57, 2.01, 2.63, 3.05, 3.71]}
+    b.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+
+    prior_intro = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="early", bar_count=8, target_energy=0.24, role="intro"),
+        blended_error=0.0,
+        score_breakdown={},
+    )
+    prior_verse = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="mid", bar_count=8, target_energy=0.40, role="verse"),
+        blended_error=0.0,
+        score_breakdown={},
+    )
+
+    spec = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference=None, transition_in="blend", transition_out="swap")
+    ranked = _enumerate_section_choices(spec, a, b, previous=prior_verse, prior_selections=[prior_intro, prior_verse])
+
+    best = ranked[0]
+    best_a = next(item for item in ranked if item.parent_id == "A")
+    best_b = next(item for item in ranked if item.parent_id == "B")
+
+    assert best.parent_id == "B"
+    assert best_a.score_breakdown["groove_continuity"] > 0.0
+    assert best_a.score_breakdown["groove_same_parent_streak"] >= 2.0
+    assert best_a.score_breakdown["groove_alternate_groove_edge"] > 0.0
+    assert best_a.blended_error > best_b.blended_error
 
 
 

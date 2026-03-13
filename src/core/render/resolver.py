@@ -15,7 +15,7 @@ from .manifest import (
     SourceSectionRef,
     TargetSectionTiming,
 )
-from .transitions import incoming_gain_db, transition_overlap_seconds
+from .transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
 
 _CONSERVATIVE_STRETCH_MIN = 0.75
 _CONSERVATIVE_STRETCH_MAX = 1.25
@@ -410,7 +410,11 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             fallbacks.extend([f"section {idx} ({sec.label}): {w}" for w in section_warnings])
 
         other_parent = "B" if parent_id == "A" else "A"
-        overlap_beats = 0.0 if sec.transition_in in (None, "cut") else min(config.blend_beats_max, {"blend": 8.0, "swap": 4.0, "lift": 4.0, "drop": 2.0}.get(sec.transition_in or "cut", 0.0))
+        overlap_beats = transition_overlap_beats(sec.transition_in, config=config, stretch_ratio=stretch_ratio)
+        if overlap_beats > 0.0 and (stretch_ratio < _CONSERVATIVE_STRETCH_MIN or stretch_ratio > _CONSERVATIVE_STRETCH_MAX):
+            section_warnings.append(
+                f"transition overlap capped to {overlap_beats:.1f} beats because stretch ratio {stretch_ratio:.3f} is outside conservative bounds"
+            )
         background_owner = other_parent if overlap_beats > 0.0 else None
         resolved = ResolvedSection(
             index=idx,
@@ -454,8 +458,8 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
             gain_db=incoming_gain_db(sec.transition_in),
-            fade_in_sec=transition_overlap_seconds(sec.transition_in, anchor_bpm),
-            fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm),
+            fade_in_sec=transition_overlap_seconds(sec.transition_in, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
+            fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
             transition_type=sec.transition_in,
             foreground_state="owner",
             low_end_state="owner",

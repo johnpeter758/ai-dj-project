@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from ..analysis.models import SongDNA
 from .compatibility import build_compatibility_report
@@ -60,6 +61,7 @@ class _WindowSelection:
     candidate: _SectionCandidate
     blended_error: float
     score_breakdown: dict[str, float]
+    section_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,11 @@ SECTION_TARGET_POSITION = {
     'bridge': 'late',
     'outro': 'late',
 }
+
+_CONSERVATIVE_STRETCH_MIN = 0.75
+_CONSERVATIVE_STRETCH_MAX = 1.25
+_HARD_STRETCH_MIN = 0.60
+_HARD_STRETCH_MAX = 1.40
 
 
 def _song_parent_ref(song: SongDNA) -> ParentReference:
@@ -863,6 +870,29 @@ def _energy_arc_viability(previous: _WindowSelection | None, candidate: _Section
     return max(0.0, min(1.0, (0.38 * delta_fit) + (0.30 * target_fit) + (0.16 * floor_fit) + (0.16 * reset_fit)))
 
 
+def _target_duration_seconds(song: SongDNA, bar_count: int, beats_per_bar: int = 4) -> float:
+    return float(bar_count) * float(beats_per_bar) * 60.0 / max(float(song.tempo_bpm), 1e-6)
+
+
+def _stretch_profile(song: SongDNA, candidate: _SectionCandidate, bar_count: int) -> tuple[float, float, float]:
+    target_duration = _target_duration_seconds(song, bar_count)
+    source_duration = max(candidate.duration, 1e-6)
+    stretch_ratio = source_duration / max(target_duration, 1e-6)
+    absolute_mismatch = abs(1.0 - stretch_ratio)
+    early_mismatch = max(0.0, absolute_mismatch - 0.08)
+    conservative_overflow = max(0.0, stretch_ratio - _CONSERVATIVE_STRETCH_MAX)
+    hard_overflow = max(0.0, stretch_ratio - _HARD_STRETCH_MAX)
+    undershoot_overflow = max(0.0, _CONSERVATIVE_STRETCH_MIN - stretch_ratio)
+    penalty = (
+        0.45 * absolute_mismatch
+        + 1.10 * (early_mismatch / 0.25)
+        + 1.75 * (conservative_overflow / max(1e-6, _HARD_STRETCH_MAX - _CONSERVATIVE_STRETCH_MAX))
+        + 2.60 * (hard_overflow / 0.20)
+        + 0.85 * (undershoot_overflow / max(1e-6, _CONSERVATIVE_STRETCH_MIN - _HARD_STRETCH_MIN))
+    )
+    return stretch_ratio, target_duration, max(0.0, penalty)
+
+
 def _collect_parent_candidates(song: SongDNA, target_position: str, bar_count: int, target_energy: float, role: str | None) -> tuple[list[_SectionCandidate], dict[str, _RoleFeatures], dict[str, float]]:
     phrase_candidates = _phrase_window_candidates(song, bar_count)
     section_candidates = _section_candidates(song)
@@ -1014,6 +1044,122 @@ def _selection_reuse_penalty(
     }
 
 
+def _selection_fusion_balance_penalty(
+    prior_selections: list[_WindowSelection],
+    parent_id: str,
+    source_parent_preference: str | None,
+    current_section_label: str | None = None,
+) -> tuple[float, dict[str, float]]:
+    if not prior_selections:
+        return 0.0, {
+            'parent_share_imbalance': 0.0,
+            'same_parent_run_bias': 0.0,
+            'preferred_parent_miss': 0.0,
+            'major_section_lockout': 0.0,
+        }
+
+    same_parent_count = sum(1 for selection in prior_selections if selection.parent_id == parent_id)
+    other_parent_count = len(prior_selections) - same_parent_count
+    share_imbalance = max(0.0, (same_parent_count - other_parent_count) / max(len(prior_selections), 1))
+
+    same_parent_run = 0
+    for selection in reversed(prior_selections):
+        if selection.parent_id != parent_id:
+            break
+        same_parent_run += 1
+    same_parent_run_bias = 0.0
+    if same_parent_run >= 2:
+        same_parent_run_bias = min(1.0, 0.45 + (0.20 * (same_parent_run - 2)))
+
+    preferred_parent_miss = 0.0
+    if source_parent_preference is not None and parent_id != source_parent_preference:
+        preferred_parent_count = sum(1 for selection in prior_selections if selection.parent_id == source_parent_preference)
+        if preferred_parent_count == 0:
+            preferred_parent_miss = 1.0
+        elif preferred_parent_count < same_parent_count:
+            preferred_parent_miss = min(1.0, (same_parent_count - preferred_parent_count) / max(len(prior_selections), 1))
+
+    major_labels = {'verse', 'build', 'payoff', 'bridge'}
+    current_is_major = current_section_label in major_labels
+    prior_major = [selection for selection in prior_selections if selection.section_label in major_labels]
+    same_parent_major_count = sum(1 for selection in prior_major if selection.parent_id == parent_id)
+    other_parent_major_count = len(prior_major) - same_parent_major_count
+    major_section_lockout = 0.0
+    if current_is_major and prior_major and same_parent_major_count == len(prior_major) and other_parent_major_count == 0:
+        major_section_lockout = min(1.0, 0.55 + (0.20 * max(0, len(prior_major) - 1)))
+        if source_parent_preference is not None and parent_id != source_parent_preference:
+            major_section_lockout = min(1.0, major_section_lockout + 0.25)
+
+    penalty = min(
+        1.0,
+        (0.45 * share_imbalance)
+        + (0.30 * same_parent_run_bias)
+        + (0.25 * preferred_parent_miss)
+        + (0.70 * major_section_lockout),
+    )
+    return penalty, {
+        'parent_share_imbalance': share_imbalance,
+        'same_parent_run_bias': same_parent_run_bias,
+        'preferred_parent_miss': preferred_parent_miss,
+        'major_section_lockout': major_section_lockout,
+    }
+
+
+def _selection_groove_continuity_penalty(
+    prior_selections: list[_WindowSelection],
+    parent_id: str,
+    feedback: _PlannerListenFeedback,
+    alternate_feedback: _PlannerListenFeedback,
+    transition_in: str | None,
+) -> tuple[float, dict[str, float]]:
+    if not prior_selections:
+        return 0.0, {
+            'same_parent_streak': 0.0,
+            'alternate_groove_edge': 0.0,
+            'alternate_transition_edge': 0.0,
+            'coherence_gap': 0.0,
+            'transition_weight': 0.0,
+        }
+
+    same_parent_streak = 0
+    for selection in reversed(prior_selections):
+        if selection.parent_id != parent_id:
+            break
+        same_parent_streak += 1
+    if same_parent_streak <= 0:
+        return 0.0, {
+            'same_parent_streak': 0.0,
+            'alternate_groove_edge': 0.0,
+            'alternate_transition_edge': 0.0,
+            'coherence_gap': 0.0,
+            'transition_weight': 0.0,
+        }
+
+    alternate_groove_edge = max(0.0, alternate_feedback.groove_confidence - feedback.groove_confidence)
+    alternate_transition_edge = max(0.0, alternate_feedback.transition_readiness - feedback.transition_readiness)
+    coherence_gap = max(0.0, alternate_feedback.coherence_confidence - feedback.coherence_confidence)
+    transition_weight = 1.0 if transition_in in {'blend', 'lift', 'swap'} else 0.55
+    streak_weight = min(1.0, 0.30 + (0.25 * same_parent_streak))
+
+    penalty = min(
+        1.0,
+        streak_weight
+        * transition_weight
+        * (
+            (0.60 * alternate_groove_edge)
+            + (0.30 * alternate_transition_edge)
+            + (0.10 * coherence_gap)
+        ),
+    )
+    return penalty, {
+        'same_parent_streak': float(same_parent_streak),
+        'alternate_groove_edge': alternate_groove_edge,
+        'alternate_transition_edge': alternate_transition_edge,
+        'coherence_gap': coherence_gap,
+        'transition_weight': transition_weight,
+    }
+
+
 def _enumerate_section_choices(
     spec: _SectionSpec,
     song_a: SongDNA,
@@ -1031,6 +1177,7 @@ def _enumerate_section_choices(
     selections: list[_WindowSelection] = []
     for parent_id, (song, other_song) in by_parent.items():
         feedback = _planner_listen_feedback(song)
+        alternate_feedback = _planner_listen_feedback(other_song)
         candidates, _, role_scores = _collect_parent_candidates(song, target_position, spec.bar_count, spec.target_energy, spec.label)
         energies = [candidate.energy for candidate in candidates]
         min_energy = min(energies) if energies else 0.0
@@ -1059,6 +1206,23 @@ def _enumerate_section_choices(
             arc_error = 1.0 - _energy_arc_viability(previous, candidate, spec)
             seam_risk, seam_metrics = _planner_seam_risk(previous, song, candidate)
             reuse_penalty, reuse_metrics = _selection_reuse_penalty(prior_selections, parent_id, candidate)
+            fusion_balance_penalty, fusion_balance_metrics = _selection_fusion_balance_penalty(
+                prior_selections,
+                parent_id,
+                spec.source_parent_preference,
+                current_section_label=spec.label,
+            )
+            groove_continuity_penalty, groove_continuity_metrics = _selection_groove_continuity_penalty(
+                prior_selections,
+                parent_id,
+                feedback,
+                alternate_feedback,
+                spec.transition_in,
+            )
+            stretch_ratio, _, stretch_penalty = _stretch_profile(song, candidate, spec.bar_count)
+            stretch_gate = 0.0
+            if stretch_ratio > _CONSERVATIVE_STRETCH_MAX:
+                stretch_gate = _clamp01((stretch_ratio - _CONSERVATIVE_STRETCH_MAX) / max(1e-6, _HARD_STRETCH_MAX - _CONSERVATIVE_STRETCH_MAX))
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
             listen_feedback_penalty = 0.0
             if spec.label in {'build', 'payoff'}:
@@ -1088,10 +1252,14 @@ def _enumerate_section_choices(
                 + (1.10 * compatibility_error)
                 + (1.20 * transition_error)
                 + (1.05 * arc_error)
+                + (1.25 * stretch_penalty)
+                + (1.75 * stretch_gate)
                 + (1.75 * seam_risk)
                 + (1.35 * seam_gate_error)
                 + (0.95 * listen_feedback_penalty)
                 + (1.10 * reuse_penalty)
+                + (0.85 * fusion_balance_penalty)
+                + (0.90 * groove_continuity_penalty)
                 + (0.35 * preference_error)
             )
             selections.append(
@@ -1100,7 +1268,8 @@ def _enumerate_section_choices(
                     song=song,
                     candidate=candidate,
                     blended_error=blended_error,
-                    score_breakdown={
+                    section_label=spec.label,
+                score_breakdown={
                         'position': position_error,
                         'energy_target': energy_error,
                         'role_prior': role_error,
@@ -1108,6 +1277,9 @@ def _enumerate_section_choices(
                         'compatibility': compatibility_error,
                         'transition_viability': transition_error,
                         'energy_arc': arc_error,
+                        'stretch_ratio': stretch_ratio,
+                        'stretch_penalty': stretch_penalty,
+                        'stretch_gate': stretch_gate,
                         'seam_risk': seam_risk,
                         'seam_gate': seam_gate_error,
                         'listen_feedback': listen_feedback_penalty,
@@ -1122,6 +1294,17 @@ def _enumerate_section_choices(
                         'reuse_parent_streak': reuse_metrics['parent_streak'],
                         'reuse_source_rewind': reuse_metrics['source_rewind'],
                         'reuse_source_containment': reuse_metrics['source_containment'],
+                        'fusion_balance': fusion_balance_penalty,
+                        'fusion_parent_share_imbalance': fusion_balance_metrics['parent_share_imbalance'],
+                        'fusion_same_parent_run_bias': fusion_balance_metrics['same_parent_run_bias'],
+                        'fusion_preferred_parent_miss': fusion_balance_metrics['preferred_parent_miss'],
+                        'fusion_major_section_lockout': fusion_balance_metrics['major_section_lockout'],
+                        'groove_continuity': groove_continuity_penalty,
+                        'groove_same_parent_streak': groove_continuity_metrics['same_parent_streak'],
+                        'groove_alternate_groove_edge': groove_continuity_metrics['alternate_groove_edge'],
+                        'groove_alternate_transition_edge': groove_continuity_metrics['alternate_transition_edge'],
+                        'groove_coherence_gap': groove_continuity_metrics['coherence_gap'],
+                        'groove_transition_weight': groove_continuity_metrics['transition_weight'],
                         'parent_preference': preference_error,
                         'seam_energy_jump': seam_metrics['energy_jump'],
                         'seam_spectral_jump': seam_metrics['spectral_jump'],

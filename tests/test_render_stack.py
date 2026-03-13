@@ -11,7 +11,7 @@ from src.core.planner import build_stub_arrangement_plan
 from src.core.planner.models import ChildArrangementPlan, CompatibilityFactors, ParentReference, PlannedSection
 from src.core.render import resolve_render_plan, render_resolved_plan
 from src.core.render.manifest import ResolvedRenderPlan
-from src.core.render.transitions import incoming_gain_db, transition_overlap_seconds
+from src.core.render.transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -287,6 +287,24 @@ def test_resolve_render_plan_rejects_invalid_source_parent(tmp_path: Path):
 
 
 
+def test_resolve_render_plan_surfaces_overstretched_choice_as_warning(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 128.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 128.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['phrase_boundaries_seconds'] = [0.0, 9.6, 12.0]
+    plan = _single_section_plan(source_parent='A', bar_count=2, source_section_label='phrase_0_1')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[0].stretch_ratio > 1.25
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
+    assert 'outside conservative bounds' in joined
+
+
+
 def test_resolve_render_plan_clamps_extreme_stretch_ratio(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'
@@ -323,8 +341,30 @@ def test_resolve_render_plan_applies_transition_aware_incoming_gain(tmp_path: Pa
     manifest = resolve_render_plan(plan, a, b)
 
     assert manifest.sections[0].allowed_overlap is True
+    assert manifest.sections[0].overlap_beats_max == transition_overlap_beats('blend')
     assert manifest.work_orders[0].gain_db == incoming_gain_db('blend')
     assert manifest.work_orders[0].gain_db < 0.0
+
+
+def test_resolve_render_plan_caps_overlap_for_overstretched_transition(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 128.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 128.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['phrase_boundaries_seconds'] = [0.0, 9.6, 12.0]
+    plan = _single_section_plan(source_parent='A', bar_count=2, source_section_label='phrase_0_1')
+    plan.sections[0].transition_in = 'blend'
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[0].stretch_ratio > 1.25
+    assert manifest.sections[0].allowed_overlap is True
+    assert manifest.sections[0].overlap_beats_max == 2.0
+    assert manifest.work_orders[0].fade_in_sec == transition_overlap_seconds('blend', 128.0, stretch_ratio=manifest.sections[0].stretch_ratio)
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
+    assert 'transition overlap capped to 2.0 beats' in joined
 
 
 def test_render_resolved_plan_applies_work_order_gain_deterministically(tmp_path: Path):
