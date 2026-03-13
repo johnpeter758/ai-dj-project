@@ -132,6 +132,27 @@ def test_build_role_prior_prefers_rising_window_over_already_flat_payoff_plateau
     assert candidate.label == "phrase_3_5"
 
 
+def test_build_role_prior_prefers_consistent_ramp_over_flashy_late_spike():
+    song = make_song("build_consistency.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+    song.duration_seconds = 56.0
+    song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+    song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+    song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+    song.energy["beat_rms"] = [
+        0.08, 0.10,
+        0.18, 0.22,
+        0.82, 0.24,
+        0.26, 0.32,
+        0.28, 0.34,
+        0.42, 0.48,
+        0.58, 0.64,
+    ]
+
+    candidate = _pick_candidate(song, target_position="mid", bar_count=8, target_energy=0.55, role="build")
+
+    assert candidate.label == "phrase_4_6"
+
+
 def test_build_plan_uses_sequential_transition_viability_to_keep_energy_rising_into_payoff():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.18)
     b = make_song("b.wav", 129.0, "A", "minor", "8A", 6, 0.18)

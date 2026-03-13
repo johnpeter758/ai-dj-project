@@ -47,6 +47,7 @@ class _RoleFeatures:
     lift_strength: float
     plateau_stability: float
     headroom: float
+    ramp_consistency: float
     hook_strength: float
     payoff_strength: float
     energy_confidence: float
@@ -395,6 +396,13 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
     tail_range = (max(tail) - min(tail)) if tail else energy_span
     plateau_stability = _clamp01(1.0 - (tail_range / max(energy_span, 1e-6)))
     headroom = _clamp01((profile_peak - head_energy) / max(energy_span, 1e-6))
+    profile_steps = [candidate_profile[idx + 1] - candidate_profile[idx] for idx in range(len(candidate_profile) - 1)]
+    if profile_steps:
+        positive_ratio = sum(1 for step in profile_steps if step >= -1e-6) / len(profile_steps)
+        largest_drop = max((max(0.0, -step) for step in profile_steps), default=0.0)
+        ramp_consistency = _clamp01((0.65 * positive_ratio) + (0.35 * (1.0 - min(1.0, largest_drop / max(energy_span, 1e-6)))))
+    else:
+        ramp_consistency = 0.5
 
     return _RoleFeatures(
         start_idx=start_idx,
@@ -413,6 +421,7 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
         lift_strength=lift_strength,
         plateau_stability=plateau_stability,
         headroom=headroom,
+        ramp_consistency=ramp_consistency,
         hook_strength=_signal_overlap_strength(song, candidate, 'hook_windows'),
         payoff_strength=_signal_overlap_strength(song, candidate, 'payoff_windows'),
         energy_confidence=float((song.energy.get('derived', {}) or {}).get('energy_confidence', 0.0)),
@@ -453,8 +462,10 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
         score += 0.35 * features.payoff_strength * signal_confidence
         score += 0.90 * features.lift_strength
         score += 0.45 * features.headroom
+        score += 0.55 * features.ramp_consistency
         score += 0.10 * features.end_focus
         score -= 0.55 * (features.plateau_stability * features.end_focus)
+        score -= 0.25 * max(0.0, features.end_focus - features.ramp_consistency)
     elif canonical_role == 'verse':
         score += 0.45 * features.hook_strength * signal_confidence
     elif canonical_role == 'bridge':
