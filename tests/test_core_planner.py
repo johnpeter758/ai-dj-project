@@ -332,3 +332,24 @@ def test_enumerate_section_choices_penalizes_reusing_same_parent_window_from_his
     assert repeated_b_window.score_breakdown["selection_reuse"] > 0.9
     assert best_with_history.score_breakdown["selection_reuse"] < repeated_b_window.score_breakdown["selection_reuse"]
     assert (best_with_history.parent_id, best_with_history.candidate.label) != (previous.parent_id, previous.candidate.label)
+
+
+def test_payoff_role_prior_prefers_sustained_late_plateau_over_spiky_peak():
+    song = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+    song.duration_seconds = 56.0
+    song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+    song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+    song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+    song.energy["beat_rms"] = [
+        0.10, 0.12,
+        0.16, 0.18,
+        0.42, 0.96,
+        0.40, 0.38,
+        0.52, 0.56,
+        0.78, 0.82,
+        0.86, 0.90,
+    ]
+
+    candidate = _pick_candidate(song, target_position="late", bar_count=16, target_energy=0.85, role="payoff")
+
+    assert candidate.label == "phrase_3_7"

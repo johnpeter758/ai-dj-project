@@ -42,6 +42,9 @@ class _RoleFeatures:
     novelty: float
     novelty_density: float
     section_progress: float
+    tail_energy: float
+    end_focus: float
+    lift_strength: float
     hook_strength: float
     payoff_strength: float
     energy_confidence: float
@@ -380,6 +383,13 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
 
     position = candidate.midpoint / max(float(song.duration_seconds), 1e-6)
     length_phrases = (end_idx - start_idx) / max(max(phrase_lengths), 1)
+    head = candidate_profile[: max(1, len(candidate_profile) // 2)]
+    tail = candidate_profile[len(candidate_profile) // 2 :] or candidate_profile[-1:]
+    head_energy = sum(head) / max(len(head), 1)
+    tail_energy = sum(tail) / max(len(tail), 1)
+    profile_peak = max(candidate_profile) if candidate_profile else max(candidate.energy, 1e-6)
+    end_focus = _clamp01(tail_energy / max(profile_peak, 1e-6))
+    lift_strength = _clamp01((tail_energy - head_energy) / max(energy_span, 1e-6))
 
     return _RoleFeatures(
         start_idx=start_idx,
@@ -393,6 +403,9 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
         novelty=novelty,
         novelty_density=novelty_density,
         section_progress=section_progress,
+        tail_energy=tail_energy,
+        end_focus=end_focus,
+        lift_strength=lift_strength,
         hook_strength=_signal_overlap_strength(song, candidate, 'hook_windows'),
         payoff_strength=_signal_overlap_strength(song, candidate, 'payoff_windows'),
         energy_confidence=float((song.energy.get('derived', {}) or {}).get('energy_confidence', 0.0)),
@@ -426,8 +439,12 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
     if canonical_role == 'chorus_payoff':
         score += 1.15 * features.payoff_strength * signal_confidence
         score += 0.55 * features.hook_strength * signal_confidence
+        score += 0.85 * features.end_focus
+        score += 0.55 * features.lift_strength
     elif canonical_role == 'pre':
         score += 0.35 * features.payoff_strength * signal_confidence
+        score += 0.90 * features.lift_strength
+        score += 0.20 * features.end_focus
     elif canonical_role == 'verse':
         score += 0.45 * features.hook_strength * signal_confidence
     elif canonical_role == 'bridge':
