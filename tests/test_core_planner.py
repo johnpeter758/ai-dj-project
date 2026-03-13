@@ -73,6 +73,9 @@ def test_build_section_program_scales_from_compact_to_extended_shapes():
     extended_a.duration_seconds = extended_b.duration_seconds = 64.0
     extended_a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
     extended_b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+    extended_a.energy["beat_times"] = extended_b.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+    extended_a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.26, 0.30, 0.42, 0.46, 0.74, 0.78, 0.30, 0.26, 0.82, 0.86, 0.90, 0.94]
+    extended_b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.20, 0.30, 0.34, 0.48, 0.52, 0.76, 0.80, 0.34, 0.30, 0.84, 0.88, 0.92, 0.96]
 
     compact = _build_section_program(compact_a, compact_b)
     standard = _build_section_program(standard_a, standard_b)
@@ -81,6 +84,23 @@ def test_build_section_program_scales_from_compact_to_extended_shapes():
     assert [spec.label for spec in compact] == ["intro", "build", "payoff"]
     assert [spec.label for spec in standard] == ["intro", "verse", "build", "payoff", "outro"]
     assert [spec.label for spec in extended] == ["intro", "verse", "build", "payoff", "bridge", "payoff", "outro"]
+
+
+def test_build_section_program_avoids_forcing_bridge_and_second_payoff_without_reset_relaunch_support():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.18)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.24, 0.26, 0.36, 0.38, 0.52, 0.54, 0.58, 0.60, 0.62, 0.64, 0.42, 0.38]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.20, 0.28, 0.30, 0.40, 0.42, 0.56, 0.58, 0.60, 0.62, 0.64, 0.66, 0.46, 0.42]
+
+    program = _build_section_program(a, b)
+
+    assert [spec.label for spec in program] == ["intro", "verse", "build", "payoff", "outro"]
 
 
 def test_build_stub_arrangement_plan_prefers_higher_energy_late_phrase_for_payoff():
@@ -295,8 +315,8 @@ def test_extended_stub_arrangement_plan_includes_bridge_and_second_payoff_when_c
         song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
         song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
 
-    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.26, 0.28, 0.38, 0.40, 0.60, 0.62, 0.30, 0.28, 0.74, 0.76, 0.24, 0.20]
-    b.energy["beat_rms"] = [0.10, 0.12, 0.20, 0.22, 0.32, 0.34, 0.46, 0.48, 0.72, 0.74, 0.42, 0.38, 0.88, 0.90, 0.18, 0.16]
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.26, 0.30, 0.42, 0.46, 0.74, 0.78, 0.30, 0.26, 0.82, 0.86, 0.90, 0.94]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.20, 0.30, 0.34, 0.48, 0.52, 0.76, 0.80, 0.34, 0.30, 0.84, 0.88, 0.92, 0.96]
 
     plan = build_stub_arrangement_plan(a, b).to_dict()
     labels = [section["label"] for section in plan["sections"]]
@@ -484,6 +504,37 @@ def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_t
     assert rewind_b.score_breakdown["reuse_source_rewind"] > 0.0
     assert rewind_b.score_breakdown["selection_reuse"] > forward_b.score_breakdown["selection_reuse"]
     assert rewind_b.blended_error > forward_b.blended_error
+
+
+def test_bridge_selection_prefers_real_reset_after_hot_payoff_over_staying_stuck_in_plateau():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.24, 0.28, 0.34, 0.38, 0.44, 0.48, 0.40, 0.36, 0.52, 0.56, 0.26, 0.22]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.22, 0.32, 0.36, 0.48, 0.52, 0.84, 0.88, 0.50, 0.46, 0.86, 0.90, 0.20, 0.18]
+
+    previous = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="late", bar_count=16, target_energy=0.86, role="payoff"),
+        blended_error=0.0,
+        score_breakdown={},
+    )
+
+    spec = _SectionSpec(label="bridge", start_bar=40, bar_count=8, target_energy=0.52, source_parent_preference="A", transition_in="swap", transition_out="lift")
+    ranked = _enumerate_section_choices(spec, a, b, previous, prior_selections=[previous])
+
+    reset_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_6_8")
+    hot_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_4_6")
+
+    assert reset_b.score_breakdown["energy_arc"] < hot_b.score_breakdown["energy_arc"]
+    assert reset_b.blended_error < hot_b.blended_error
 
 
 def test_planner_listen_feedback_reads_existing_analysis_signals():

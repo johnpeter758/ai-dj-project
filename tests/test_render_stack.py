@@ -11,7 +11,7 @@ from src.core.planner import build_stub_arrangement_plan
 from src.core.planner.models import ChildArrangementPlan, CompatibilityFactors, ParentReference, PlannedSection
 from src.core.render import resolve_render_plan, render_resolved_plan
 from src.core.render.manifest import ResolvedRenderPlan
-from src.core.render.transitions import transition_overlap_seconds
+from src.core.render.transitions import incoming_gain_db, transition_overlap_seconds
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -62,6 +62,23 @@ def test_resolve_render_plan_emits_sections_and_work_orders(tmp_path: Path):
     manifest = resolve_render_plan(plan, a, b)
     assert len(manifest.sections) == 3
     assert len(manifest.work_orders) == 3
+
+
+def test_resolve_render_plan_keeps_non_overlap_sections_single_owner(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = _single_section_plan(source_parent='A', bar_count=4, source_section_label='phrase_0_2')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[0].allowed_overlap is False
+    assert manifest.sections[0].background_owner is None
+    assert manifest.sections[0].foreground_owner == 'A'
+    assert manifest.sections[0].low_end_owner == 'A'
 
 
 def test_render_resolved_plan_writes_outputs(tmp_path: Path):
@@ -292,6 +309,22 @@ def test_transition_overlap_seconds_is_safe_for_nonpositive_bpm():
     assert transition_overlap_seconds('blend', 0.0) > 0.0
     assert transition_overlap_seconds('cut', 0.0) == 0.0
 
+
+def test_resolve_render_plan_applies_transition_aware_incoming_gain(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = _single_section_plan(source_parent='A', bar_count=4, source_section_label='phrase_0_2')
+    plan.sections[0].transition_in = 'blend'
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[0].allowed_overlap is True
+    assert manifest.work_orders[0].gain_db == incoming_gain_db('blend')
+    assert manifest.work_orders[0].gain_db < 0.0
 
 
 def test_render_resolved_plan_applies_work_order_gain_deterministically(tmp_path: Path):

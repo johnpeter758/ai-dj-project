@@ -95,6 +95,57 @@ def test_energy_arc_prefers_late_sustained_payoff_over_flat_profile():
     assert any('macro-dynamic contrast' in fix.lower() for fix in flat_report.energy_arc.fixes)
 
 
+def test_structure_score_rewards_section_span_quality_and_coverage():
+    strong_song = DummySong('strong_structure.wav')
+    weak_song = DummySong('weak_structure.wav')
+
+    weak_song.structure['sections'] = [
+        {'label': 'micro_0', 'start': 0.0, 'end': 4.0},
+        {'label': 'micro_1', 'start': 4.0, 'end': 8.0},
+        {'label': 'micro_2', 'start': 8.0, 'end': 12.0},
+        {'label': 'micro_3', 'start': 12.0, 'end': 16.0},
+        {'label': 'mega', 'start': 16.0, 'end': 96.0},
+    ]
+    weak_song.structure['phrase_boundaries_seconds'] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88]
+    weak_song.structure['novelty_boundaries_seconds'] = [16, 56, 88]
+
+    strong_report = evaluate_song(strong_song)
+    weak_report = evaluate_song(weak_song)
+
+    strong_metrics = strong_report.structure.details['aggregate_metrics']
+    weak_metrics = weak_report.structure.details['aggregate_metrics']
+
+    assert strong_report.structure.score > weak_report.structure.score
+    assert strong_metrics['section_span_quality'] > weak_metrics['section_span_quality']
+    assert strong_metrics['coverage_ratio'] > 0.95
+    assert weak_metrics['largest_section_ratio'] > 0.6
+    assert any('dominant mega-section' in fix.lower() for fix in weak_report.structure.fixes)
+
+
+def test_structure_score_penalizes_sparse_section_coverage():
+    covered_song = DummySong('covered.wav')
+    sparse_song = DummySong('sparse.wav')
+
+    sparse_song.structure['sections'] = [
+        {'label': 'intro', 'start': 0.0, 'end': 12.0},
+        {'label': 'hook', 'start': 54.0, 'end': 66.0},
+        {'label': 'outro', 'start': 108.0, 'end': 120.0},
+    ]
+    sparse_song.structure['phrase_boundaries_seconds'] = covered_song.structure['phrase_boundaries_seconds']
+    sparse_song.structure['novelty_boundaries_seconds'] = covered_song.structure['novelty_boundaries_seconds']
+
+    covered_report = evaluate_song(covered_song)
+    sparse_report = evaluate_song(sparse_song)
+
+    covered_metrics = covered_report.structure.details['aggregate_metrics']
+    sparse_metrics = sparse_report.structure.details['aggregate_metrics']
+
+    assert covered_report.structure.score > sparse_report.structure.score
+    assert sparse_metrics['coverage_ratio'] < 0.4
+    assert covered_metrics['section_span_quality'] > sparse_metrics['section_span_quality']
+    assert any('section coverage' in fix.lower() for fix in sparse_report.structure.fixes)
+
+
 def test_transition_score_emits_boundary_seam_metrics():
     song = DummySong('dummy.wav')
     song.energy['rms'] = [0.04, 0.04, 0.04, 0.04, 0.16, 0.17, 0.17, 0.17, 0.07, 0.07, 0.07, 0.07]

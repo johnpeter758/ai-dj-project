@@ -416,15 +416,83 @@ def _structure_score(song: SongDNA) -> ListenSubscore:
     section_score = _score_band(float(section_count), 6.0, 32.0, 8.0)
     phrase_score = _score_band(float(phrase_count), 8.0, 80.0, 12.0)
     novelty_score = _score_band(float(novelty_count), 4.0, 40.0, 8.0)
-    score = round(100.0 * (0.45 * section_score + 0.35 * phrase_score + 0.20 * novelty_score), 1)
+
+    duration_seconds = max(float(song.duration_seconds or 0.0), 1e-6)
+    section_durations: list[float] = []
+    covered_seconds = 0.0
+    for section in sections:
+        start = float(section.get("start", 0.0) or 0.0)
+        end = float(section.get("end", start) or start)
+        span = max(0.0, end - start)
+        if span > 0.0:
+            section_durations.append(span)
+            covered_seconds += span
+
+    if section_durations:
+        median_section = float(np.median(section_durations))
+        useful_ratio = float(np.mean(np.asarray(section_durations) >= 8.0))
+        largest_ratio = max(section_durations) / duration_seconds
+        coverage_ratio = min(covered_seconds / duration_seconds, 1.0)
+        span_band_score = _score_band(median_section, 12.0, 48.0, 16.0)
+        usefulness_score = _clamp01((useful_ratio - 0.45) / 0.45)
+        coverage_score = _clamp01((coverage_ratio - 0.55) / 0.35)
+        dominance_score = 1.0 - _clamp01((largest_ratio - 0.45) / 0.25)
+        section_span_quality = (
+            0.35 * span_band_score
+            + 0.25 * usefulness_score
+            + 0.25 * coverage_score
+            + 0.15 * dominance_score
+        )
+    else:
+        median_section = 0.0
+        useful_ratio = 0.0
+        largest_ratio = 1.0
+        coverage_ratio = 0.0
+        section_span_quality = 0.0
+
+    score = round(
+        100.0 * (
+            0.34 * section_score
+            + 0.28 * phrase_score
+            + 0.16 * novelty_score
+            + 0.22 * section_span_quality
+        ),
+        1,
+    )
 
     evidence.append(f"detected {section_count} coarse sections, {phrase_count} phrase boundaries, {novelty_count} novelty boundaries")
+    evidence.append(
+        f"section span quality {section_span_quality:.3f}; median section {median_section:.1f}s; useful-span ratio {useful_ratio:.3f}; coverage {coverage_ratio:.3f}; largest-section ratio {largest_ratio:.3f}"
+    )
     if section_count <= 2:
         fixes.append("Increase structural certainty so the planner is not forced into coarse whole-song windows.")
     if phrase_count < 6:
         fixes.append("Improve beat/downbeat and phrase extraction to create more musically legal planning windows.")
-    summary = "Structure is reasonably segmented for planning." if score >= 70 else "Structure segmentation is still too coarse for strong planning."
-    return ListenSubscore(score=score, summary=summary, evidence=evidence, fixes=fixes)
+    if coverage_ratio < 0.75:
+        fixes.append("Expand section coverage so more of the song is mapped into usable non-trivial structural spans.")
+    if useful_ratio < 0.60 or median_section < 8.0:
+        fixes.append("Reduce tiny section fragments; the current map is too chopped to support confident phrase-level planning.")
+    if largest_ratio > 0.50:
+        fixes.append("Avoid one dominant mega-section; rebalance the section map so major turns land across the full song.")
+    summary = "Structure is reasonably segmented for planning." if score >= 70 else "Structure segmentation is still too coarse or span-imbalanced for strong planning."
+    return ListenSubscore(
+        score=score,
+        summary=summary,
+        evidence=evidence,
+        fixes=fixes,
+        details={
+            "aggregate_metrics": {
+                "section_count": section_count,
+                "phrase_count": phrase_count,
+                "novelty_count": novelty_count,
+                "median_section_seconds": round(median_section, 3),
+                "useful_span_ratio": round(useful_ratio, 3),
+                "coverage_ratio": round(coverage_ratio, 3),
+                "largest_section_ratio": round(largest_ratio, 3),
+                "section_span_quality": round(section_span_quality, 3),
+            }
+        },
+    )
 
 
 def _groove_score(song: SongDNA) -> ListenSubscore:

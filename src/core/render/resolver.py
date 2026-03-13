@@ -15,7 +15,7 @@ from .manifest import (
     SourceSectionRef,
     TargetSectionTiming,
 )
-from .transitions import transition_overlap_seconds
+from .transitions import incoming_gain_db, transition_overlap_seconds
 
 _CONSERVATIVE_STRETCH_MIN = 0.75
 _CONSERVATIVE_STRETCH_MAX = 1.25
@@ -411,6 +411,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
 
         other_parent = "B" if parent_id == "A" else "A"
         overlap_beats = 0.0 if sec.transition_in in (None, "cut") else min(config.blend_beats_max, {"blend": 8.0, "swap": 4.0, "lift": 4.0, "drop": 2.0}.get(sec.transition_in or "cut", 0.0))
+        background_owner = other_parent if overlap_beats > 0.0 else None
         resolved = ResolvedSection(
             index=idx,
             label=sec.label,
@@ -425,7 +426,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 anchor_bpm=anchor_bpm,
             ),
             foreground_owner=parent_id,
-            background_owner=other_parent,
+            background_owner=background_owner,
             low_end_owner=parent_id,
             vocal_policy=f"{parent_id}_only",
             allowed_overlap=overlap_beats > 0,
@@ -452,7 +453,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             target_duration_sec=target_duration_sec,
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
-            gain_db=0.0,
+            gain_db=incoming_gain_db(sec.transition_in),
             fade_in_sec=transition_overlap_seconds(sec.transition_in, anchor_bpm),
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm),
             transition_type=sec.transition_in,

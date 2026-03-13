@@ -171,6 +171,57 @@ def _song_phrase_capacity(song: SongDNA) -> int:
     return max(1, len(sections))
 
 
+def _song_phrase_energy_profile(song: SongDNA) -> list[float]:
+    phrase_boundaries = sorted(set(_safe_float_list(song.structure.get('phrase_boundaries_seconds', []))))
+    duration = float(song.duration_seconds)
+    if phrase_boundaries:
+        if phrase_boundaries[0] > 0.0:
+            phrase_boundaries = [0.0, *phrase_boundaries]
+        if phrase_boundaries[-1] < duration:
+            phrase_boundaries.append(duration)
+        profile = [
+            _window_energy(song, start, end)
+            for start, end in zip(phrase_boundaries[:-1], phrase_boundaries[1:])
+            if end > start
+        ]
+        if profile:
+            return profile
+
+    return [_window_energy(song, 0.0, duration)]
+
+
+def _song_extended_program_support(song: SongDNA) -> float:
+    profile = _song_phrase_energy_profile(song)
+    if len(profile) < 7:
+        return 0.0
+
+    total = len(profile)
+    bridge_start = max(1, int(total * 0.56))
+    bridge_end = max(bridge_start + 1, int(total * 0.78))
+    final_start = max(bridge_end, int(total * 0.72))
+
+    first_payoff = max(profile[max(1, int(total * 0.38)):max(2, int(total * 0.62))] or profile)
+    bridge_floor = min(profile[bridge_start:bridge_end] or profile[-3:-1] or profile)
+    final_payoff = max(profile[final_start:] or profile[-2:] or profile)
+
+    energy_low = min(profile)
+    energy_high = max(profile)
+    energy_span = max(energy_high - energy_low, 1e-6)
+
+    reset_depth = _clamp01((first_payoff - bridge_floor) / energy_span)
+    relaunch_strength = _clamp01((final_payoff - bridge_floor) / energy_span)
+    final_advantage = _clamp01((final_payoff - first_payoff) / energy_span + 0.5)
+
+    feedback = _planner_listen_feedback(song)
+    return _clamp01(
+        0.35 * reset_depth
+        + 0.35 * relaunch_strength
+        + 0.10 * final_advantage
+        + 0.10 * feedback.payoff_readiness
+        + 0.10 * feedback.energy_arc_strength
+    )
+
+
 def _build_section_program(song_a: SongDNA, song_b: SongDNA) -> list[_SectionSpec]:
     capacity = max(_song_phrase_capacity(song_a), _song_phrase_capacity(song_b))
 
@@ -197,7 +248,10 @@ def _build_section_program(song_a: SongDNA, song_b: SongDNA) -> list[_SectionSpe
     ]
 
     if capacity >= 7:
-        return extended
+        extended_support = max(_song_extended_program_support(song_a), _song_extended_program_support(song_b))
+        if extended_support >= 0.30:
+            return extended
+        return standard
     if capacity >= 5:
         return standard
     return compact
@@ -797,7 +851,16 @@ def _energy_arc_viability(previous: _WindowSelection | None, candidate: _Section
         elif spec.label == 'payoff' and current_energy < max(previous_energy, 0.72):
             floor_fit = max(0.0, 1.0 - ((max(previous_energy, 0.72) - current_energy) / 0.25))
 
-    return max(0.0, min(1.0, (0.45 * delta_fit) + (0.35 * target_fit) + (0.20 * floor_fit)))
+    reset_fit = 1.0
+    if spec.label in {'bridge', 'outro', 'verse'} and previous_energy >= 0.68:
+        target_release = max(0.0, previous_energy - target_energy)
+        if target_release > 0.08:
+            actual_release = max(0.0, previous_energy - current_energy)
+            release_fit = min(1.0, actual_release / target_release)
+            headroom_fit = max(0.0, 1.0 - (max(0.0, current_energy - (target_energy + 0.08)) / 0.22))
+            reset_fit = max(0.0, min(release_fit, headroom_fit))
+
+    return max(0.0, min(1.0, (0.38 * delta_fit) + (0.30 * target_fit) + (0.16 * floor_fit) + (0.16 * reset_fit)))
 
 
 def _collect_parent_candidates(song: SongDNA, target_position: str, bar_count: int, target_energy: float, role: str | None) -> tuple[list[_SectionCandidate], dict[str, _RoleFeatures], dict[str, float]]:
