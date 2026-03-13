@@ -1,6 +1,33 @@
 # AI DJ Project
 
-VocalFusion's codebase for analyzing two parent songs, building a child arrangement plan, and rendering a first deterministic fusion output.
+VocalFusion's codebase for turning two parent songs into one intentional child arrangement.
+
+## The VocalFusion pyramid
+
+GitHub should be read top-down as a hierarchy, not as a flat bag of modules.
+
+```text
+                    VocalFusion Brain
+         (taste, product rules, architecture, memory)
+                              |
+                         Song Director
+        (whole-song form, section program, macro energy arc)
+                              |
+                        Section Planner
+   (phrase windows, role fit, chronology, compatibility, reuse)
+                              |
+                    Transition / Ownership Layer
+     (handoffs, overlap policy, lead focus, seam legality)
+                              |
+                         Render Engine
+     (deterministic resolve, stretch, schedule, export)
+                              |
+                     Analysis Foundation
+   (tempo, bars, phrases, sections, energy, stems, SongDNA)
+
+        Listen / Evaluator runs across the whole stack as the
+        feedback spine: ranking, diagnosis, rejection, iteration.
+```
 
 ## Current state
 
@@ -9,16 +36,18 @@ This repo now supports a real first-pass end-to-end flow:
 - compute a compatibility report
 - build an arrangement plan
 - render a deterministic fused output
+- score outputs with `listen` / `compare-listen`
 
-It is **not** producer-grade yet. The main gap is still musical intelligence: stronger structure segmentation, better phrase/section ranking, and better planner decisions.
+It is **not** producer-grade yet. The main gap is still musical intelligence: stronger structure segmentation, richer section programs, better phrase/section ranking, cleaner transitions, and stronger quality judgment.
 
 ## Best entry points
 
-- `ai_dj.py` — CLI for doctor / analyze / prototype / fusion
-- `src/core/analysis/` — audio analysis and SongDNA generation
-- `src/core/planner/` — compatibility + arrangement planning
-- `src/core/render/` — deterministic render v1 stack
-- `tests/` — targeted regression coverage for the current checkpoint
+- `ai_dj.py` — CLI for doctor / analyze / prototype / fusion / listen / compare-listen
+- `src/core/analysis/` — analysis foundation and SongDNA generation
+- `src/core/planner/` — song director + section planner
+- `src/core/render/` — transition/ownership execution + deterministic render v1
+- `src/core/evaluation/` — listen/evaluator feedback spine
+- `tests/` — targeted regression coverage for the active core
 - `docs/README.md` — organized docs index
 
 ## Quick start
