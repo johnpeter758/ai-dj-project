@@ -288,6 +288,125 @@ def _resolve_output_path(output: Optional[str], default_path: Optional[Path] = N
     return output_path.resolve()
 
 
+def _metric_label(key: str) -> str:
+    return key.replace("_", " ")
+
+
+def _decision_confidence(overall_delta: float, decisive_component_count: int) -> str:
+    magnitude = abs(overall_delta)
+    if magnitude < 1e-6:
+        return "tie"
+    if magnitude >= 12.0 or decisive_component_count >= 3:
+        return "clear"
+    if magnitude >= 5.0 or decisive_component_count >= 2:
+        return "leaning"
+    return "narrow"
+
+
+def _component_reason_block(
+    key: str,
+    winner_side: str,
+    delta: float,
+    left_report: dict[str, Any],
+    right_report: dict[str, Any],
+    left_label: str,
+    right_label: str,
+) -> dict[str, Any]:
+    winner_report = left_report if winner_side == "left" else right_report
+    loser_report = right_report if winner_side == "left" else left_report
+    winner_label = left_label if winner_side == "left" else right_label
+    loser_label = right_label if winner_side == "left" else left_label
+    winner_component = winner_report.get(key) or {}
+    loser_component = loser_report.get(key) or {}
+    return {
+        "component": key,
+        "label": _metric_label(key),
+        "winner": winner_side,
+        "winner_label": winner_label,
+        "loser_label": loser_label,
+        "delta": round(abs(delta), 1),
+        "winner_summary": winner_component.get("summary"),
+        "loser_summary": loser_component.get("summary"),
+        "winner_evidence": list((winner_component.get("evidence") or [])[:2]),
+        "loser_fixes": list((loser_component.get("fixes") or [])[:2]),
+    }
+
+
+def _build_comparison_decision(
+    left_report: dict[str, Any],
+    right_report: dict[str, Any],
+    component_deltas: dict[str, float],
+    overall_delta: float,
+    overall_winner: str,
+    left_label: str,
+    right_label: str,
+) -> dict[str, Any]:
+    decisive = [
+        _component_reason_block(key, "left" if delta > 0 else "right", delta, left_report, right_report, left_label, right_label)
+        for key, delta in sorted(component_deltas.items(), key=lambda item: abs(item[1]), reverse=True)
+        if abs(delta) >= 0.5
+    ]
+    deciding_components = decisive[:3]
+
+    if overall_winner == "tie":
+        why = [
+            f"Tie: {left_label} and {right_label} land on the same overall listen score.",
+        ]
+        if deciding_components:
+            why.append(
+                "Largest tradeoff: "
+                + "; ".join(
+                    f"{item['winner_label']} leads on {item['label']} (+{item['delta']:.1f})"
+                    for item in deciding_components[:2]
+                )
+                + "."
+            )
+        if left_report.get("verdict") != right_report.get("verdict"):
+            why.append(
+                f"Verdicts still differ: {left_label}={left_report.get('verdict')} vs {right_label}={right_report.get('verdict')}."
+            )
+        return {
+            "winner": "tie",
+            "winner_label": "tie",
+            "loser_label": None,
+            "confidence": "tie",
+            "deciding_components": deciding_components,
+            "why": why,
+            "winner_reasons": [],
+            "loser_fixes": [],
+        }
+
+    winner_report = left_report if overall_winner == "left" else right_report
+    loser_report = right_report if overall_winner == "left" else left_report
+    winner_label = left_label if overall_winner == "left" else right_label
+    loser_label = right_label if overall_winner == "left" else left_label
+    confidence = _decision_confidence(overall_delta, len(deciding_components))
+
+    why = [
+        f"{winner_label} wins overall by {abs(overall_delta):.1f} listen points over {loser_label}.",
+    ]
+    if deciding_components:
+        why.extend(
+            f"Deciding edge: {item['winner_label']} is stronger on {item['label']} (+{item['delta']:.1f}) — {item['winner_summary']}"
+            for item in deciding_components
+        )
+    if winner_report.get("verdict") != loser_report.get("verdict"):
+        why.append(
+            f"Verdict shift: {winner_label} is rated {winner_report.get('verdict')} while {loser_label} is rated {loser_report.get('verdict')}."
+        )
+
+    return {
+        "winner": overall_winner,
+        "winner_label": winner_label,
+        "loser_label": loser_label,
+        "confidence": confidence,
+        "deciding_components": deciding_components,
+        "why": why,
+        "winner_reasons": list((winner_report.get("top_reasons") or [])[:4]),
+        "loser_fixes": list((loser_report.get("top_fixes") or [])[:4]),
+    }
+
+
 def _summarize_comparison(left: dict[str, Any], right: dict[str, Any], deltas: dict[str, Any], left_label: str, right_label: str) -> list[str]:
     lines = []
     overall_delta = float(deltas["overall_score_delta"])
@@ -309,8 +428,7 @@ def _summarize_comparison(left: dict[str, Any], right: dict[str, Any], deltas: d
             continue
         winner = left_label if delta > 0 else right_label
         loser = right_label if delta > 0 else left_label
-        metric_label = key.replace("_", " ")
-        lines.append(f"Edge: {winner} is stronger on {metric_label} by {abs(delta):.1f} points vs {loser}.")
+        lines.append(f"Edge: {winner} is stronger on {_metric_label(key)} by {abs(delta):.1f} points vs {loser}.")
 
     if left.get("verdict") != right.get("verdict"):
         lines.append(f"Verdict shift: {left_label}={left.get('verdict')} while {right_label}={right.get('verdict')}.")
@@ -408,6 +526,15 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
             "overall": overall_winner,
             "components": component_winners,
         },
+        "decision": _build_comparison_decision(
+            left_report,
+            right_report,
+            component_deltas,
+            overall_delta,
+            overall_winner,
+            left_label,
+            right_label,
+        ),
         "summary": _summarize_comparison(
             left_report,
             right_report,
@@ -468,7 +595,12 @@ def compare_listen(left: str, right: str, output: Optional[str]) -> int:
         delta = comparison['deltas']['component_score_deltas'][key]
         winner = comparison['winner']['components'][key]
         winner_label = left_label if winner == 'left' else right_label if winner == 'right' else 'tie'
-        print(f"- {key.replace('_', ' ')}: {winner_label} ({delta:+.1f})")
+        print(f"- {_metric_label(key)}: {winner_label} ({delta:+.1f})")
+    decision = comparison.get('decision') or {}
+    if decision.get('confidence'):
+        print(f"Decision confidence: {decision['confidence']}")
+    for line in decision.get('why') or []:
+        print(f"  Why: {line}")
     for line in comparison['summary']:
         print(f"  {line}")
     return 0

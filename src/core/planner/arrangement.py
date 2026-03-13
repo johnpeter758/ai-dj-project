@@ -130,8 +130,11 @@ ROLE_PRIOR_WEIGHTS = {
 
 SECTION_TARGET_POSITION = {
     'intro': 'early',
+    'verse': 'mid',
     'build': 'mid',
     'payoff': 'late',
+    'bridge': 'late',
+    'outro': 'late',
 }
 
 
@@ -143,6 +146,52 @@ def _song_parent_ref(song: SongDNA) -> ParentReference:
         str(song.key.get('mode', 'unknown')),
         song.duration_seconds,
     )
+
+
+def _song_phrase_capacity(song: SongDNA) -> int:
+    phrase_boundaries = sorted(set(_safe_float_list(song.structure.get('phrase_boundaries_seconds', []))))
+    if phrase_boundaries:
+        if phrase_boundaries[0] > 0.0:
+            phrase_boundaries = [0.0, *phrase_boundaries]
+        duration = float(song.duration_seconds)
+        if phrase_boundaries[-1] < duration:
+            phrase_boundaries.append(duration)
+        return max(1, len(phrase_boundaries) - 1)
+
+    sections = song.structure.get('sections', []) or []
+    return max(1, len(sections))
+
+
+def _build_section_program(song_a: SongDNA, song_b: SongDNA) -> list[_SectionSpec]:
+    capacity = max(_song_phrase_capacity(song_a), _song_phrase_capacity(song_b))
+
+    compact = [
+        _SectionSpec(label='intro', start_bar=0, bar_count=8, target_energy=0.25, source_parent_preference='A', transition_out='lift'),
+        _SectionSpec(label='build', start_bar=8, bar_count=8, target_energy=0.55, source_parent_preference='B', transition_in='blend', transition_out='swap'),
+        _SectionSpec(label='payoff', start_bar=16, bar_count=16, target_energy=0.85, source_parent_preference=None, transition_in='drop'),
+    ]
+    standard = [
+        _SectionSpec(label='intro', start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference='A', transition_out='lift'),
+        _SectionSpec(label='verse', start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference='A', transition_in='blend', transition_out='lift'),
+        _SectionSpec(label='build', start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference='B', transition_in='blend', transition_out='swap'),
+        _SectionSpec(label='payoff', start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in='drop', transition_out='blend'),
+        _SectionSpec(label='outro', start_bar=40, bar_count=8, target_energy=0.34, source_parent_preference='A', transition_in='blend'),
+    ]
+    extended = [
+        _SectionSpec(label='intro', start_bar=0, bar_count=8, target_energy=0.22, source_parent_preference='A', transition_out='lift'),
+        _SectionSpec(label='verse', start_bar=8, bar_count=8, target_energy=0.40, source_parent_preference='A', transition_in='blend', transition_out='lift'),
+        _SectionSpec(label='build', start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference='B', transition_in='blend', transition_out='swap'),
+        _SectionSpec(label='payoff', start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in='drop', transition_out='blend'),
+        _SectionSpec(label='bridge', start_bar=40, bar_count=8, target_energy=0.52, source_parent_preference='A', transition_in='swap', transition_out='lift'),
+        _SectionSpec(label='payoff', start_bar=48, bar_count=16, target_energy=0.90, source_parent_preference=None, transition_in='drop', transition_out='blend'),
+        _SectionSpec(label='outro', start_bar=64, bar_count=8, target_energy=0.30, source_parent_preference='A', transition_in='blend'),
+    ]
+
+    if capacity >= 7:
+        return extended
+    if capacity >= 5:
+        return standard
+    return compact
 
 
 def _safe_float_list(values) -> list[float]:
@@ -967,11 +1016,7 @@ def _enumerate_section_choices(
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrangementPlan:
     report = build_compatibility_report(song_a, song_b)
 
-    section_specs = [
-        _SectionSpec(label='intro', start_bar=0, bar_count=8, target_energy=0.25, source_parent_preference='A', transition_out='lift'),
-        _SectionSpec(label='build', start_bar=8, bar_count=8, target_energy=0.55, source_parent_preference='B', transition_in='blend', transition_out='swap'),
-        _SectionSpec(label='payoff', start_bar=16, bar_count=16, target_energy=0.85, source_parent_preference=None, transition_in='drop'),
-    ]
+    section_specs = _build_section_program(song_a, song_b)
 
     sections: list[PlannedSection] = []
     selection_notes: list[str] = []
@@ -1001,8 +1046,10 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         selection_history.append(chosen)
         previous = chosen
 
+    program_signature = ' -> '.join(f"{spec.label}({spec.bar_count})" for spec in section_specs)
     notes = [
         'Planner now ranks explicit phrase windows section-by-section across both parents instead of relying on coarse early/mid/late anchor picking.',
+        f'Section program is now capacity-aware instead of fixed: {program_signature}.',
         'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, evaluator-style seam-risk priors, history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
         'Sequential selection now discourages replaying the exact same source window or heavily overlapping window later in the child timeline unless the musical fit is clearly stronger.',
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',

@@ -1,6 +1,6 @@
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _enumerate_section_choices, _pick_candidate
+from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _enumerate_section_choices, _pick_candidate
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -39,13 +39,40 @@ def test_build_stub_arrangement_plan_returns_sections():
 
     plan = build_stub_arrangement_plan(a, b).to_dict()
 
-    assert len(plan["sections"]) == 3
-    assert plan["sections"][0]["label"] == "intro"
-    assert plan["sections"][0]["source_section_label"].startswith("phrase_")
-    assert plan["sections"][1]["source_section_label"].startswith("phrase_")
-    assert plan["sections"][2]["source_section_label"].startswith("phrase_")
+    assert len(plan["sections"]) == 5
+    assert [section["label"] for section in plan["sections"]] == ["intro", "verse", "build", "payoff", "outro"]
+    assert all(section["source_section_label"].startswith("phrase_") for section in plan["sections"])
     assert "compatibility" in plan
     assert any("boundary confidence" in note for note in plan["planning_notes"])
+    assert any("capacity-aware" in note for note in plan["planning_notes"])
+
+
+def test_build_section_program_scales_from_compact_to_extended_shapes():
+    compact_a = make_song("compact_a.wav", 128.0, "A", "minor", "8A", 3, 0.11)
+    compact_b = make_song("compact_b.wav", 128.0, "A", "minor", "8A", 3, 0.11)
+    compact_a.duration_seconds = compact_b.duration_seconds = 32.0
+    compact_a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0]
+    compact_b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0]
+
+    standard_a = make_song("standard_a.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    standard_b = make_song("standard_b.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    standard_a.duration_seconds = standard_b.duration_seconds = 48.0
+    standard_a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
+    standard_b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
+
+    extended_a = make_song("extended_a.wav", 128.0, "A", "minor", "8A", 7, 0.11)
+    extended_b = make_song("extended_b.wav", 128.0, "A", "minor", "8A", 7, 0.11)
+    extended_a.duration_seconds = extended_b.duration_seconds = 64.0
+    extended_a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+    extended_b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+
+    compact = _build_section_program(compact_a, compact_b)
+    standard = _build_section_program(standard_a, standard_b)
+    extended = _build_section_program(extended_a, extended_b)
+
+    assert [spec.label for spec in compact] == ["intro", "build", "payoff"]
+    assert [spec.label for spec in standard] == ["intro", "verse", "build", "payoff", "outro"]
+    assert [spec.label for spec in extended] == ["intro", "verse", "build", "payoff", "bridge", "payoff", "outro"]
 
 
 def test_build_stub_arrangement_plan_prefers_higher_energy_late_phrase_for_payoff():
@@ -248,6 +275,28 @@ def test_build_plan_allows_blend_transition_to_choose_stronger_upward_lift_when_
     assert stronger_b.blended_error < flatter_b.blended_error
     assert best.parent_id == "B"
     assert best.candidate.label == "phrase_2_4"
+
+
+def test_extended_stub_arrangement_plan_includes_bridge_and_second_payoff_when_capacity_is_high():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.18)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.26, 0.28, 0.38, 0.40, 0.60, 0.62, 0.30, 0.28, 0.74, 0.76, 0.24, 0.20]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.20, 0.22, 0.32, 0.34, 0.46, 0.48, 0.72, 0.74, 0.42, 0.38, 0.88, 0.90, 0.18, 0.16]
+
+    plan = build_stub_arrangement_plan(a, b).to_dict()
+    labels = [section["label"] for section in plan["sections"]]
+
+    assert labels == ["intro", "verse", "build", "payoff", "bridge", "payoff", "outro"]
+    assert plan["sections"][4]["transition_in"] == "swap"
+    assert plan["sections"][5]["label"] == "payoff"
+    assert plan["sections"][5]["start_bar"] == 48
 
 
 def test_build_plan_can_override_parent_preference_when_other_parent_has_much_better_payoff_window():

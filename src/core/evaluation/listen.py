@@ -11,7 +11,7 @@ from ..analysis.models import SongDNA
 from .models import ListenReport, ListenSubscore
 
 
-TRANSITION_ANALYSIS_VERSION = "0.3.0"
+TRANSITION_ANALYSIS_VERSION = "0.4.0"
 
 
 def _safe_json(path: Path) -> dict[str, Any] | None:
@@ -213,6 +213,40 @@ def _window_mean(values: np.ndarray, times: np.ndarray, start: float, end: float
     return float(values[idx])
 
 
+def _series_resolution(times: np.ndarray, duration_seconds: float) -> float:
+    if times.size >= 2:
+        diffs = np.diff(times)
+        finite = diffs[np.isfinite(diffs) & (diffs > 0)]
+        if finite.size:
+            return float(np.median(finite))
+    return max(float(duration_seconds), 1.0)
+
+
+def _boundary_side_mean(values: np.ndarray, times: np.ndarray, boundary: float, window: float, before: bool) -> float:
+    if values.size == 0:
+        return 0.0
+    if times.size != values.size:
+        return float(np.mean(values))
+    boundary = float(boundary)
+    window = max(float(window), 1e-6)
+    if before:
+        mask = (times < boundary) & (times >= boundary - window)
+        if np.any(mask):
+            return float(np.mean(values[mask]))
+        candidates = np.where(times < boundary)[0]
+        if candidates.size:
+            return float(values[int(candidates[-1])])
+    else:
+        mask = (times >= boundary) & (times < boundary + window)
+        if np.any(mask):
+            return float(np.mean(values[mask]))
+        candidates = np.where(times >= boundary)[0]
+        if candidates.size:
+            return float(values[int(candidates[0])])
+    idx = int(np.argmin(np.abs(times - boundary)))
+    return float(values[idx])
+
+
 def _normalized_delta(pre: float, post: float, floor: float = 1e-6) -> float:
     scale = max(abs(pre), abs(post), floor)
     return abs(post - pre) / scale
@@ -228,6 +262,53 @@ def _smooth_series(values: np.ndarray, window: int = 3) -> np.ndarray:
     kernel = np.ones(window, dtype=float) / float(window)
     padded = np.pad(values, (window // 2, window - 1 - window // 2), mode='edge')
     return np.convolve(padded, kernel, mode='valid')
+
+
+def _median_beat_interval(song: SongDNA) -> float:
+    beat_times = sorted(set(_safe_float_list(song.metadata.get("tempo", {}).get("beat_times", []))))
+    if len(beat_times) < 2:
+        return 0.5
+    intervals = np.diff(np.asarray(beat_times, dtype=float))
+    finite = intervals[np.isfinite(intervals) & (intervals > 0)]
+    if finite.size == 0:
+        return 0.5
+    return float(np.median(finite))
+
+
+def _seam_window_seconds(song: SongDNA) -> float:
+    beat_interval = _median_beat_interval(song)
+    # Prefer a short seam-local view (about two bars) rather than averaging whole sections.
+    return float(np.clip(beat_interval * 8.0, 2.0, 8.0))
+
+
+def _transition_intent(left: dict[str, Any], right: dict[str, Any]) -> str:
+    explicit = str(right.get("transition_in") or left.get("transition_out") or "").strip().lower()
+    if explicit in {"blend", "swap", "lift", "drop", "cut"}:
+        return explicit
+
+    left_label = str(left.get("label") or "").lower()
+    right_label = str(right.get("label") or "").lower()
+    joined = f"{left_label} {right_label}"
+    if any(token in joined for token in {"payoff", "chorus", "drop", "hook", "climax"}):
+        return "drop"
+    if any(token in joined for token in {"build", "pre", "lift", "rise", "buildup"}):
+        return "lift"
+    if any(token in joined for token in {"swap", "verse", "outro", "break", "breakdown"}):
+        return "swap"
+    return "cut"
+
+
+def _intent_mismatch(intent: str, signed_delta: float, tolerance: float) -> float:
+    tolerance = max(float(tolerance), 1e-6)
+    if intent in {"drop", "lift"}:
+        if signed_delta >= 0.0:
+            return 0.0
+        return min(abs(signed_delta) / tolerance, 1.5)
+    if intent == "blend":
+        return max(0.0, (abs(signed_delta) - tolerance) / tolerance)
+    if intent == "swap":
+        return max(0.0, (abs(signed_delta) - tolerance * 1.15) / (tolerance * 1.15))
+    return max(0.0, (abs(signed_delta) - tolerance * 0.85) / (tolerance * 0.85))
 
 
 def _energy_series(song: SongDNA, stem: str) -> np.ndarray:
@@ -571,6 +652,22 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
     onset_t = _series_times(onset, duration)
     low_band_t = _series_times(low_band, duration)
     flatness_t = _series_times(flatness, duration)
+    seam_window = _seam_window_seconds(song)
+    seam_window = max(
+        seam_window,
+        0.75 * min(
+            value
+            for value in [
+                _series_resolution(rms_t, duration),
+                _series_resolution(centroid_t, duration),
+                _series_resolution(rolloff_t, duration),
+                _series_resolution(onset_t, duration),
+                _series_resolution(low_band_t, duration),
+                _series_resolution(flatness_t, duration),
+            ]
+            if value > 0
+        ),
+    )
 
     severity_rows: list[dict[str, float | int | str]] = []
     transition_types: list[str] = []
@@ -578,22 +675,26 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
         left = sections[idx]
         right = sections[idx + 1]
         boundary = float(left.get("end", 0.0))
-        left_start = float(left.get("start", max(0.0, boundary - 1.0)))
-        right_end = float(right.get("end", boundary + 1.0))
+        left_start = max(float(left.get("start", max(0.0, boundary - seam_window))), boundary - seam_window)
+        right_end = min(float(right.get("end", boundary + seam_window)), boundary + seam_window)
+        intent = _transition_intent(left, right)
+        local_window = max(boundary - left_start, right_end - boundary)
 
-        pre_energy = _window_mean(rms, rms_t, left_start, boundary)
-        post_energy = _window_mean(rms, rms_t, boundary, right_end)
-        pre_centroid = _window_mean(centroid, centroid_t, left_start, boundary)
-        post_centroid = _window_mean(centroid, centroid_t, boundary, right_end)
-        pre_rolloff = _window_mean(rolloff, rolloff_t, left_start, boundary)
-        post_rolloff = _window_mean(rolloff, rolloff_t, boundary, right_end)
-        pre_onset = _window_mean(onset, onset_t, left_start, boundary)
-        post_onset = _window_mean(onset, onset_t, boundary, right_end)
-        pre_low = _window_mean(low_band, low_band_t, left_start, boundary)
-        post_low = _window_mean(low_band, low_band_t, boundary, right_end)
-        pre_flat = _window_mean(flatness, flatness_t, left_start, boundary)
-        post_flat = _window_mean(flatness, flatness_t, boundary, right_end)
+        pre_energy = _boundary_side_mean(rms, rms_t, boundary, local_window, before=True)
+        post_energy = _boundary_side_mean(rms, rms_t, boundary, local_window, before=False)
+        pre_centroid = _boundary_side_mean(centroid, centroid_t, boundary, local_window, before=True)
+        post_centroid = _boundary_side_mean(centroid, centroid_t, boundary, local_window, before=False)
+        pre_rolloff = _boundary_side_mean(rolloff, rolloff_t, boundary, local_window, before=True)
+        post_rolloff = _boundary_side_mean(rolloff, rolloff_t, boundary, local_window, before=False)
+        pre_onset = _boundary_side_mean(onset, onset_t, boundary, local_window, before=True)
+        post_onset = _boundary_side_mean(onset, onset_t, boundary, local_window, before=False)
+        pre_low = _boundary_side_mean(low_band, low_band_t, boundary, local_window, before=True)
+        post_low = _boundary_side_mean(low_band, low_band_t, boundary, local_window, before=False)
+        pre_flat = _boundary_side_mean(flatness, flatness_t, boundary, local_window, before=True)
+        post_flat = _boundary_side_mean(flatness, flatness_t, boundary, local_window, before=False)
 
+        energy_signed = (post_energy - pre_energy) / max(max(abs(pre_energy), abs(post_energy)), 0.01)
+        onset_signed = (post_onset - pre_onset) / max(max(abs(pre_onset), abs(post_onset)), 0.05)
         energy_jump = _normalized_delta(pre_energy, post_energy, floor=0.01)
         spectral_jump = max(
             _normalized_delta(pre_centroid, post_centroid, floor=100.0),
@@ -623,28 +724,40 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
             + 0.20 * (1.0 - min(1.0, abs(pre_centroid - post_centroid) / max(max(pre_centroid, post_centroid), 100.0)))
         )
 
+        intent_mismatch = max(
+            _intent_mismatch(intent, energy_signed, tolerance=0.28),
+            0.7 * _intent_mismatch(intent, onset_signed, tolerance=0.34),
+        )
+        intent_energy_weight = 0.10 if intent in {"drop", "lift"} and energy_signed >= 0.0 else 0.22
+        intent_onset_weight = 0.08 if intent in {"drop", "lift"} and onset_signed >= 0.0 else 0.15
         severity = (
-            0.22 * min(energy_jump, 1.5)
+            intent_energy_weight * min(energy_jump, 1.5)
             + 0.18 * min(spectral_jump, 1.5)
-            + 0.15 * min(onset_jump, 1.5)
+            + intent_onset_weight * min(onset_jump, 1.5)
             + 0.14 * min(low_end_crowding_risk, 1.5)
             + 0.11 * min(texture_shift, 1.5)
             + 0.10 * min(foreground_collision_risk, 1.5)
             + 0.05 * min(flatness_crowding_risk, 1.5)
             + 0.05 * min(vocal_competition_risk, 1.5)
+            + 0.09 * min(intent_mismatch, 1.5)
         )
         severity_rows.append(
             {
                 "boundary_index": idx,
                 "boundary_time": round(boundary, 3),
+                "intent": intent,
+                "seam_window_seconds": round(seam_window, 3),
                 "energy_jump": round(energy_jump, 3),
+                "energy_signed_delta": round(float(energy_signed), 3),
                 "spectral_jump": round(spectral_jump, 3),
                 "onset_jump": round(onset_jump, 3),
+                "onset_signed_delta": round(float(onset_signed), 3),
                 "low_end_crowding_risk": round(low_end_crowding_risk, 3),
                 "texture_shift": round(texture_shift, 3),
                 "foreground_collision_risk": round(foreground_collision_risk, 3),
                 "flatness_crowding_risk": round(flatness_crowding_risk, 3),
                 "vocal_competition_risk": round(vocal_competition_risk, 3),
+                "intent_mismatch": round(float(intent_mismatch), 3),
                 "severity": round(float(severity), 3),
             }
         )
@@ -660,12 +773,13 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
                 ("flatness", flatness_crowding_risk),
                 ("vocals", vocal_competition_risk),
                 ("texture", texture_shift),
+                ("intent", intent_mismatch),
             ]
             if value >= 0.4
         ]
         if hot_axes:
             transition_types.append(
-                f"boundary {idx} @ {boundary:.1f}s is exposed on {', '.join(hot_axes[:4])}"
+                f"boundary {idx} @ {boundary:.1f}s ({intent}) is exposed on {', '.join(hot_axes[:4])}"
             )
 
     severities = np.asarray([float(row["severity"]) for row in severity_rows], dtype=float)
@@ -678,18 +792,23 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
 
     aggregate_metrics = {
         "boundary_count": len(severity_rows),
+        "seam_window_seconds": round(seam_window, 3),
         "avg_energy_jump": round(float(np.mean([row["energy_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_energy_signed_delta": round(float(np.mean([row["energy_signed_delta"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_spectral_jump": round(float(np.mean([row["spectral_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_onset_jump": round(float(np.mean([row["onset_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_onset_signed_delta": round(float(np.mean([row["onset_signed_delta"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_low_end_crowding_risk": round(float(np.mean([row["low_end_crowding_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_texture_shift": round(float(np.mean([row["texture_shift"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_foreground_collision_risk": round(float(np.mean([row["foreground_collision_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_flatness_crowding_risk": round(float(np.mean([row["flatness_crowding_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_vocal_competition_risk": round(float(np.mean([row["vocal_competition_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_intent_mismatch": round(float(np.mean([row["intent_mismatch"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_boundary_severity": round(avg_severity, 3),
     }
 
-    manifest_details = _manifest_overlap_metrics(_load_neighbor_manifest(song)) if _load_neighbor_manifest(song) else None
+    manifest_payload = _load_neighbor_manifest(song)
+    manifest_details = _manifest_overlap_metrics(manifest_payload) if manifest_payload else None
     if manifest_details:
         manifest_metrics = manifest_details['aggregate_metrics']
         aggregate_metrics['manifest_overlap_section_ratio'] = manifest_metrics['overlap_section_ratio']
@@ -727,28 +846,28 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
             fixes.append("High-stretch or transition-heavy sections in the manifest are likely seam risks; prefer phrase-safer windows or shorter swaps.")
 
     evidence.append(
-        "avg boundary deltas — "
-        f"energy {aggregate_metrics['avg_energy_jump']:.3f}, "
+        "avg seam-local boundary deltas — "
+        f"energy {aggregate_metrics['avg_energy_jump']:.3f} (signed {aggregate_metrics['avg_energy_signed_delta']:.3f}), "
         f"spectral {aggregate_metrics['avg_spectral_jump']:.3f}, "
-        f"onset {aggregate_metrics['avg_onset_jump']:.3f}, "
+        f"onset {aggregate_metrics['avg_onset_jump']:.3f} (signed {aggregate_metrics['avg_onset_signed_delta']:.3f}), "
         f"low-end crowding {aggregate_metrics['avg_low_end_crowding_risk']:.3f}, "
         f"foreground collision {aggregate_metrics['avg_foreground_collision_risk']:.3f}, "
         f"vocal competition {aggregate_metrics['avg_vocal_competition_risk']:.3f}, "
-        f"texture {aggregate_metrics['avg_texture_shift']:.3f}"
+        f"texture {aggregate_metrics['avg_texture_shift']:.3f}, intent mismatch {aggregate_metrics['avg_intent_mismatch']:.3f}"
     )
     for row in worst:
         evidence.append(
-            f"boundary {row['boundary_index']} @ {row['boundary_time']:.1f}s severity {row['severity']:.2f} "
-            f"(energy {row['energy_jump']:.2f}, spectral {row['spectral_jump']:.2f}, onset {row['onset_jump']:.2f}, "
-            f"low-end {row['low_end_crowding_risk']:.2f}, foreground {row['foreground_collision_risk']:.2f}, "
-            f"vocals {row['vocal_competition_risk']:.2f}, texture {row['texture_shift']:.2f})"
+            f"boundary {row['boundary_index']} @ {row['boundary_time']:.1f}s {row['intent']} severity {row['severity']:.2f} "
+            f"(energy {row['energy_jump']:.2f} / signed {row['energy_signed_delta']:.2f}, spectral {row['spectral_jump']:.2f}, onset {row['onset_jump']:.2f}, "
+            f"low-end {row['low_end_crowding_risk']:.2f}, foreground {row['foreground_collision_risk']:.2f}, vocals {row['vocal_competition_risk']:.2f}, "
+            f"texture {row['texture_shift']:.2f}, intent mismatch {row['intent_mismatch']:.2f})"
         )
 
-    if aggregate_metrics["avg_energy_jump"] > 0.35:
+    if aggregate_metrics["avg_energy_jump"] > 0.35 and aggregate_metrics["avg_intent_mismatch"] > 0.15:
         fixes.append("Smooth energy handoffs at section seams so transitions do not feel pasted or cliff-like.")
     if aggregate_metrics["avg_spectral_jump"] > 0.30:
         fixes.append("Control brightness and timbre swaps at boundaries; filtered handoffs or better source-window matching should reduce spectral shock.")
-    if aggregate_metrics["avg_onset_jump"] > 0.35:
+    if aggregate_metrics["avg_onset_jump"] > 0.35 and aggregate_metrics["avg_intent_mismatch"] > 0.12:
         fixes.append("Reduce abrupt rhythmic-density changes at boundaries unless the transition is an intentional payoff/drop.")
     if aggregate_metrics["avg_low_end_crowding_risk"] > 0.45:
         fixes.append("Keep one clear low-end owner through transitions; avoid dual kick/sub overlap in the seam window.")
@@ -760,6 +879,8 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
         fixes.append("Avoid unresolved vocal competition across section handoffs; one lead voice should own the listener focus.")
     if aggregate_metrics["avg_texture_shift"] > 0.35:
         fixes.append("Avoid switching groove, brightness, and texture all at once without a setup bar or transitional layer.")
+    if aggregate_metrics["avg_intent_mismatch"] > 0.22:
+        fixes.append("Match seam behavior to transition intent more closely; builds/lifts should rise with control, while swaps/cuts should avoid accidental cliff jumps.")
 
     if not fixes and avg_severity < 0.20:
         summary = "Transition seams look reasonably controlled across detected boundaries."

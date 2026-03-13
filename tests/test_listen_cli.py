@@ -118,6 +118,61 @@ def test_transition_score_emits_boundary_seam_metrics():
     assert any('boundary' in line for line in report.transition.evidence)
 
 
+def test_transition_score_uses_seam_local_windows_not_whole_sections():
+    song = DummySong('seam_local.wav')
+    song.structure['sections'] = [
+        {'label': 'build', 'start': 0.0, 'end': 20.0, 'transition_out': 'lift'},
+        {'label': 'payoff', 'start': 20.0, 'end': 40.0, 'transition_in': 'drop'},
+        {'label': 'outro', 'start': 40.0, 'end': 60.0},
+    ]
+    song.energy['rms'] = [0.04, 0.04, 0.04, 0.10, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11]
+    song.energy['spectral_centroid'] = [1200, 1200, 1200, 2200, 2250, 2250, 2250, 2250, 2250, 2250, 2250, 2250]
+    song.energy['spectral_rolloff'] = [2600, 2600, 2600, 4800, 4850, 4850, 4850, 4850, 4850, 4850, 4850, 4850]
+    song.energy['onset_density'] = [0.16, 0.16, 0.16, 0.28, 0.29, 0.29, 0.29, 0.29, 0.29, 0.29, 0.29, 0.29]
+    song.energy['low_band_ratio'] = [0.28, 0.28, 0.28, 0.34, 0.34, 0.34, 0.34, 0.34, 0.34, 0.34, 0.34, 0.34]
+    song.energy['spectral_flatness'] = [0.12, 0.12, 0.12, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11]
+
+    report = evaluate_song(song)
+    metrics = report.transition.details['aggregate_metrics']
+
+    assert metrics['seam_window_seconds'] <= 8.0
+    assert metrics['avg_energy_jump'] < 0.2
+    assert metrics['avg_intent_mismatch'] < 0.1
+    assert report.transition.details['worst_boundaries'][0]['intent'] == 'drop'
+
+
+def test_transition_score_respects_intended_lift_vs_accidental_drop():
+    lift_song = DummySong('lift.wav')
+    bad_song = DummySong('bad.wav')
+    for current in (lift_song, bad_song):
+        current.structure['sections'] = [
+            {'label': 'intro', 'start': 0.0, 'end': 20.0, 'transition_out': 'lift'},
+            {'label': 'build', 'start': 20.0, 'end': 40.0, 'transition_in': 'lift'},
+            {'label': 'payoff', 'start': 40.0, 'end': 60.0, 'transition_in': 'drop'},
+        ]
+
+    lift_song.energy['rms'] = [0.06, 0.06, 0.06, 0.06, 0.10, 0.12, 0.12, 0.12, 0.16, 0.18, 0.18, 0.18]
+    lift_song.energy['spectral_centroid'] = [1500, 1500, 1520, 1520, 1900, 2200, 2200, 2200, 2600, 2900, 2900, 2900]
+    lift_song.energy['spectral_rolloff'] = [3000, 3000, 3050, 3050, 3800, 4500, 4500, 4500, 5400, 6200, 6200, 6200]
+    lift_song.energy['onset_density'] = [0.18, 0.18, 0.18, 0.18, 0.26, 0.31, 0.31, 0.31, 0.40, 0.46, 0.46, 0.46]
+    lift_song.energy['low_band_ratio'] = [0.30, 0.30, 0.30, 0.30, 0.34, 0.36, 0.36, 0.36, 0.40, 0.43, 0.43, 0.43]
+    lift_song.energy['spectral_flatness'] = [0.14, 0.14, 0.14, 0.14, 0.13, 0.12, 0.12, 0.12, 0.11, 0.10, 0.10, 0.10]
+
+    bad_song.energy['rms'] = [0.06, 0.06, 0.06, 0.06, 0.03, 0.02, 0.02, 0.02, 0.16, 0.18, 0.18, 0.18]
+    bad_song.energy['spectral_centroid'] = [1500, 1500, 1520, 1520, 1100, 1000, 1000, 1000, 2600, 2900, 2900, 2900]
+    bad_song.energy['spectral_rolloff'] = [3000, 3000, 3050, 3050, 2100, 1800, 1800, 1800, 5400, 6200, 6200, 6200]
+    bad_song.energy['onset_density'] = [0.18, 0.18, 0.18, 0.18, 0.08, 0.06, 0.06, 0.06, 0.40, 0.46, 0.46, 0.46]
+    bad_song.energy['low_band_ratio'] = [0.30, 0.30, 0.30, 0.30, 0.22, 0.20, 0.20, 0.20, 0.40, 0.43, 0.43, 0.43]
+    bad_song.energy['spectral_flatness'] = [0.14, 0.14, 0.14, 0.14, 0.18, 0.19, 0.19, 0.19, 0.11, 0.10, 0.10, 0.10]
+
+    lift_report = evaluate_song(lift_song)
+    bad_report = evaluate_song(bad_song)
+
+    assert lift_report.transition.score > bad_report.transition.score
+    assert lift_report.transition.details['aggregate_metrics']['avg_intent_mismatch'] < bad_report.transition.details['aggregate_metrics']['avg_intent_mismatch']
+    assert any('intent mismatch' in line.lower() or '(lift)' in line.lower() for line in lift_report.transition.evidence + lift_report.transition.details['transition_diagnostics'])
+
+
 def test_mix_sanity_emits_ownership_clutter_penalties(tmp_path: Path):
     audio = tmp_path / 'dense.wav'
     audio.write_bytes(b'fake')
@@ -154,7 +209,7 @@ def test_compare_listen_reports_writes_delta_json(tmp_path: Path):
         'verdict': 'promising',
         'top_reasons': [],
         'top_fixes': [],
-        'analysis_version': '0.3.0',
+        'analysis_version': '0.4.0',
     }
     right = {
         **left,
@@ -182,6 +237,57 @@ def test_compare_listen_reports_writes_delta_json(tmp_path: Path):
     assert payload['left']['report_origin'] == 'listen_report'
     assert payload['right']['report_origin'] == 'listen_report'
     assert payload['summary']
+    assert payload['decision']['winner'] == 'left'
+    assert payload['decision']['winner_label'] == 'left_listen.json'
+    assert payload['decision']['loser_label'] == 'right_listen.json'
+    assert payload['decision']['confidence'] in {'leaning', 'clear'}
+    deciding_components = {item['component']: item for item in payload['decision']['deciding_components']}
+    assert {'energy_arc', 'mix_sanity'}.issubset(deciding_components)
+    assert deciding_components['energy_arc']['winner_summary'] == 'good'
+    assert any('wins overall by 8.0 listen points' in line for line in payload['decision']['why'])
+
+
+def test_compare_listen_decision_preserves_tie_tradeoffs(tmp_path: Path):
+    left = {
+        'source_path': 'left.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 80.0,
+        'structure': {'score': 84.0, 'summary': 'more segmented', 'evidence': ['clear section turns'], 'fixes': [], 'details': {}},
+        'groove': {'score': 78.0, 'summary': 'slightly looser', 'evidence': [], 'fixes': ['tighten beat grid'], 'details': {}},
+        'energy_arc': {'score': 79.0, 'summary': 'balanced', 'evidence': [], 'fixes': [], 'details': {}},
+        'transition': {'score': 80.0, 'summary': 'controlled', 'evidence': [], 'fixes': [], 'details': {}},
+        'coherence': {'score': 80.0, 'summary': 'steady', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 79.0, 'summary': 'slightly dense', 'evidence': [], 'fixes': ['thin overlapping mids'], 'details': {}},
+        'verdict': 'promising',
+        'top_reasons': ['Clearer structure helps the arrangement read faster.'],
+        'top_fixes': ['Stabilize groove and reduce midrange crowding.'],
+        'analysis_version': '0.3.0',
+    }
+    right = {
+        **left,
+        'source_path': 'right.wav',
+        'structure': {'score': 78.0, 'summary': 'less segmented', 'evidence': [], 'fixes': ['sharpen section contrast'], 'details': {}},
+        'groove': {'score': 84.0, 'summary': 'tighter pocket', 'evidence': ['beat grid is more stable'], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 81.0, 'summary': 'cleaner spacing', 'evidence': ['less foreground masking'], 'fixes': [], 'details': {}},
+        'top_reasons': ['Groove pocket is tighter and mix spacing is cleaner.'],
+        'top_fixes': ['Sharpen section contrast.'],
+    }
+
+    left_path = tmp_path / 'left_tie.json'
+    right_path = tmp_path / 'right_tie.json'
+    out = tmp_path / 'compare_tie.json'
+    left_path.write_text(json.dumps(left), encoding='utf-8')
+    right_path.write_text(json.dumps(right), encoding='utf-8')
+
+    rc = ai_dj.compare_listen(str(left_path), str(right_path), str(out))
+    assert rc == 0
+
+    payload = json.loads(out.read_text(encoding='utf-8'))
+    assert payload['winner']['overall'] == 'tie'
+    assert payload['decision']['winner'] == 'tie'
+    assert payload['decision']['confidence'] == 'tie'
+    assert payload['decision']['deciding_components'][0]['component'] == 'structure'
+    assert any('Largest tradeoff' in line for line in payload['decision']['why'])
 
 
 def test_compare_listen_can_resolve_render_output_directories(monkeypatch, tmp_path: Path):
