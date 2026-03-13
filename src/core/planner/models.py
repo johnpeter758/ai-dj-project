@@ -63,6 +63,7 @@ class ChildArrangementPlan:
     compatibility: CompatibilityFactors
     sections: list[PlannedSection]
     planning_notes: list[str] = field(default_factory=list)
+    planning_diagnostics: dict[str, Any] = field(default_factory=dict)
     analysis_version: str = "0.1.0"
 
     def to_dict(self) -> dict[str, Any]:

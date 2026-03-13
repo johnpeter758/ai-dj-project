@@ -62,6 +62,15 @@ class _WindowSelection:
     score_breakdown: dict[str, float]
 
 
+@dataclass(frozen=True)
+class _PlannerListenFeedback:
+    groove_confidence: float
+    energy_arc_strength: float
+    transition_readiness: float
+    coherence_confidence: float
+    payoff_readiness: float
+
+
 ROLE_ALIAS = {
     'build': 'pre',
     'payoff': 'chorus_payoff',
@@ -564,6 +573,49 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _planner_listen_feedback(song: SongDNA) -> _PlannerListenFeedback:
+    derived = song.energy.get('derived', {}) or {}
+    beat_times = _safe_float_list(song.metadata.get('tempo', {}).get('beat_times', []))
+    beat_intervals = [max(1e-6, beat_times[idx + 1] - beat_times[idx]) for idx in range(len(beat_times) - 1)]
+    if len(beat_intervals) >= 2:
+        mean_interval = sum(beat_intervals) / len(beat_intervals)
+        interval_variance = sum(abs(interval - mean_interval) for interval in beat_intervals) / len(beat_intervals)
+        groove_confidence = _clamp01(1.0 - (interval_variance / max(mean_interval * 0.12, 1e-6)))
+    else:
+        groove_confidence = 0.45
+
+    sections = song.structure.get('sections', []) or []
+    phrase_boundaries = _safe_float_list(song.structure.get('phrase_boundaries_seconds', []))
+    coherence_confidence = _clamp01(
+        0.45 * min(1.0, len(sections) / 6.0)
+        + 0.55 * min(1.0, max(0, len(phrase_boundaries) - 1) / 8.0)
+    )
+
+    energy_arc_strength = _clamp01(
+        0.55 * float(derived.get('energy_confidence', 0.0))
+        + 0.30 * float(derived.get('payoff_strength', 0.0))
+        + 0.15 * float(derived.get('hook_repetition', 0.0))
+    )
+    transition_readiness = _clamp01(
+        0.40 * groove_confidence
+        + 0.30 * coherence_confidence
+        + 0.20 * float(derived.get('energy_confidence', 0.0))
+        + 0.10 * float(derived.get('hook_strength', 0.0))
+    )
+    payoff_readiness = _clamp01(
+        0.50 * float(derived.get('payoff_strength', 0.0))
+        + 0.30 * float(derived.get('hook_strength', 0.0))
+        + 0.20 * float(derived.get('hook_repetition', 0.0))
+    )
+    return _PlannerListenFeedback(
+        groove_confidence=groove_confidence,
+        energy_arc_strength=energy_arc_strength,
+        transition_readiness=transition_readiness,
+        coherence_confidence=coherence_confidence,
+        payoff_readiness=payoff_readiness,
+    )
+
+
 def _series_values(song: SongDNA, *keys: str) -> list[float]:
     for key in keys:
         values = _safe_float_list(song.energy.get(key, []))
@@ -915,6 +967,7 @@ def _enumerate_section_choices(
 
     selections: list[_WindowSelection] = []
     for parent_id, (song, other_song) in by_parent.items():
+        feedback = _planner_listen_feedback(song)
         candidates, _, role_scores = _collect_parent_candidates(song, target_position, spec.bar_count, spec.target_energy, spec.label)
         energies = [candidate.energy for candidate in candidates]
         min_energy = min(energies) if energies else 0.0
@@ -944,6 +997,15 @@ def _enumerate_section_choices(
             seam_risk, seam_metrics = _planner_seam_risk(previous, song, candidate)
             reuse_penalty, reuse_metrics = _selection_reuse_penalty(prior_selections, parent_id, candidate)
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
+            listen_feedback_penalty = 0.0
+            if spec.label in {'build', 'payoff'}:
+                listen_feedback_penalty += max(0.0, 0.65 - feedback.energy_arc_strength)
+            if spec.label == 'payoff':
+                listen_feedback_penalty += 1.2 * max(0.0, 0.60 - feedback.payoff_readiness)
+            if previous is not None and parent_id != previous.parent_id:
+                listen_feedback_penalty += 0.75 * max(0.0, 0.58 - feedback.transition_readiness)
+                listen_feedback_penalty += 0.45 * max(0.0, 0.52 - feedback.groove_confidence)
+            listen_feedback_penalty += 0.25 * max(0.0, 0.45 - feedback.coherence_confidence)
 
             if target_position == 'early':
                 shape_error = max(0.0, (candidate.energy - min_energy) / energy_span)
@@ -965,6 +1027,7 @@ def _enumerate_section_choices(
                 + (1.05 * arc_error)
                 + (1.75 * seam_risk)
                 + (1.35 * seam_gate_error)
+                + (0.95 * listen_feedback_penalty)
                 + (1.10 * reuse_penalty)
                 + (0.35 * preference_error)
             )
@@ -984,6 +1047,12 @@ def _enumerate_section_choices(
                         'energy_arc': arc_error,
                         'seam_risk': seam_risk,
                         'seam_gate': seam_gate_error,
+                        'listen_feedback': listen_feedback_penalty,
+                        'listen_groove_confidence': feedback.groove_confidence,
+                        'listen_energy_arc_strength': feedback.energy_arc_strength,
+                        'listen_transition_readiness': feedback.transition_readiness,
+                        'listen_coherence_confidence': feedback.coherence_confidence,
+                        'listen_payoff_readiness': feedback.payoff_readiness,
                         'selection_reuse': reuse_penalty,
                         'reuse_exact_window': reuse_metrics['exact_window_reuse'],
                         'reuse_window_overlap': reuse_metrics['window_overlap_reuse'],
@@ -1017,9 +1086,14 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     report = build_compatibility_report(song_a, song_b)
 
     section_specs = _build_section_program(song_a, song_b)
+    parent_feedback = {
+        'A': _planner_listen_feedback(song_a),
+        'B': _planner_listen_feedback(song_b),
+    }
 
     sections: list[PlannedSection] = []
     selection_notes: list[str] = []
+    selection_diagnostics: list[dict[str, Any]] = []
     previous: _WindowSelection | None = None
     selection_history: list[_WindowSelection] = []
     song_map = {'A': song_a, 'B': song_b}
@@ -1043,16 +1117,56 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         selection_notes.append(
             f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
         )
+        feedback = parent_feedback[chosen.parent_id]
+        selection_diagnostics.append(
+            {
+                'label': spec.label,
+                'target_energy': round(spec.target_energy, 3),
+                'selected_parent': chosen.parent_id,
+                'selected_window_label': candidate.label,
+                'selected_window_origin': candidate.origin,
+                'selected_window_seconds': {'start': round(candidate.start, 3), 'end': round(candidate.end, 3)},
+                'transition_in': spec.transition_in,
+                'transition_out': spec.transition_out,
+                'planner_error': round(chosen.blended_error, 3),
+                'evaluator_alignment': {
+                    'listen_feedback_penalty': round(chosen.score_breakdown['listen_feedback'], 3),
+                    'seam_risk': round(chosen.score_breakdown['seam_risk'], 3),
+                    'transition_viability': round(1.0 - chosen.score_breakdown['transition_viability'], 3),
+                    'energy_arc_fit': round(1.0 - chosen.score_breakdown['energy_arc'], 3),
+                    'groove_confidence': round(feedback.groove_confidence, 3),
+                    'transition_readiness': round(feedback.transition_readiness, 3),
+                    'coherence_confidence': round(feedback.coherence_confidence, 3),
+                    'payoff_readiness': round(feedback.payoff_readiness, 3),
+                },
+            }
+        )
         selection_history.append(chosen)
         previous = chosen
 
     program_signature = ' -> '.join(f"{spec.label}({spec.bar_count})" for spec in section_specs)
+    diagnostics = {
+        'planner_evaluator_bridge': 'listen-aligned planner diagnostics',
+        'parent_listen_feedback': {
+            parent_id: {
+                'source_path': song_map[parent_id].source_path,
+                'groove_confidence': round(feedback.groove_confidence, 3),
+                'energy_arc_strength': round(feedback.energy_arc_strength, 3),
+                'transition_readiness': round(feedback.transition_readiness, 3),
+                'coherence_confidence': round(feedback.coherence_confidence, 3),
+                'payoff_readiness': round(feedback.payoff_readiness, 3),
+            }
+            for parent_id, feedback in parent_feedback.items()
+        },
+        'selected_sections': selection_diagnostics,
+    }
     notes = [
         'Planner now ranks explicit phrase windows section-by-section across both parents instead of relying on coarse early/mid/late anchor picking.',
         f'Section program is now capacity-aware instead of fixed: {program_signature}.',
-        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, evaluator-style seam-risk priors, history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
+        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, evaluator-style seam-risk priors, planner-facing listen feedback (groove/arc/transition/payoff readiness), history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
         'Sequential selection now discourages replaying the exact same source window or heavily overlapping window later in the child timeline unless the musical fit is clearly stronger.',
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
+        'Arrangement artifacts now expose listen-aligned planning_diagnostics so evaluator-facing groove/arc/transition signals are inspectable without parsing note strings.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',
         *selection_notes,
     ]
@@ -1064,4 +1178,5 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         compatibility=report.factors,
         sections=sections,
         planning_notes=notes,
+        planning_diagnostics=diagnostics,
     )

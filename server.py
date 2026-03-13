@@ -264,6 +264,35 @@ def _latest_compare_listen_result() -> dict | None:
     return result
 
 
+def _latest_benchmark_listen_result() -> dict | None:
+    match = _find_latest_json(lambda _path, payload: "winner" in payload and "ranking" in payload and "comparisons" in payload)
+    if not match:
+        return None
+    path, payload = match
+    ranking = payload.get("ranking") or []
+    top_entry = ranking[0] if ranking else None
+    leader_gap = None
+    if len(ranking) >= 2:
+        leader_gap = round(float((ranking[0] or {}).get("net_score_delta") or 0.0) - float((ranking[1] or {}).get("net_score_delta") or 0.0), 1)
+    result = _artifact_entry(path)
+    result.update({
+        "winner": payload.get("winner"),
+        "entry_count": len(ranking),
+        "comparison_count": len(payload.get("comparisons") or []),
+        "leader_gap": leader_gap,
+        "top_entry": {
+            "label": top_entry.get("label"),
+            "wins": top_entry.get("wins"),
+            "ties": top_entry.get("ties"),
+            "losses": top_entry.get("losses"),
+            "net_score_delta": top_entry.get("net_score_delta"),
+            "overall_score": top_entry.get("overall_score"),
+            "verdict": top_entry.get("verdict"),
+        } if top_entry else None,
+    })
+    return result
+
+
 def _latest_manifest_summary() -> dict | None:
     match = _find_latest_json(lambda path, payload: path.name == "render_manifest.json" and "sections" in payload and "work_orders" in payload)
     if not match:
@@ -318,6 +347,7 @@ def _workloop_status() -> dict:
     latest_commit = _latest_commit()
     latest_eval = _latest_evaluator_result()
     latest_compare = _latest_compare_listen_result()
+    latest_benchmark = _latest_benchmark_listen_result()
     latest_artifact = _latest_artifact()
     latest_manifest = _latest_manifest_summary()
     latest_run = _latest_run_summary()
@@ -335,6 +365,7 @@ def _workloop_status() -> dict:
         "last_artifact": latest_artifact,
         "latest_evaluator_result": latest_eval,
         "latest_compare_listen_result": latest_compare,
+        "latest_benchmark_listen_result": latest_benchmark,
         "latest_manifest": latest_manifest,
         "latest_run_summary": latest_run,
         "links": {

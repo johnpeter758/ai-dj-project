@@ -173,6 +173,63 @@ def test_transition_score_respects_intended_lift_vs_accidental_drop():
     assert any('intent mismatch' in line.lower() or '(lift)' in line.lower() for line in lift_report.transition.evidence + lift_report.transition.details['transition_diagnostics'])
 
 
+def test_transition_score_catches_boundary_edge_cliffs_even_when_window_means_match():
+    smooth_song = DummySong('smooth_edge.wav')
+    cliff_song = DummySong('cliff_edge.wav')
+    for current in (smooth_song, cliff_song):
+        current.duration_seconds = 60.0
+        current.metadata['tempo']['beat_times'] = [x * 0.5 for x in range(120)]
+        current.structure['sections'] = [
+            {'label': 'build', 'start': 0.0, 'end': 20.0, 'transition_out': 'lift'},
+            {'label': 'payoff', 'start': 20.0, 'end': 40.0, 'transition_in': 'drop'},
+            {'label': 'outro', 'start': 40.0, 'end': 60.0},
+        ]
+
+    base_rms = [0.12] * 60
+    base_onset = [0.24] * 60
+    base_centroid = [2200.0] * 60
+    base_rolloff = [4800.0] * 60
+    base_low = [0.34] * 60
+    base_flat = [0.12] * 60
+
+    smooth_song.energy['rms'] = list(base_rms)
+    smooth_song.energy['onset_density'] = list(base_onset)
+    smooth_song.energy['spectral_centroid'] = list(base_centroid)
+    smooth_song.energy['spectral_rolloff'] = list(base_rolloff)
+    smooth_song.energy['low_band_ratio'] = list(base_low)
+    smooth_song.energy['spectral_flatness'] = list(base_flat)
+
+    cliff_song.energy['rms'] = list(base_rms)
+    cliff_song.energy['onset_density'] = list(base_onset)
+    cliff_song.energy['spectral_centroid'] = list(base_centroid)
+    cliff_song.energy['spectral_rolloff'] = list(base_rolloff)
+    cliff_song.energy['low_band_ratio'] = list(base_low)
+    cliff_song.energy['spectral_flatness'] = list(base_flat)
+
+    # Around the 20s seam, keep the 4s window means roughly matched but force a sharp edge cliff exactly at the handoff.
+    for idx, value in zip([16, 17, 18, 19, 20, 21, 22, 23], [0.30, 0.30, 0.30, 0.10, 0.50, 0.30, 0.10, 0.10]):
+        cliff_song.energy['rms'][idx] = value
+    for idx, value in zip([16, 17, 18, 19, 20, 21, 22, 23], [0.40, 0.40, 0.40, 0.14, 0.62, 0.40, 0.18, 0.18]):
+        cliff_song.energy['onset_density'][idx] = value
+    for idx, value in zip([16, 17, 18, 19, 20, 21, 22, 23], [2200, 2200, 2200, 1500, 3600, 2200, 1800, 1800]):
+        cliff_song.energy['spectral_centroid'][idx] = value
+    for idx, value in zip([16, 17, 18, 19, 20, 21, 22, 23], [4800, 4800, 4800, 3100, 7000, 4800, 3600, 3600]):
+        cliff_song.energy['spectral_rolloff'][idx] = value
+
+    smooth_report = evaluate_song(smooth_song)
+    cliff_report = evaluate_song(cliff_song)
+
+    smooth_metrics = smooth_report.transition.details['aggregate_metrics']
+    cliff_metrics = cliff_report.transition.details['aggregate_metrics']
+
+    assert cliff_metrics['avg_energy_jump'] < 0.05
+    assert cliff_metrics['avg_edge_cliff_risk'] > 0.35
+    assert cliff_metrics['avg_edge_energy_jump'] > cliff_metrics['avg_energy_jump']
+    assert cliff_report.transition.details['worst_boundaries'][0]['edge_cliff_risk'] > 0.75
+    assert cliff_report.transition.score < smooth_report.transition.score
+    assert any('edge_cliff' in line for line in cliff_report.transition.details['transition_diagnostics'])
+
+
 def test_mix_sanity_emits_ownership_clutter_penalties(tmp_path: Path):
     audio = tmp_path / 'dense.wav'
     audio.write_bytes(b'fake')

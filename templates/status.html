@@ -34,6 +34,7 @@
         <div class="stat"><div class="label">Latest commit</div><div id="latestCommit" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest listen</div><div id="latestEval" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest compare-listen</div><div id="latestCompare" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest benchmark-listen</div><div id="latestBenchmark" class="mono">Loading…</div></div>
       </div>
     </div>
 
@@ -73,6 +74,11 @@
       const biggest = comp.biggest_component_delta;
       return `${artifactLink(comp)}<br><span class="pill">winner ${esc(comp.overall_winner || 'tie')}</span><span class="pill">Δ overall ${esc(comp.overall_score_delta ?? '—')}</span>${biggest ? `<br>Biggest component delta: ${esc(biggest.component)} (${esc(biggest.delta)})` : ''}${comp.summary ? `<br><br>${esc(comp.summary)}` : ''}`;
     }
+    function renderBenchmark(bench) {
+      if (!bench) return 'No benchmark-listen result yet.';
+      const top = bench.top_entry || {};
+      return `${artifactLink(bench)}<br><span class="pill">winner ${esc(bench.winner || '—')}</span><span class="pill">entries ${esc(bench.entry_count ?? 0)}</span><span class="pill">pairs ${esc(bench.comparison_count ?? 0)}</span>${bench.leader_gap !== null && bench.leader_gap !== undefined ? `<br>Leader gap vs runner-up: ${esc(bench.leader_gap)}` : ''}${top.label ? `<br><br><strong>Top run</strong><br>${esc(top.label)} · wins ${esc(top.wins ?? 0)} / losses ${esc(top.losses ?? 0)} · net ${esc(top.net_score_delta ?? '—')} · overall ${esc(top.overall_score ?? '—')}${top.verdict ? ` · ${esc(top.verdict)}` : ''}` : ''}`;
+    }
     function renderManifest(manifest) {
       if (!manifest) return 'No render manifest found yet.';
       const d = manifest.diagnostics || {};
@@ -103,6 +109,7 @@
       document.getElementById('latestCommit').innerHTML = commit.hash ? `<strong>${esc(commit.short_hash || commit.hash.slice(0,7))}</strong><br>${esc(commit.message || '')}<br>${esc(commit.date || '')}` : 'No commit info.';
       document.getElementById('latestEval').innerHTML = renderListen(data.latest_evaluator_result);
       document.getElementById('latestCompare').innerHTML = renderCompare(data.latest_compare_listen_result);
+      document.getElementById('latestBenchmark').innerHTML = renderBenchmark(data.latest_benchmark_listen_result);
       document.getElementById('latestManifest').innerHTML = renderManifest(data.latest_manifest);
       document.getElementById('latestRun').innerHTML = renderRun(data.latest_run_summary);
     }

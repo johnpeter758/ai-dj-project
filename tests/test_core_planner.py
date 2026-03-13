@@ -1,6 +1,6 @@
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _enumerate_section_choices, _pick_candidate
+from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -43,6 +43,14 @@ def test_build_stub_arrangement_plan_returns_sections():
     assert [section["label"] for section in plan["sections"]] == ["intro", "verse", "build", "payoff", "outro"]
     assert all(section["source_section_label"].startswith("phrase_") for section in plan["sections"])
     assert "compatibility" in plan
+    assert "planning_diagnostics" in plan
+    assert plan["planning_diagnostics"]["planner_evaluator_bridge"] == "listen-aligned planner diagnostics"
+    assert set(plan["planning_diagnostics"]["parent_listen_feedback"].keys()) == {"A", "B"}
+    assert len(plan["planning_diagnostics"]["selected_sections"]) == len(plan["sections"])
+    payoff_diag = next(item for item in plan["planning_diagnostics"]["selected_sections"] if item["label"] == "payoff")
+    assert "evaluator_alignment" in payoff_diag
+    assert "seam_risk" in payoff_diag["evaluator_alignment"]
+    assert "transition_readiness" in payoff_diag["evaluator_alignment"]
     assert any("boundary confidence" in note for note in plan["planning_notes"])
     assert any("capacity-aware" in note for note in plan["planning_notes"])
 
@@ -476,3 +484,53 @@ def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_t
     assert rewind_b.score_breakdown["reuse_source_rewind"] > 0.0
     assert rewind_b.score_breakdown["selection_reuse"] > forward_b.score_breakdown["selection_reuse"]
     assert rewind_b.blended_error > forward_b.blended_error
+
+
+def test_planner_listen_feedback_reads_existing_analysis_signals():
+    song = make_song("feedback.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+    song.energy["derived"] = {
+        "energy_confidence": 0.9,
+        "payoff_strength": 0.8,
+        "hook_strength": 0.6,
+        "hook_repetition": 0.5,
+    }
+    song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]}
+
+    feedback = _planner_listen_feedback(song)
+
+    assert feedback.groove_confidence > 0.9
+    assert feedback.energy_arc_strength > 0.7
+    assert feedback.transition_readiness > 0.7
+    assert feedback.payoff_readiness > 0.6
+
+
+
+def test_enumerate_section_choices_penalizes_parent_with_weak_listen_feedback_for_payoff():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 48.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+
+    # Same window-energy shape, but only A advertises strong evaluator-style readiness.
+    a.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.22, 0.30, 0.34, 0.42, 0.46, 0.60, 0.64, 0.92, 0.96]
+    b.energy["beat_rms"] = list(a.energy["beat_rms"])
+    a.energy["derived"] = {"energy_confidence": 0.92, "payoff_strength": 0.90, "hook_strength": 0.72, "hook_repetition": 0.68}
+    b.energy["derived"] = {"energy_confidence": 0.18, "payoff_strength": 0.08, "hook_strength": 0.10, "hook_repetition": 0.05}
+
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    ranked = _enumerate_section_choices(spec, a, b, previous=None)
+
+    best = ranked[0]
+    a_payoff = next(item for item in ranked if item.parent_id == "A" and item.candidate.label == "phrase_2_6")
+    b_payoff = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_2_6")
+
+    assert a_payoff.score_breakdown["listen_feedback"] < b_payoff.score_breakdown["listen_feedback"]
+    assert a_payoff.blended_error < b_payoff.blended_error
+    assert best.parent_id == "A"
+    assert best.score_breakdown["listen_payoff_readiness"] > b_payoff.score_breakdown["listen_payoff_readiness"]

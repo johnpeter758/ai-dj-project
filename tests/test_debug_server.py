@@ -17,9 +17,10 @@ def test_index_route_serves_main_ui():
     response = client.get('/')
     assert response.status_code == 200
     assert b'VocalFusion' in response.data
+    assert b'Latest benchmark-listen' in response.data
 
 
-def test_status_includes_listen_compare_and_manifest_summaries(tmp_path, monkeypatch):
+def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_path, monkeypatch):
     runs_dir = tmp_path / 'runs'
     run_dir = runs_dir / 'fusion_case'
     run_dir.mkdir(parents=True)
@@ -54,6 +55,34 @@ def test_status_includes_listen_compare_and_manifest_summaries(tmp_path, monkeyp
         'deltas': {'overall_score_delta': 6.0, 'component_score_deltas': {'groove': 8.0, 'mix_sanity': 2.0}},
     }), encoding='utf-8')
 
+    benchmark = runs_dir / 'listen_benchmark_latest.json'
+    benchmark.write_text(json.dumps({
+        'winner': 'fusion_case',
+        'ranking': [
+            {
+                'label': 'fusion_case',
+                'wins': 2,
+                'ties': 0,
+                'losses': 0,
+                'net_score_delta': 15.0,
+                'overall_score': 78.0,
+                'verdict': 'promising',
+            },
+            {
+                'label': 'baseline_case',
+                'wins': 1,
+                'ties': 0,
+                'losses': 1,
+                'net_score_delta': 2.0,
+                'overall_score': 72.0,
+                'verdict': 'mixed',
+            },
+        ],
+        'comparisons': [
+            {'left': 'fusion_case', 'right': 'baseline_case', 'winner': 'left', 'overall_score_delta': 6.0, 'decision': {}},
+        ],
+    }), encoding='utf-8')
+
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
     monkeypatch.setattr(server, '_extract_current_task', lambda: {'summary': 'Evaluator surfacing', 'source': None, 'details': []})
     monkeypatch.setattr(server, '_latest_commit', lambda: {})
@@ -64,6 +93,9 @@ def test_status_includes_listen_compare_and_manifest_summaries(tmp_path, monkeyp
     assert payload['latest_evaluator_result']['overall_score'] == 78.0
     assert payload['latest_compare_listen_result']['overall_winner'] == 'left'
     assert payload['latest_compare_listen_result']['biggest_component_delta']['component'] == 'groove'
+    assert payload['latest_benchmark_listen_result']['winner'] == 'fusion_case'
+    assert payload['latest_benchmark_listen_result']['top_entry']['wins'] == 2
+    assert payload['latest_benchmark_listen_result']['leader_gap'] == 13.0
     assert payload['latest_manifest']['diagnostics']['warning_count'] == 1
     assert payload['latest_manifest']['diagnostics']['overlap_section_count'] == 1
     assert payload['latest_manifest']['diagnostics']['stretch_risk_count'] == 1

@@ -50,7 +50,7 @@
 
     <div class="card">
       <h2>Active Work Loop</h2>
-      <p class="muted">Auto-refreshing snapshot of the current sprint, latest code checkpoint, evaluator result, and most recent run artifact.</p>
+      <p class="muted">Auto-refreshing snapshot of the current sprint, latest code checkpoint, listen/benchmark checkpoints, and most recent run artifact.</p>
       <div class="grid">
         <div class="stat">
           <div class="label">Current sprint</div>
@@ -61,8 +61,12 @@
           <div id="latestCommit" class="small mono">Loading…</div>
         </div>
         <div class="stat">
-          <div class="label">Latest evaluator</div>
+          <div class="label">Latest listen</div>
           <div id="latestEval" class="small mono">Loading…</div>
+        </div>
+        <div class="stat">
+          <div class="label">Latest benchmark-listen</div>
+          <div id="latestBenchmark" class="small mono">Loading…</div>
         </div>
         <div class="stat">
           <div class="label">Latest artifact</div>
@@ -103,6 +107,7 @@
     function renderStatus(data) {
       const commit = data.latest_commit || {};
       const evaluator = data.latest_evaluator_result || {};
+      const benchmark = data.latest_benchmark_listen_result || {};
       const artifact = data.last_artifact || {};
       document.getElementById('currentTask').textContent = data.current_task || '—';
       document.getElementById('latestCommit').innerHTML = commit.short_hash
@@ -110,7 +115,10 @@
         : 'No commit info.';
       document.getElementById('latestEval').innerHTML = evaluator.path
         ? `<strong>score ${esc(evaluator.overall_score)}</strong> · ${esc(evaluator.verdict || '')}<div class="muted">${esc((evaluator.top_reasons || [])[0] || evaluator.relative_path || '')}</div>`
-        : 'No evaluator result yet.';
+        : 'No listen result yet.';
+      document.getElementById('latestBenchmark').innerHTML = benchmark.path
+        ? `<strong>${esc((benchmark.top_entry || {}).label || benchmark.winner || 'benchmark')}</strong><div class="muted">${esc((benchmark.top_entry || {}).verdict || '')} · wins ${esc((benchmark.top_entry || {}).wins ?? '—')} · gap ${esc(benchmark.leader_gap ?? '—')}</div>`
+        : 'No benchmark-listen result yet.';
       document.getElementById('lastArtifact').innerHTML = artifact.path
         ? `<a href="${esc(artifact.download_url)}">${esc(artifact.name || artifact.relative_path || 'artifact')}</a><div class="muted">${esc(artifact.run_dir || '')} · ${esc(artifact.modified || '')}</div>`
         : 'No artifact found.';

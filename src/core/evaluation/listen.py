@@ -247,6 +247,24 @@ def _boundary_side_mean(values: np.ndarray, times: np.ndarray, boundary: float, 
     return float(values[idx])
 
 
+def _boundary_edge_value(values: np.ndarray, times: np.ndarray, boundary: float, before: bool) -> float:
+    if values.size == 0:
+        return 0.0
+    if times.size != values.size:
+        return float(values[-1] if before else values[0])
+    boundary = float(boundary)
+    if before:
+        candidates = np.where(times < boundary)[0]
+        if candidates.size:
+            return float(values[int(candidates[-1])])
+    else:
+        candidates = np.where(times >= boundary)[0]
+        if candidates.size:
+            return float(values[int(candidates[0])])
+    idx = int(np.argmin(np.abs(times - boundary)))
+    return float(values[idx])
+
+
 def _normalized_delta(pre: float, post: float, floor: float = 1e-6) -> float:
     scale = max(abs(pre), abs(post), floor)
     return abs(post - pre) / scale
@@ -692,6 +710,14 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
         post_low = _boundary_side_mean(low_band, low_band_t, boundary, local_window, before=False)
         pre_flat = _boundary_side_mean(flatness, flatness_t, boundary, local_window, before=True)
         post_flat = _boundary_side_mean(flatness, flatness_t, boundary, local_window, before=False)
+        edge_pre_energy = _boundary_edge_value(rms, rms_t, boundary, before=True)
+        edge_post_energy = _boundary_edge_value(rms, rms_t, boundary, before=False)
+        edge_pre_onset = _boundary_edge_value(onset, onset_t, boundary, before=True)
+        edge_post_onset = _boundary_edge_value(onset, onset_t, boundary, before=False)
+        edge_pre_centroid = _boundary_edge_value(centroid, centroid_t, boundary, before=True)
+        edge_post_centroid = _boundary_edge_value(centroid, centroid_t, boundary, before=False)
+        edge_pre_rolloff = _boundary_edge_value(rolloff, rolloff_t, boundary, before=True)
+        edge_post_rolloff = _boundary_edge_value(rolloff, rolloff_t, boundary, before=False)
 
         energy_signed = (post_energy - pre_energy) / max(max(abs(pre_energy), abs(post_energy)), 0.01)
         onset_signed = (post_onset - pre_onset) / max(max(abs(pre_onset), abs(post_onset)), 0.05)
@@ -701,6 +727,13 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
             _normalized_delta(pre_rolloff, post_rolloff, floor=200.0),
         )
         onset_jump = _normalized_delta(pre_onset, post_onset, floor=0.05)
+        edge_energy_jump = _normalized_delta(edge_pre_energy, edge_post_energy, floor=0.01)
+        edge_onset_jump = _normalized_delta(edge_pre_onset, edge_post_onset, floor=0.05)
+        edge_spectral_jump = max(
+            _normalized_delta(edge_pre_centroid, edge_post_centroid, floor=100.0),
+            _normalized_delta(edge_pre_rolloff, edge_post_rolloff, floor=200.0),
+        )
+        edge_cliff_risk = _clamp01(max(edge_energy_jump, 0.8 * edge_onset_jump, 0.7 * edge_spectral_jump))
         low_end_crowding_risk = 0.0
         if low_band.size:
             overlap_low = min(max(pre_low, 0.0), max(post_low, 0.0))
@@ -734,6 +767,7 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
             intent_energy_weight * min(energy_jump, 1.5)
             + 0.18 * min(spectral_jump, 1.5)
             + intent_onset_weight * min(onset_jump, 1.5)
+            + 0.12 * min(edge_cliff_risk, 1.5)
             + 0.14 * min(low_end_crowding_risk, 1.5)
             + 0.11 * min(texture_shift, 1.5)
             + 0.10 * min(foreground_collision_risk, 1.5)
@@ -752,6 +786,10 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
                 "spectral_jump": round(spectral_jump, 3),
                 "onset_jump": round(onset_jump, 3),
                 "onset_signed_delta": round(float(onset_signed), 3),
+                "edge_energy_jump": round(edge_energy_jump, 3),
+                "edge_onset_jump": round(edge_onset_jump, 3),
+                "edge_spectral_jump": round(edge_spectral_jump, 3),
+                "edge_cliff_risk": round(edge_cliff_risk, 3),
                 "low_end_crowding_risk": round(low_end_crowding_risk, 3),
                 "texture_shift": round(texture_shift, 3),
                 "foreground_collision_risk": round(foreground_collision_risk, 3),
@@ -768,6 +806,7 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
                 ("energy", energy_jump),
                 ("spectral", spectral_jump),
                 ("onset", onset_jump),
+                ("edge_cliff", edge_cliff_risk),
                 ("low_end", low_end_crowding_risk),
                 ("foreground", foreground_collision_risk),
                 ("flatness", flatness_crowding_risk),
@@ -798,6 +837,10 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
         "avg_spectral_jump": round(float(np.mean([row["spectral_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_onset_jump": round(float(np.mean([row["onset_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_onset_signed_delta": round(float(np.mean([row["onset_signed_delta"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_edge_energy_jump": round(float(np.mean([row["edge_energy_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_edge_onset_jump": round(float(np.mean([row["edge_onset_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_edge_spectral_jump": round(float(np.mean([row["edge_spectral_jump"] for row in severity_rows])) if severity_rows else 0.0, 3),
+        "avg_edge_cliff_risk": round(float(np.mean([row["edge_cliff_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_low_end_crowding_risk": round(float(np.mean([row["low_end_crowding_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_texture_shift": round(float(np.mean([row["texture_shift"] for row in severity_rows])) if severity_rows else 0.0, 3),
         "avg_foreground_collision_risk": round(float(np.mean([row["foreground_collision_risk"] for row in severity_rows])) if severity_rows else 0.0, 3),
