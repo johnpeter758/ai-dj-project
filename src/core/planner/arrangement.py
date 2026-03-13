@@ -1056,6 +1056,7 @@ def _selection_fusion_balance_penalty(
             'same_parent_run_bias': 0.0,
             'preferred_parent_miss': 0.0,
             'major_section_lockout': 0.0,
+            'second_parent_presence_gap': 0.0,
         }
 
     same_parent_count = sum(1 for selection in prior_selections if selection.parent_id == parent_id)
@@ -1090,18 +1091,36 @@ def _selection_fusion_balance_penalty(
         if source_parent_preference is not None and parent_id != source_parent_preference:
             major_section_lockout = min(1.0, major_section_lockout + 0.25)
 
+    resulting_same_parent_count = same_parent_count + 1
+    resulting_other_parent_count = other_parent_count
+    resulting_minority_count = min(resulting_same_parent_count, resulting_other_parent_count)
+    total_after_selection = len(prior_selections) + 1
+    second_parent_presence_gap = 0.0
+    if total_after_selection >= 4:
+        if resulting_minority_count <= 0:
+            second_parent_presence_gap = 1.0 if current_is_major else 0.75
+        elif resulting_minority_count == 1:
+            if total_after_selection >= 6:
+                second_parent_presence_gap = 0.95 if current_is_major else 0.70
+            elif total_after_selection >= 5:
+                second_parent_presence_gap = 0.80 if current_is_major else 0.55
+            else:
+                second_parent_presence_gap = 0.55 if current_is_major else 0.35
+
     penalty = min(
         1.0,
         (0.45 * share_imbalance)
         + (0.30 * same_parent_run_bias)
         + (0.25 * preferred_parent_miss)
-        + (0.70 * major_section_lockout),
+        + (0.70 * major_section_lockout)
+        + (0.60 * second_parent_presence_gap),
     )
     return penalty, {
         'parent_share_imbalance': share_imbalance,
         'same_parent_run_bias': same_parent_run_bias,
         'preferred_parent_miss': preferred_parent_miss,
         'major_section_lockout': major_section_lockout,
+        'second_parent_presence_gap': second_parent_presence_gap,
     }
 
 
@@ -1299,6 +1318,7 @@ def _enumerate_section_choices(
                         'fusion_same_parent_run_bias': fusion_balance_metrics['same_parent_run_bias'],
                         'fusion_preferred_parent_miss': fusion_balance_metrics['preferred_parent_miss'],
                         'fusion_major_section_lockout': fusion_balance_metrics['major_section_lockout'],
+                        'fusion_second_parent_presence_gap': fusion_balance_metrics['second_parent_presence_gap'],
                         'groove_continuity': groove_continuity_penalty,
                         'groove_same_parent_streak': groove_continuity_metrics['same_parent_streak'],
                         'groove_alternate_groove_edge': groove_continuity_metrics['alternate_groove_edge'],

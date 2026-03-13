@@ -1,3 +1,5 @@
+from collections import Counter
+
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
 from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
@@ -546,6 +548,34 @@ def test_build_stub_arrangement_plan_breaks_single_parent_major_section_collapse
     assert len(major_sections) >= 3
     assert major_parents == {"A", "B"}
     assert build["source_parent"] == "B"
+
+
+def test_build_stub_arrangement_plan_pushes_for_more_than_token_second_parent_presence_when_late_major_choice_is_plausible():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.21)
+
+    for song in (a, b):
+        song.duration_seconds = 56.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {"energy_confidence": 0.9, "payoff_strength": 0.78, "hook_strength": 0.64, "hook_repetition": 0.55}
+
+    # A still owns the stronger intro/verse contour, but B has credible build and late payoff material.
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.30, 0.34, 0.42, 0.48, 0.56, 0.62, 0.78, 0.84, 0.94, 0.98]
+    b.energy["beat_rms"] = [0.09, 0.11, 0.18, 0.22, 0.28, 0.34, 0.44, 0.50, 0.60, 0.66, 0.74, 0.80, 0.90, 0.94]
+
+    plan = build_stub_arrangement_plan(a, b).to_dict()
+
+    major_sections = [section for section in plan["sections"] if section["label"] in {"verse", "build", "payoff", "bridge"}]
+    parent_counts = Counter(section["source_parent"] for section in plan["sections"])
+    major_parent_counts = Counter(section["source_parent"] for section in major_sections)
+
+    assert parent_counts["A"] >= 1
+    assert parent_counts["B"] >= 2
+    assert major_parent_counts["B"] >= 2
+
 
 
 def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_timeline():
