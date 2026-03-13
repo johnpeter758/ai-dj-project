@@ -394,3 +394,36 @@ def test_payoff_role_prior_prefers_sustained_late_plateau_over_spiky_peak():
     candidate = _pick_candidate(song, target_position="late", bar_count=16, target_energy=0.85, role="payoff")
 
     assert candidate.label == "phrase_3_7"
+
+
+def test_enumerate_section_choices_penalizes_rewinding_backward_in_same_parent_timeline():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 56.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.12, 0.14, 0.18, 0.20, 0.24, 0.28, 0.34, 0.38, 0.44, 0.50, 0.56, 0.62]
+    b.energy["beat_rms"] = [0.06, 0.08, 0.12, 0.16, 0.22, 0.28, 0.34, 0.40, 0.46, 0.52, 0.58, 0.64, 0.70, 0.76]
+
+    previous = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="mid", bar_count=8, target_energy=0.55, role="build"),
+        blended_error=0.0,
+        score_breakdown={},
+    )
+    assert previous.candidate.label == "phrase_3_5"
+
+    spec = _SectionSpec(label="payoff", start_bar=16, bar_count=8, target_energy=0.62, source_parent_preference=None, transition_in="blend")
+    ranked = _enumerate_section_choices(spec, a, b, previous, prior_selections=[previous])
+
+    rewind_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_2_4")
+    forward_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_4_6")
+
+    assert rewind_b.score_breakdown["reuse_source_rewind"] > 0.0
+    assert rewind_b.score_breakdown["selection_reuse"] > forward_b.score_breakdown["selection_reuse"]
+    assert rewind_b.blended_error > forward_b.blended_error

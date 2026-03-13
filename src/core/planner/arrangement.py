@@ -787,11 +787,15 @@ def _selection_reuse_penalty(
             'exact_window_reuse': 0.0,
             'window_overlap_reuse': 0.0,
             'parent_streak': 0.0,
+            'source_rewind': 0.0,
+            'source_containment': 0.0,
         }
 
     exact_window_reuse = 0.0
     overlap_reuse = 0.0
     parent_streak = 0.0
+    source_rewind = 0.0
+    source_containment = 0.0
 
     streak = 0
     for selection in reversed(prior_selections):
@@ -800,6 +804,16 @@ def _selection_reuse_penalty(
         streak += 1
     if streak >= 2:
         parent_streak = min(1.0, 0.35 + (0.20 * (streak - 2)))
+
+    last_same_parent = next((selection for selection in reversed(prior_selections) if selection.parent_id == parent_id), None)
+    if last_same_parent is not None:
+        prior = last_same_parent.candidate
+        if candidate.start < prior.start:
+            rewind_span = prior.start - candidate.start
+            source_rewind = min(1.0, rewind_span / max(prior.duration, candidate.duration, 1e-6))
+        if candidate.start <= prior.start and candidate.end >= prior.end:
+            contained = prior.end - prior.start
+            source_containment = min(1.0, contained / max(candidate.duration, 1e-6))
 
     for selection in prior_selections:
         if selection.parent_id != parent_id:
@@ -819,11 +833,20 @@ def _selection_reuse_penalty(
         prior_ratio = overlap / max(prior.duration, 1e-6)
         overlap_reuse = max(overlap_reuse, min(1.0, max(candidate_ratio, prior_ratio)))
 
-    penalty = min(1.0, (0.70 * exact_window_reuse) + (0.45 * overlap_reuse) + (0.20 * parent_streak))
+    penalty = min(
+        1.0,
+        (0.70 * exact_window_reuse)
+        + (0.45 * overlap_reuse)
+        + (0.20 * parent_streak)
+        + (0.55 * source_rewind)
+        + (0.35 * source_containment),
+    )
     return penalty, {
         'exact_window_reuse': exact_window_reuse,
         'window_overlap_reuse': overlap_reuse,
         'parent_streak': parent_streak,
+        'source_rewind': source_rewind,
+        'source_containment': source_containment,
     }
 
 
@@ -916,6 +939,8 @@ def _enumerate_section_choices(
                         'reuse_exact_window': reuse_metrics['exact_window_reuse'],
                         'reuse_window_overlap': reuse_metrics['window_overlap_reuse'],
                         'reuse_parent_streak': reuse_metrics['parent_streak'],
+                        'reuse_source_rewind': reuse_metrics['source_rewind'],
+                        'reuse_source_containment': reuse_metrics['source_containment'],
                         'parent_preference': preference_error,
                         'seam_energy_jump': seam_metrics['energy_jump'],
                         'seam_spectral_jump': seam_metrics['spectral_jump'],
