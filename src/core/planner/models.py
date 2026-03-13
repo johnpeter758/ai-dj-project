@@ -55,6 +55,7 @@ class PlannedSection:
     target_energy: float | None = None
     transition_in: str | None = None
     transition_out: str | None = None
+    transition_mode: str | None = None
 
 
 @dataclass(slots=True)

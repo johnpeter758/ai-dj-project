@@ -37,7 +37,11 @@ def transition_overlap_seconds(kind: TransitionType | None, bpm: float, config: 
     return beats * 60.0 / safe_bpm
 
 
-def incoming_gain_db(kind: TransitionType | None) -> float:
+def incoming_gain_db(kind: TransitionType | None, mode: str | None = None) -> float:
+    if mode == "arrival_handoff":
+        return -3.0
+    if mode == "single_owner_handoff":
+        return -2.5
     if kind in {"blend", "swap", "lift", "drop"}:
         return -1.5
     return 0.0

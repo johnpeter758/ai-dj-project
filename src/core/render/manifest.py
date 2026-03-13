@@ -67,6 +67,7 @@ class ResolvedSection:
     collapse_if_conflict: bool
     transition_in: TransitionType | None = None
     transition_out: TransitionType | None = None
+    transition_mode: str | None = None
     stretch_ratio: float = 1.0
     semitone_shift: float = 0.0
     warnings: list[str] = field(default_factory=list)
@@ -90,6 +91,7 @@ class AudioWorkOrder:
     fade_in_sec: float
     fade_out_sec: float
     transition_type: TransitionType | None
+    transition_mode: str | None
     foreground_state: str
     low_end_state: str
     vocal_state: str

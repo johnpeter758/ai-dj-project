@@ -53,6 +53,7 @@ def test_build_stub_arrangement_plan_returns_sections():
     assert "evaluator_alignment" in payoff_diag
     assert "seam_risk" in payoff_diag["evaluator_alignment"]
     assert "transition_readiness" in payoff_diag["evaluator_alignment"]
+    assert payoff_diag["transition_mode"] in {"same_parent_flow", "single_owner_handoff", "crossfade_support", "arrival_handoff", None}
     assert any("boundary confidence" in note for note in plan["planning_notes"])
     assert any("capacity-aware" in note for note in plan["planning_notes"])
 
@@ -724,6 +725,35 @@ def test_major_section_balance_guard_switches_to_other_parent_before_full_major_
 
 
 
+def test_build_stub_arrangement_plan_marks_cross_parent_late_payoff_handoff_as_explicit_mode():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.24)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+
+    for song in (a, b):
+        song.duration_seconds = 56.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {"energy_confidence": 0.9, "payoff_strength": 0.80, "hook_strength": 0.66, "hook_repetition": 0.56}
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.18, 0.22, 0.34, 0.38, 0.48, 0.54, 0.64, 0.70, 0.84, 0.88, 0.96, 1.00]
+    b.energy["beat_rms"] = [0.09, 0.11, 0.16, 0.20, 0.30, 0.34, 0.42, 0.48, 0.60, 0.66, 0.80, 0.86, 0.94, 0.98]
+
+    plan = build_stub_arrangement_plan(a, b).to_dict()
+
+    sections = plan["sections"]
+    for idx in range(1, len(sections)):
+        prev = sections[idx - 1]
+        cur = sections[idx]
+        if prev["label"] == "payoff" and cur["label"] in {"bridge", "outro"} and prev["source_parent"] != cur["source_parent"]:
+            assert cur["transition_mode"] == "arrival_handoff"
+            break
+    else:
+        pytest.skip("fixture did not produce a cross-parent late payoff handoff")
+
+
+
 def test_build_stub_arrangement_plan_gives_underused_parent_a_late_major_handoff_when_plausible():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.24)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.22)
@@ -1070,6 +1100,51 @@ def test_payoff_selection_prefers_sustained_high_conviction_late_window_over_sam
     assert spiky_a.blended_error > sustained_b.blended_error
     assert ranked[0].parent_id == "B"
     assert ranked[0].candidate.label == "phrase_4_8"
+
+
+def test_payoff_selection_prefers_stronger_build_to_payoff_contrast_over_flatter_payoff_followup():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {
+            "energy_confidence": 0.94,
+            "payoff_strength": 0.84,
+            "hook_strength": 0.68,
+            "hook_repetition": 0.56,
+            "payoff_windows": [{"start": 32.0, "end": 64.0, "score": 0.90}],
+            "hook_windows": [{"start": 32.0, "end": 64.0, "score": 0.72}],
+        }
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.28, 0.34, 0.44, 0.50, 0.60, 0.66, 0.70, 0.74, 0.70, 0.72, 0.74, 0.76]
+    b.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.28, 0.34, 0.44, 0.50, 0.60, 0.66, 0.70, 0.74, 0.82, 0.88, 0.92, 0.96]
+
+    previous_build = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="mid", bar_count=8, target_energy=0.58, role="build"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="build",
+    )
+
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    ranked = _enumerate_section_choices(spec, a, b, previous_build, prior_selections=[previous_build])
+
+    flatter_a = next(item for item in ranked if item.parent_id == "A" and item.candidate.label == "phrase_4_8")
+    stronger_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_4_8")
+
+    assert flatter_a.score_breakdown["build_to_payoff_contrast"] > stronger_b.score_breakdown["build_to_payoff_contrast"]
+    assert flatter_a.score_breakdown["contrast_tail_dominance_gap"] >= 0.0
+    assert flatter_a.score_breakdown["contrast_payoff_conviction_gap"] >= 0.0
+    assert stronger_b.blended_error < flatter_a.blended_error
+    assert ranked[0].parent_id == "B"
+
 
 
 def test_payoff_selection_penalizes_build_to_payoff_window_that_starts_too_early_for_late_arrival():

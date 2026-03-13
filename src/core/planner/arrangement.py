@@ -1558,6 +1558,10 @@ def _enumerate_section_choices(
                         'seam_gate': seam_gate_error,
                         'listen_feedback': listen_feedback_penalty,
                         'final_payoff_delivery': final_payoff_delivery_penalty,
+                        'build_to_payoff_contrast': build_to_payoff_contrast_penalty,
+                        'contrast_energy_lift_gap': build_to_payoff_contrast_metrics['energy_lift_gap'],
+                        'contrast_tail_dominance_gap': build_to_payoff_contrast_metrics['tail_dominance_gap'],
+                        'contrast_payoff_conviction_gap': build_to_payoff_contrast_metrics['payoff_conviction_gap'],
                         'section_shape': section_shape_penalty,
                         'shape_intro_hotspot': section_shape_metrics['intro_hotspot'],
                         'shape_payoff_underhit': section_shape_metrics['payoff_underhit'],
@@ -1671,6 +1675,23 @@ def _choose_with_major_section_balance_guard(
     return alternate, note
 
 
+def _infer_transition_mode(
+    spec: _SectionSpec,
+    chosen: _WindowSelection,
+    previous: _WindowSelection | None,
+    previous_label: str | None,
+) -> str | None:
+    if spec.transition_in is None:
+        return None
+    if previous is None or previous.parent_id == chosen.parent_id:
+        return "same_parent_flow"
+    if previous_label == "payoff" and spec.label in {"bridge", "outro"}:
+        return "arrival_handoff"
+    if spec.transition_in in {"swap", "drop"} or spec.label == "payoff":
+        return "single_owner_handoff"
+    return "crossfade_support"
+
+
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrangementPlan:
     report = build_compatibility_report(song_a, song_b)
 
@@ -1690,6 +1711,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         ranked = _enumerate_section_choices(spec, song_a, song_b, previous, prior_selections=selection_history)
         chosen, balance_guard_note = _choose_with_major_section_balance_guard(spec, ranked, selection_history)
         candidate = chosen.candidate
+        transition_mode = _infer_transition_mode(spec, chosen, previous, previous.section_label if previous else None)
         sections.append(
             PlannedSection(
                 label=spec.label,
@@ -1700,6 +1722,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 target_energy=spec.target_energy,
                 transition_in=spec.transition_in,
                 transition_out=spec.transition_out,
+                transition_mode=transition_mode,
             )
         )
         breakdown = ', '.join(f"{name}={value:.2f}" for name, value in chosen.score_breakdown.items())
@@ -1719,6 +1742,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 'selected_window_seconds': {'start': round(candidate.start, 3), 'end': round(candidate.end, 3)},
                 'transition_in': spec.transition_in,
                 'transition_out': spec.transition_out,
+                'transition_mode': transition_mode,
                 'planner_error': round(chosen.blended_error, 3),
                 'evaluator_alignment': {
                     'listen_feedback_penalty': round(chosen.score_breakdown['listen_feedback'], 3),
@@ -1754,7 +1778,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     notes = [
         'Planner now ranks explicit phrase windows section-by-section across both parents instead of relying on coarse early/mid/late anchor picking.',
         f'Section program is now capacity-aware instead of fixed: {program_signature}.',
-        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, evaluator-style seam-risk priors, planner-facing listen feedback (groove/arc/transition/payoff readiness), history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
+        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, explicit build-to-payoff contrast scoring, evaluator-style seam-risk priors, planner-facing listen feedback (groove/arc/transition/payoff readiness), history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
         'Sequential selection now discourages replaying the exact same source window or heavily overlapping window later in the child timeline unless the musical fit is clearly stronger.',
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Arrangement artifacts now expose listen-aligned planning_diagnostics so evaluator-facing groove/arc/transition signals are inspectable without parsing note strings.',

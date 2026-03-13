@@ -101,12 +101,40 @@ def _validate_section_timing(section_info: dict[str, Any], song: SongDNA) -> tup
     return raw_start, raw_end, warnings
 
 
-def _cap_late_payoff_handoff_overlap(previous_label: str | None, current_label: str | None, overlap_beats: float) -> tuple[float, str | None]:
+def _cap_late_payoff_handoff_overlap(
+    previous_label: str | None,
+    current_label: str | None,
+    overlap_beats: float,
+    transition_mode: str | None = None,
+) -> tuple[float, str | None]:
     prev = (previous_label or "").strip().lower()
     curr = (current_label or "").strip().lower()
-    if prev == "payoff" and curr in {"outro", "bridge"} and overlap_beats > 1.0:
-        return 1.0, f"late payoff handoff overlap capped from {overlap_beats:.1f} to 1.0 beat to reduce seam crowding and force a cleaner arrival owner"
+    explicit_single_owner = transition_mode in {"arrival_handoff", "single_owner_handoff"}
+    if prev == "payoff" and curr in {"outro", "bridge"}:
+        cap = 0.5 if explicit_single_owner else 1.0
+        if overlap_beats > cap:
+            beat_label = "beat" if math.isclose(cap, 1.0, rel_tol=0.0, abs_tol=1e-9) else "beats"
+            return cap, (
+                f"late payoff handoff overlap capped from {overlap_beats:.1f} to {cap:.1f} {beat_label} "
+                f"to reduce seam crowding and force a cleaner arrival owner"
+            )
     return overlap_beats, None
+
+
+def _apply_transition_mode_constraints(
+    transition_mode: str | None,
+    overlap_beats: float,
+    cross_parent_handoff: bool,
+) -> tuple[float, bool, str | None]:
+    if not cross_parent_handoff or transition_mode is None:
+        return overlap_beats, False, None
+    if transition_mode == "arrival_handoff" and overlap_beats > 1.0:
+        return 1.0, True, f"transition_mode=arrival_handoff capped overlap from {overlap_beats:.1f} to 1.0 beat and disabled donor background ownership"
+    if transition_mode == "single_owner_handoff" and overlap_beats > 2.0:
+        return 2.0, True, f"transition_mode=single_owner_handoff capped overlap from {overlap_beats:.1f} to 2.0 beats and disabled donor background ownership"
+    if transition_mode == "crossfade_support":
+        return overlap_beats, False, None
+    return overlap_beats, True, f"transition_mode={transition_mode} disabled donor background ownership for an explicit single-owner handoff"
 
 
 def _phrase_label_bounds(requested_label: str | None, song: SongDNA) -> tuple[float, float, list[str]] | None:
@@ -420,15 +448,28 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         previous_section = resolved_sections[-1] if resolved_sections else None
         previous_label = previous_section.label if previous_section else None
         overlap_beats = transition_overlap_beats(sec.transition_in, config=config, stretch_ratio=stretch_ratio)
-        overlap_beats, late_handoff_warning = _cap_late_payoff_handoff_overlap(previous_label, sec.label, overlap_beats)
+        overlap_beats, late_handoff_warning = _cap_late_payoff_handoff_overlap(
+            previous_label,
+            sec.label,
+            overlap_beats,
+            transition_mode=sec.transition_mode,
+        )
         if late_handoff_warning:
             section_warnings.append(late_handoff_warning)
+        cross_parent_handoff = previous_section is not None and previous_section.source_parent != parent_id
+        overlap_beats, suppress_background_owner, transition_mode_warning = _apply_transition_mode_constraints(
+            sec.transition_mode,
+            overlap_beats,
+            cross_parent_handoff,
+        )
+        if transition_mode_warning:
+            section_warnings.append(transition_mode_warning)
         if overlap_beats > 0.0 and (stretch_ratio < _CONSERVATIVE_STRETCH_MIN or stretch_ratio > _CONSERVATIVE_STRETCH_MAX):
             section_warnings.append(
                 f"transition overlap capped to {overlap_beats:.1f} beats because stretch ratio {stretch_ratio:.3f} is outside conservative bounds"
             )
         background_owner = None
-        if overlap_beats > 0.0 and previous_section is not None and previous_section.source_parent != parent_id:
+        if overlap_beats > 0.0 and cross_parent_handoff and not suppress_background_owner:
             background_owner = previous_section.source_parent
         resolved = ResolvedSection(
             index=idx,
@@ -452,6 +493,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             collapse_if_conflict=True,
             transition_in=sec.transition_in,
             transition_out=sec.transition_out,
+            transition_mode=sec.transition_mode,
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
             warnings=section_warnings + stretch_fallbacks,
@@ -472,10 +514,11 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             target_duration_sec=target_duration_sec,
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
-            gain_db=incoming_gain_db(sec.transition_in),
+            gain_db=incoming_gain_db(sec.transition_in, sec.transition_mode),
             fade_in_sec=fade_in_sec,
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
             transition_type=sec.transition_in,
+            transition_mode=sec.transition_mode,
             foreground_state="owner",
             low_end_state="owner",
             vocal_state="lead_only",
