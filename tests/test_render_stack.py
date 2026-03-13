@@ -11,6 +11,7 @@ from src.core.planner import build_stub_arrangement_plan
 from src.core.planner.models import ChildArrangementPlan, CompatibilityFactors, ParentReference, PlannedSection
 from src.core.render import resolve_render_plan, render_resolved_plan
 from src.core.render.manifest import ResolvedRenderPlan
+from src.core.render.renderer import _apply_transition_sonics
 from src.core.render.transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
 
 
@@ -551,6 +552,41 @@ def test_render_resolved_plan_applies_work_order_gain_deterministically(tmp_path
 
 
 
+def test_apply_transition_sonics_highpasses_incoming_handoff_window():
+    sr = 44100
+    seconds = 4.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    low = np.sin(2 * np.pi * 80.0 * t)
+    high = 0.5 * np.sin(2 * np.pi * 2400.0 * t)
+    segment = np.vstack([low + high, low + high]).astype(np.float32)
+
+    shaped = _apply_transition_sonics(segment, sr, fade_in_sec=1.0, fade_out_sec=0.0, transition_type='blend', transition_mode='arrival_handoff')
+
+    early = shaped[0, : int(0.2 * sr)]
+    early_low_projection = np.abs(np.mean(early * np.sin(2 * np.pi * 80.0 * t[: early.size])))
+    early_high_projection = np.abs(np.mean(early * np.sin(2 * np.pi * 2400.0 * t[: early.size])))
+    assert early_low_projection < early_high_projection * 0.6
+
+
+
+def test_apply_transition_sonics_lowpasses_outgoing_tail_window():
+    sr = 44100
+    seconds = 4.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    low = np.sin(2 * np.pi * 120.0 * t)
+    high = 0.6 * np.sin(2 * np.pi * 6000.0 * t)
+    segment = np.vstack([low + high, low + high]).astype(np.float32)
+
+    shaped = _apply_transition_sonics(segment, sr, fade_in_sec=0.0, fade_out_sec=1.0, transition_type='blend', transition_mode='single_owner_handoff')
+
+    tail = shaped[0, -int(0.2 * sr):]
+    tail_t = t[: tail.size]
+    tail_low_projection = np.abs(np.mean(tail * np.sin(2 * np.pi * 120.0 * tail_t)))
+    tail_high_projection = np.abs(np.mean(tail * np.sin(2 * np.pi * 6000.0 * tail_t)))
+    assert tail_high_projection < tail_low_projection * 0.75
+
+
+
 def test_render_resolved_plan_rejects_invalid_target_timing_contract(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 440.0)
@@ -585,3 +621,53 @@ def test_render_resolved_plan_mp3_fallback_records_missing_output(tmp_path: Path
 
     assert result.master_mp3_path is None
     assert payload['outputs']['master_mp3'] is None
+
+
+
+def test_render_resolved_plan_cleans_up_low_end_on_cross_parent_overlap(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0, amplitude=0.08)
+    p2 = write_sine(tmp_path / 'b.wav', 60.0, amplitude=0.20)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(source_path=str(p1), tempo_bpm=120.0, key_tonic='A', key_mode='minor', duration_seconds=12.0),
+            ParentReference(source_path=str(p2), tempo_bpm=120.0, key_tonic='C', key_mode='major', duration_seconds=12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=0.8, harmony=0.8, structure=0.8, energy=0.8, stem_conflict=0.2),
+        sections=[
+            PlannedSection(label='intro', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='cut'),
+            PlannedSection(label='payoff', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend'),
+        ],
+    )
+    manifest = resolve_render_plan(plan, a, b)
+    dirty_manifest = clone_manifest(manifest, sections=[manifest.sections[0], replace(manifest.sections[1], background_owner=None)])
+
+    cleaned = render_resolved_plan(manifest, tmp_path / 'render_cleaned')
+    dirty = render_resolved_plan(dirty_manifest, tmp_path / 'render_dirty')
+    y_clean, sr = sf.read(cleaned.raw_wav_path, always_2d=True)
+    y_dirty, _ = sf.read(dirty.raw_wav_path, always_2d=True)
+
+    overlap_samples = int(round(manifest.work_orders[1].fade_in_sec * sr))
+    clean_intro = y_clean[int(manifest.work_orders[1].target_start_sec * sr): int(manifest.work_orders[1].target_start_sec * sr) + overlap_samples]
+    dirty_intro = y_dirty[int(manifest.work_orders[1].target_start_sec * sr): int(manifest.work_orders[1].target_start_sec * sr) + overlap_samples]
+
+    assert np.sqrt(np.mean(clean_intro ** 2)) < np.sqrt(np.mean(dirty_intro ** 2))
+
+
+
+def test_render_resolved_plan_applies_master_finish_not_just_peak_normalize(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0, amplitude=0.35)
+    p2 = write_sine(tmp_path / 'b.wav', 330.0, amplitude=0.35)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    plan = build_stub_arrangement_plan(a, b)
+    manifest = resolve_render_plan(plan, a, b)
+
+    result = render_resolved_plan(manifest, tmp_path / 'render_master_finish')
+    raw, _ = sf.read(result.raw_wav_path, always_2d=True)
+    mastered, _ = sf.read(result.master_wav_path, always_2d=True)
+
+    assert raw.shape == mastered.shape
+    assert not np.allclose(raw, mastered)
+    assert np.max(np.abs(mastered)) <= 10 ** (-1.0 / 20.0) + 1e-3

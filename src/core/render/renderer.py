@@ -10,9 +10,91 @@ import math
 import librosa
 import numpy as np
 import soundfile as sf
+from scipy import signal
 
 from .manifest import ResolvedRenderPlan
 from .transitions import equal_power_fade_in, equal_power_fade_out
+
+
+def _one_pole_lowpass(audio: np.ndarray, cutoff_hz: np.ndarray, sr: int) -> np.ndarray:
+    if audio.size == 0:
+        return audio.astype(np.float32)
+    out = np.zeros_like(audio, dtype=np.float32)
+    dt = 1.0 / float(sr)
+    rc = 1.0 / (2.0 * np.pi * np.maximum(cutoff_hz.astype(np.float32), 20.0))
+    alpha = (dt / (rc + dt)).astype(np.float32)
+    out[:, 0] = audio[:, 0]
+    for idx in range(1, audio.shape[1]):
+        a = alpha[idx]
+        out[:, idx] = out[:, idx - 1] + a * (audio[:, idx] - out[:, idx - 1])
+    return out
+
+
+def _one_pole_highpass(audio: np.ndarray, cutoff_hz: np.ndarray, sr: int) -> np.ndarray:
+    if audio.size == 0:
+        return audio.astype(np.float32)
+    out = np.zeros_like(audio, dtype=np.float32)
+    dt = 1.0 / float(sr)
+    rc = 1.0 / (2.0 * np.pi * np.maximum(cutoff_hz.astype(np.float32), 20.0))
+    alpha = (rc / (rc + dt)).astype(np.float32)
+    out[:, 0] = audio[:, 0]
+    for idx in range(1, audio.shape[1]):
+        a = alpha[idx]
+        out[:, idx] = a * (out[:, idx - 1] + audio[:, idx] - audio[:, idx - 1])
+    return out
+
+
+def _transition_filter_profile(transition_type: str | None, transition_mode: str | None) -> tuple[float, float, float, float]:
+    incoming_start = 0.0
+    incoming_end = 0.0
+    outgoing_start = 20000.0
+    outgoing_end = 20000.0
+
+    if transition_type in {"blend", "lift"}:
+        incoming_start, incoming_end = 1800.0, 40.0
+        outgoing_start, outgoing_end = 18000.0, 7000.0
+    elif transition_type == "swap":
+        incoming_start, incoming_end = 2600.0, 60.0
+        outgoing_start, outgoing_end = 16000.0, 5000.0
+    elif transition_type == "drop":
+        incoming_start, incoming_end = 3200.0, 80.0
+        outgoing_start, outgoing_end = 14000.0, 4200.0
+
+    if transition_mode == "same_parent_flow":
+        incoming_start *= 0.6
+        outgoing_end = min(12000.0, max(outgoing_end, 8500.0))
+    elif transition_mode in {"arrival_handoff", "single_owner_handoff"}:
+        incoming_start *= 1.15
+        outgoing_end *= 0.85
+
+    return incoming_start, incoming_end, outgoing_start, outgoing_end
+
+
+def _apply_transition_sonics(
+    segment: np.ndarray,
+    sr: int,
+    fade_in_sec: float,
+    fade_out_sec: float,
+    transition_type: str | None,
+    transition_mode: str | None,
+) -> np.ndarray:
+    out = segment.astype(np.float32, copy=True)
+    if out.size == 0:
+        return out
+
+    incoming_start, incoming_end, outgoing_start, outgoing_end = _transition_filter_profile(transition_type, transition_mode)
+
+    fi = min(out.shape[1], max(0, int(round(fade_in_sec * sr))))
+    if fi > 8 and incoming_start > incoming_end > 0.0:
+        cutoff = np.linspace(incoming_start, incoming_end, fi, endpoint=True, dtype=np.float32)
+        out[:, :fi] = _one_pole_highpass(out[:, :fi], cutoff, sr)
+
+    fo = min(out.shape[1], max(0, int(round(fade_out_sec * sr))))
+    if fo > 8 and outgoing_start > outgoing_end > 0.0 and outgoing_end < 19999.0:
+        cutoff = np.linspace(outgoing_start, outgoing_end, fo, endpoint=True, dtype=np.float32)
+        out[:, -fo:] = _one_pole_lowpass(out[:, -fo:], cutoff, sr)
+
+    return out
 
 
 @dataclass(slots=True)
@@ -120,6 +202,77 @@ def _apply_gain_db(segment: np.ndarray, gain_db: float) -> np.ndarray:
     return (segment * np.float32(10 ** (gain_db / 20.0))).astype(np.float32)
 
 
+def _safe_sosfiltfilt(sos: np.ndarray, audio: np.ndarray) -> np.ndarray:
+    if audio.shape[1] < 32:
+        return audio.astype(np.float32)
+    try:
+        return signal.sosfiltfilt(sos, audio, axis=1).astype(np.float32)
+    except ValueError:
+        return signal.sosfilt(sos, audio, axis=1).astype(np.float32)
+
+
+def _highpass(audio: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
+    cutoff = max(20.0, min(float(cutoff_hz), sr * 0.45))
+    sos = signal.butter(4, cutoff, btype="highpass", fs=sr, output="sos")
+    return _safe_sosfiltfilt(sos, audio)
+
+
+def _bandstop(audio: np.ndarray, sr: int, low_hz: float, high_hz: float) -> np.ndarray:
+    low = max(20.0, float(low_hz))
+    high = min(float(high_hz), sr * 0.45)
+    if high <= low + 10.0:
+        return audio.astype(np.float32)
+    sos = signal.butter(2, [low, high], btype="bandstop", fs=sr, output="sos")
+    return _safe_sosfiltfilt(sos, audio)
+
+
+def _compress_bus(audio: np.ndarray, threshold_db: float = -18.0, ratio: float = 2.0, makeup_db: float = 1.0) -> np.ndarray:
+    if audio.size == 0:
+        return audio.astype(np.float32)
+    threshold_lin = 10 ** (threshold_db / 20.0)
+    envelope = np.max(np.abs(audio), axis=0)
+    over = np.maximum(envelope, threshold_lin) / threshold_lin
+    gain = np.ones_like(envelope, dtype=np.float32)
+    mask = envelope > threshold_lin
+    if np.any(mask):
+        compressed = np.power(over[mask], -(1.0 - 1.0 / max(ratio, 1.0)))
+        gain[mask] = compressed.astype(np.float32)
+    smoothed = np.convolve(gain, np.ones(2048, dtype=np.float32) / 2048.0, mode="same")
+    out = audio * smoothed[np.newaxis, :]
+    return _apply_gain_db(out, makeup_db)
+
+
+def _soft_limit(audio: np.ndarray, drive: float = 1.1) -> np.ndarray:
+    return np.tanh(audio * np.float32(drive)).astype(np.float32) / np.float32(np.tanh(drive))
+
+
+def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndarray:
+    out = segment.astype(np.float32)
+    overlap_sec = min(float(work.fade_in_sec), max(0.0, float(work.target_duration_sec)))
+    overlap_samples = min(out.shape[1], max(0, int(round(overlap_sec * sr))))
+    if overlap_samples <= 0:
+        return out
+
+    intro = out[:, :overlap_samples]
+    if section.background_owner is not None and section.background_owner != section.foreground_owner:
+        intro = _apply_gain_db(intro, -1.0)
+        intro = _highpass(intro, sr, 135.0)
+        intro = _bandstop(intro, sr, 180.0, 4200.0)
+    elif section.allowed_overlap:
+        intro = _apply_gain_db(intro, -0.5)
+        intro = _highpass(intro, sr, 110.0)
+
+    out[:, :overlap_samples] = intro
+    return out
+
+
+def _finalize_master(audio: np.ndarray, sr: int) -> np.ndarray:
+    finished = _highpass(audio.astype(np.float32), sr, 28.0)
+    finished = _compress_bus(finished, threshold_db=-18.0, ratio=2.0, makeup_db=1.0)
+    finished = _soft_limit(finished, drive=1.1)
+    return _peak_normalize(finished, -1.0)
+
+
 def _peak_normalize(audio: np.ndarray, target_peak_dbfs: float = -1.0) -> np.ndarray:
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak <= 0:
@@ -148,12 +301,22 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
     total_duration = max((section.target.end_sec for section in manifest.sections), default=0.0)
     total_samples = max(1, int(round(total_duration * sr)))
     master = np.zeros((2, total_samples), dtype=np.float32)
+    section_map = {section.index: section for section in manifest.sections}
 
     for work in sorted(manifest.work_orders, key=lambda item: (item.target_start_sec, item.order_id)):
         audio, _ = _load_stereo(work.source_path, sr)
         segment = _extract(audio, sr, work.source_start_sec, work.source_end_sec)
         segment = _fit_to_duration(segment, sr, work.target_duration_sec, work.stretch_ratio)
+        segment = _section_mix_cleanup(segment, sr, work, section_map[work.section_index])
         segment = _apply_gain_db(segment, work.gain_db)
+        segment = _apply_transition_sonics(
+            segment,
+            sr,
+            work.fade_in_sec,
+            work.fade_out_sec,
+            work.transition_type,
+            work.transition_mode,
+        )
         segment = _apply_edge_fades(segment, sr, work.fade_in_sec, work.fade_out_sec)
         start_sample = int(round(work.target_start_sec * sr))
         end_sample = min(total_samples, start_sample + segment.shape[1])
@@ -166,7 +329,7 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
     master_mp3 = str((outdir / "child_master.mp3").resolve())
 
     sf.write(raw_wav, master.T, sr, subtype="FLOAT")
-    final_audio = _peak_normalize(master, -1.0)
+    final_audio = _finalize_master(master, sr)
     sf.write(master_wav, final_audio.T, sr, subtype="PCM_24")
 
     mp3_ok = False
