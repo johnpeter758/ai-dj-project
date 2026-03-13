@@ -104,8 +104,8 @@ def _validate_section_timing(section_info: dict[str, Any], song: SongDNA) -> tup
 def _cap_late_payoff_handoff_overlap(previous_label: str | None, current_label: str | None, overlap_beats: float) -> tuple[float, str | None]:
     prev = (previous_label or "").strip().lower()
     curr = (current_label or "").strip().lower()
-    if prev == "payoff" and curr in {"outro", "bridge"} and overlap_beats > 2.0:
-        return 2.0, f"late payoff handoff overlap capped from {overlap_beats:.1f} to 2.0 beats to reduce seam crowding"
+    if prev == "payoff" and curr in {"outro", "bridge"} and overlap_beats > 1.0:
+        return 1.0, f"late payoff handoff overlap capped from {overlap_beats:.1f} to 1.0 beat to reduce seam crowding and force a cleaner arrival owner"
     return overlap_beats, None
 
 
@@ -417,9 +417,9 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         if section_warnings or stretch_fallbacks:
             fallbacks.extend([f"section {idx} ({sec.label}): {w}" for w in section_warnings])
 
-        other_parent = "B" if parent_id == "A" else "A"
+        previous_section = resolved_sections[-1] if resolved_sections else None
+        previous_label = previous_section.label if previous_section else None
         overlap_beats = transition_overlap_beats(sec.transition_in, config=config, stretch_ratio=stretch_ratio)
-        previous_label = resolved_sections[-1].label if resolved_sections else None
         overlap_beats, late_handoff_warning = _cap_late_payoff_handoff_overlap(previous_label, sec.label, overlap_beats)
         if late_handoff_warning:
             section_warnings.append(late_handoff_warning)
@@ -427,7 +427,9 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             section_warnings.append(
                 f"transition overlap capped to {overlap_beats:.1f} beats because stretch ratio {stretch_ratio:.3f} is outside conservative bounds"
             )
-        background_owner = other_parent if overlap_beats > 0.0 else None
+        background_owner = None
+        if overlap_beats > 0.0 and previous_section is not None and previous_section.source_parent != parent_id:
+            background_owner = previous_section.source_parent
         resolved = ResolvedSection(
             index=idx,
             label=sec.label,

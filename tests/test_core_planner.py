@@ -2,7 +2,7 @@ from collections import Counter
 
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
+from src.core.planner.arrangement import _SectionSpec, _WindowSelection, _build_section_program, _choose_with_major_section_balance_guard, _enumerate_section_choices, _pick_candidate, _planner_listen_feedback
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -667,9 +667,60 @@ def test_enumerate_section_choices_penalizes_token_non_major_second_parent_prese
     b_payoff = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_3_7")
 
     assert b_payoff.score_breakdown["fusion_major_identity_gap"] > 0.0
+    assert b_payoff.score_breakdown["fusion_weighted_identity_presence_gap"] > 0.0
     assert b_payoff.score_breakdown["fusion_balance"] > a_payoff.score_breakdown["fusion_balance"]
     assert a_payoff.blended_error < b_payoff.blended_error
     assert ranked[0].parent_id == "A"
+
+
+
+def test_major_section_balance_guard_switches_to_other_parent_before_full_major_monopoly():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 5, 0.23)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 5, 0.24)
+
+    prior_major_1 = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="mid", bar_count=8, target_energy=0.42, role="verse"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="verse",
+    )
+    prior_major_2 = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="mid", bar_count=8, target_energy=0.58, role="build"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="build",
+    )
+
+    chosen = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_pick_candidate(b, target_position="late", bar_count=16, target_energy=0.84, role="payoff"),
+        blended_error=1.10,
+        score_breakdown={"stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.22, "role_prior": 0.18},
+        section_label="payoff",
+    )
+    alternate = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="late", bar_count=16, target_energy=0.82, role="payoff"),
+        blended_error=1.48,
+        score_breakdown={"stretch_gate": 0.0, "seam_risk": 0.34, "transition_viability": 0.30, "role_prior": 0.24},
+        section_label="payoff",
+    )
+
+    picked, note = _choose_with_major_section_balance_guard(
+        _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend"),
+        [chosen, alternate],
+        [prior_major_1, prior_major_2],
+    )
+
+    assert picked.parent_id == "A"
+    assert note is not None
+    assert "major-section monopoly" in note
 
 
 
@@ -976,6 +1027,49 @@ def test_payoff_selection_penalizes_same_parent_carryover_when_it_does_not_land_
     assert carryover_b.score_breakdown["final_payoff_delivery"] > 0.0
     assert carryover_b.blended_error > cleaner_a.blended_error
     assert ranked[0].parent_id == "A"
+
+
+def test_payoff_selection_prefers_sustained_high_conviction_late_window_over_same_start_spiky_option():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+        song.metadata["tempo"] = {"beat_times": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]}
+        song.energy["derived"] = {
+            "energy_confidence": 0.95,
+            "payoff_strength": 0.88,
+            "hook_strength": 0.72,
+            "hook_repetition": 0.60,
+            "payoff_windows": [{"start": 32.0, "end": 64.0, "score": 0.94}],
+            "hook_windows": [{"start": 32.0, "end": 64.0, "score": 0.76}],
+        }
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.28, 0.34, 0.42, 0.48, 0.56, 0.62, 0.66, 0.70, 0.72, 0.96, 0.60, 0.54]
+    b.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.28, 0.34, 0.42, 0.48, 0.58, 0.64, 0.72, 0.78, 0.84, 0.88, 0.92, 0.96]
+
+    previous_build = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_pick_candidate(a, target_position="mid", bar_count=8, target_energy=0.58, role="build"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="build",
+    )
+
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    ranked = _enumerate_section_choices(spec, a, b, previous_build, prior_selections=[previous_build])
+
+    spiky_a = next(item for item in ranked if item.parent_id == "A" and item.candidate.label == "phrase_4_8")
+    sustained_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_4_8")
+
+    assert spiky_a.score_breakdown["final_payoff_delivery"] > sustained_b.score_breakdown["final_payoff_delivery"]
+    assert spiky_a.blended_error > sustained_b.blended_error
+    assert ranked[0].parent_id == "B"
+    assert ranked[0].candidate.label == "phrase_4_8"
 
 
 def test_payoff_selection_penalizes_build_to_payoff_window_that_starts_too_early_for_late_arrival():

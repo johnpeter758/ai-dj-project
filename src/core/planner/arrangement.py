@@ -1099,6 +1099,7 @@ def _selection_fusion_balance_penalty(
             'major_section_lockout': 0.0,
             'major_identity_gap': 0.0,
             'second_parent_presence_gap': 0.0,
+            'weighted_identity_presence_gap': 0.0,
             'late_major_handoff_gap': 0.0,
         }
 
@@ -1125,6 +1126,14 @@ def _selection_fusion_balance_penalty(
 
     major_labels = {'verse', 'build', 'payoff', 'bridge'}
     late_major_labels = {'payoff', 'bridge'}
+    section_identity_weight = {
+        'intro': 0.35,
+        'outro': 0.35,
+        'verse': 1.0,
+        'build': 1.0,
+        'payoff': 1.0,
+        'bridge': 1.0,
+    }
     current_is_major = current_section_label in major_labels
     current_is_late_major = current_section_label in late_major_labels
     prior_major = [selection for selection in prior_selections if selection.section_label in major_labels]
@@ -1165,6 +1174,24 @@ def _selection_fusion_balance_penalty(
             else:
                 second_parent_presence_gap = 0.55 if current_is_major else 0.35
 
+    weighted_identity_counts = {'A': 0.0, 'B': 0.0}
+    for selection in prior_selections:
+        weighted_identity_counts[selection.parent_id] += section_identity_weight.get(selection.section_label or '', 0.60)
+    weighted_identity_counts[parent_id] += section_identity_weight.get(current_section_label or '', 0.60)
+    weighted_identity_minority = min(weighted_identity_counts.values())
+    weighted_identity_majority = max(weighted_identity_counts.values())
+    weighted_identity_presence_gap = 0.0
+    if total_after_selection >= 4 and weighted_identity_majority > 0.0:
+        if weighted_identity_minority <= 0.0:
+            weighted_identity_presence_gap = 1.0 if current_is_major else 0.80
+        elif weighted_identity_minority < 1.0:
+            scarcity = (1.0 - weighted_identity_minority)
+            imbalance = (weighted_identity_majority - weighted_identity_minority) / weighted_identity_majority
+            base_gap = (0.62 + (0.32 * scarcity) + (0.22 * imbalance)) if current_is_major else (0.35 + (0.20 * scarcity) + (0.15 * imbalance))
+            if current_is_late_major:
+                base_gap += 0.12
+            weighted_identity_presence_gap = min(1.0, base_gap)
+
     prior_late_major = [selection for selection in prior_selections if selection.section_label in late_major_labels]
     same_parent_late_major_count = sum(1 for selection in prior_late_major if selection.parent_id == parent_id)
     other_parent_late_major_count = len(prior_late_major) - same_parent_late_major_count
@@ -1187,6 +1214,7 @@ def _selection_fusion_balance_penalty(
         + (0.70 * major_section_lockout)
         + (0.55 * major_identity_gap)
         + (0.60 * second_parent_presence_gap)
+        + (0.95 * weighted_identity_presence_gap)
         + (0.75 * late_major_handoff_gap),
     )
     return penalty, {
@@ -1196,6 +1224,7 @@ def _selection_fusion_balance_penalty(
         'major_section_lockout': major_section_lockout,
         'major_identity_gap': major_identity_gap,
         'second_parent_presence_gap': second_parent_presence_gap,
+        'weighted_identity_presence_gap': weighted_identity_presence_gap,
         'late_major_handoff_gap': late_major_handoff_gap,
     }
 
@@ -1242,6 +1271,50 @@ def _selection_section_shape_penalty(
         'intro_hotspot': intro_hotspot,
         'payoff_underhit': payoff_underhit,
         'late_drop_gap': late_drop_gap,
+    }
+
+
+def _selection_build_to_payoff_contrast_penalty(
+    spec: _SectionSpec,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+    previous: _WindowSelection | None,
+) -> tuple[float, dict[str, float]]:
+    if spec.label != 'payoff' or previous is None or previous.section_label != 'build':
+        return 0.0, {
+            'energy_lift_gap': 0.0,
+            'tail_dominance_gap': 0.0,
+            'payoff_conviction_gap': 0.0,
+        }
+
+    previous_energy = max(0.0, min(1.0, previous.candidate.energy))
+    current_energy = max(0.0, min(1.0, candidate.energy))
+    energy_lift = current_energy - previous_energy
+    energy_lift_gap = max(0.0, 0.12 - energy_lift)
+
+    previous_tail_energy = max(0.0, min(1.0, _window_energy(previous.song, max(previous.candidate.start, previous.candidate.end - min(previous.candidate.duration * 0.5, 8.0)), previous.candidate.end)))
+    tail_dominance = features.tail_energy - previous_tail_energy
+    tail_dominance_gap = max(0.0, 0.10 - tail_dominance)
+
+    payoff_conviction = _clamp01(
+        (0.34 * features.end_focus)
+        + (0.28 * features.plateau_stability)
+        + (0.18 * features.payoff_strength)
+        + (0.12 * features.hook_strength)
+        + (0.08 * features.energy_confidence)
+    )
+    payoff_conviction_gap = max(0.0, 0.66 - payoff_conviction)
+
+    penalty = min(
+        1.0,
+        (1.05 * energy_lift_gap)
+        + (0.95 * tail_dominance_gap)
+        + (0.55 * payoff_conviction_gap),
+    )
+    return penalty, {
+        'energy_lift_gap': energy_lift_gap,
+        'tail_dominance_gap': tail_dominance_gap,
+        'payoff_conviction_gap': payoff_conviction_gap,
     }
 
 
@@ -1370,6 +1443,12 @@ def _enumerate_section_choices(
                 features_map[candidate.label],
                 previous,
             )
+            build_to_payoff_contrast_penalty, build_to_payoff_contrast_metrics = _selection_build_to_payoff_contrast_penalty(
+                spec,
+                candidate,
+                features_map[candidate.label],
+                previous,
+            )
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
             final_payoff_delivery_penalty = 0.0
             if spec.label == 'payoff' and previous is not None and previous.section_label in {'build', 'bridge'}:
@@ -1394,6 +1473,16 @@ def _enumerate_section_choices(
                 late_window_start_floor = 0.72 if previous.section_label == 'bridge' else 0.60
                 late_window_freshness_gap = max(0.0, late_window_start_floor - candidate_start_position)
                 final_payoff_delivery_penalty += 0.30 * late_window_freshness_gap
+
+                sustained_payoff_conviction = _clamp01(
+                    (0.30 * features.tail_energy)
+                    + (0.24 * features.plateau_stability)
+                    + (0.18 * features.payoff_strength)
+                    + (0.16 * features.end_focus)
+                    + (0.12 * features.energy_confidence)
+                )
+                sustained_conviction_floor = 0.70 if previous.section_label == 'bridge' else 0.62
+                final_payoff_delivery_penalty += max(0.0, sustained_conviction_floor - sustained_payoff_conviction)
 
                 if parent_id == previous.parent_id:
                     carryover_overlap = max(0.0, previous.candidate.end - candidate.start) / max(candidate.duration, 1e-6)
@@ -1439,6 +1528,7 @@ def _enumerate_section_choices(
                 + (1.35 * seam_gate_error)
                 + (0.95 * listen_feedback_penalty)
                 + (0.85 * final_payoff_delivery_penalty)
+                + (0.95 * build_to_payoff_contrast_penalty)
                 + (1.05 * section_shape_penalty)
                 + (1.10 * reuse_penalty)
                 + (0.85 * fusion_balance_penalty)
@@ -1490,6 +1580,7 @@ def _enumerate_section_choices(
                         'fusion_major_section_lockout': fusion_balance_metrics['major_section_lockout'],
                         'fusion_major_identity_gap': fusion_balance_metrics['major_identity_gap'],
                         'fusion_second_parent_presence_gap': fusion_balance_metrics['second_parent_presence_gap'],
+                        'fusion_weighted_identity_presence_gap': fusion_balance_metrics['weighted_identity_presence_gap'],
                         'fusion_late_major_handoff_gap': fusion_balance_metrics['late_major_handoff_gap'],
                         'groove_continuity': groove_continuity_penalty,
                         'groove_same_parent_streak': groove_continuity_metrics['same_parent_streak'],
@@ -1520,6 +1611,66 @@ def _enumerate_section_choices(
     )
 
 
+def _choose_with_major_section_balance_guard(
+    spec: _SectionSpec,
+    ranked: list[_WindowSelection],
+    prior_selections: list[_WindowSelection],
+) -> tuple[_WindowSelection, str | None]:
+    if not ranked:
+        raise ValueError('ranked selections must not be empty')
+
+    major_labels = {'verse', 'build', 'payoff', 'bridge'}
+    if spec.label not in major_labels:
+        return ranked[0], None
+
+    prior_major = [selection for selection in prior_selections if selection.section_label in major_labels]
+    if len(prior_major) < 2:
+        return ranked[0], None
+
+    chosen = ranked[0]
+    chosen_parent = chosen.parent_id
+    chosen_major_count = sum(1 for selection in prior_major if selection.parent_id == chosen_parent)
+    other_parent = 'B' if chosen_parent == 'A' else 'A'
+    other_major_count = len(prior_major) - chosen_major_count
+    if chosen_major_count != len(prior_major) or other_major_count != 0:
+        return chosen, None
+
+    alternate = next((item for item in ranked if item.parent_id == other_parent), None)
+    if alternate is None:
+        return chosen, None
+
+    error_delta = alternate.blended_error - chosen.blended_error
+    max_delta = 0.42
+    max_stretch_gate = 0.0
+    if spec.label in {'payoff', 'bridge'}:
+        max_delta = 1.05
+        max_stretch_gate = 0.58
+
+    alternate_stretch_gate = alternate.score_breakdown.get('stretch_gate', 0.0)
+    alternate_seam_risk = alternate.score_breakdown.get('seam_risk', 1.0)
+    chosen_seam_risk = chosen.score_breakdown.get('seam_risk', 1.0)
+    alternate_transition_error = alternate.score_breakdown.get('transition_viability', 1.0)
+    chosen_transition_error = chosen.score_breakdown.get('transition_viability', 1.0)
+    alternate_role_error = alternate.score_breakdown.get('role_prior', 1.0)
+
+    if error_delta > max_delta:
+        return chosen, None
+    if alternate_stretch_gate > max_stretch_gate:
+        return chosen, None
+    if alternate_seam_risk > min(0.78, chosen_seam_risk + 0.14):
+        return chosen, None
+    if alternate_transition_error > min(0.82, chosen_transition_error + 0.18):
+        return chosen, None
+    if alternate_role_error > 0.72:
+        return chosen, None
+
+    note = (
+        f"major-section balance guard: {spec.label} switched to {alternate.parent_id}:{alternate.candidate.label} "
+        f"to avoid a full one-parent major-section monopoly; alt delta {error_delta:.2f}"
+    )
+    return alternate, note
+
+
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrangementPlan:
     report = build_compatibility_report(song_a, song_b)
 
@@ -1537,7 +1688,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     song_map = {'A': song_a, 'B': song_b}
     for spec in section_specs:
         ranked = _enumerate_section_choices(spec, song_a, song_b, previous, prior_selections=selection_history)
-        chosen = ranked[0]
+        chosen, balance_guard_note = _choose_with_major_section_balance_guard(spec, ranked, selection_history)
         candidate = chosen.candidate
         sections.append(
             PlannedSection(
@@ -1555,6 +1706,8 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         selection_notes.append(
             f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
         )
+        if balance_guard_note is not None:
+            selection_notes.append(f"{spec.label}: {balance_guard_note}")
         feedback = parent_feedback[chosen.parent_id]
         selection_diagnostics.append(
             {
