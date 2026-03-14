@@ -24,6 +24,7 @@ _HARD_STRETCH_MAX = 2.0
 _GENERIC_SECTION_PREFIXES = ("section_", "part_", "segment_")
 _WEAK_SECTION_SPAN_RATIO = 0.8
 _PHRASE_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)$")
+_PHRASE_TRIM_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)_trim_(tail|head|center)$")
 
 
 def _beat_times(song: SongDNA) -> list[float]:
@@ -185,15 +186,37 @@ def _resolve_incoming_gain_db(
     return gain_db
 
 
-def _phrase_label_bounds(requested_label: str | None, song: SongDNA) -> tuple[float, float, list[str]] | None:
+def _available_snap_grid(song: SongDNA, lower: float, upper: float) -> list[float]:
+    grid = sorted({
+        *[float(x) for x in song.energy.get("bar_times", [])],
+        *[float(x) for x in song.energy.get("beat_times", [])],
+        float(lower),
+        float(upper),
+    })
+    return [value for value in grid if lower <= value <= upper]
+
+
+
+def _snap_time_to_available_grid(song: SongDNA, value: float, lower: float, upper: float) -> float:
+    grid = _available_snap_grid(song, lower, upper)
+    if not grid:
+        return min(max(value, lower), upper)
+    best = min(grid, key=lambda item: abs(item - value))
+    return min(max(float(best), lower), upper)
+
+
+
+def _phrase_label_bounds(requested_label: str | None, song: SongDNA, section: PlannedSection | None = None, config: ResolverConfig | None = None) -> tuple[float, float, list[str]] | None:
     if not requested_label:
         return None
-    match = _PHRASE_LABEL_RE.match(requested_label.strip())
-    if not match:
+    label = requested_label.strip()
+    match = _PHRASE_LABEL_RE.match(label)
+    trim_match = _PHRASE_TRIM_LABEL_RE.match(label)
+    if not match and not trim_match:
         return None
 
-    start_idx = int(match.group(1))
-    end_idx = int(match.group(2))
+    start_idx = int((match or trim_match).group(1))
+    end_idx = int((match or trim_match).group(2))
     phrase_boundaries = sorted(float(x) for x in song.structure.get("phrase_boundaries_seconds", []) if 0.0 <= float(x) <= float(song.duration_seconds))
     if not phrase_boundaries:
         return 0.0, float(song.duration_seconds), [f"phrase window label '{requested_label}' could not be resolved because phrase boundaries were missing"]
@@ -204,7 +227,31 @@ def _phrase_label_bounds(requested_label: str | None, song: SongDNA) -> tuple[fl
 
     if start_idx < 0 or end_idx >= len(phrase_boundaries) or end_idx <= start_idx:
         return 0.0, float(song.duration_seconds), [f"phrase window label '{requested_label}' was out of range for available phrase boundaries"]
-    return float(phrase_boundaries[start_idx]), float(phrase_boundaries[end_idx]), []
+
+    raw_start = float(phrase_boundaries[start_idx])
+    raw_end = float(phrase_boundaries[end_idx])
+    if not trim_match:
+        return raw_start, raw_end, []
+    if section is None or config is None:
+        return raw_start, raw_end, [f"trimmed phrase window label '{requested_label}' could not be resolved without section timing context"]
+
+    target_duration = _target_duration_seconds(section, song, config)
+    trim_kind = trim_match.group(3)
+    if trim_kind == "tail":
+        trim_start, trim_end = raw_start, raw_start + target_duration
+    elif trim_kind == "head":
+        trim_start, trim_end = raw_end - target_duration, raw_end
+    else:
+        midpoint = (raw_start + raw_end) * 0.5
+        half = target_duration * 0.5
+        trim_start, trim_end = midpoint - half, midpoint + half
+
+    snapped_start = _snap_time_to_available_grid(song, trim_start, raw_start, raw_end)
+    snapped_end = _snap_time_to_available_grid(song, trim_end, snapped_start, raw_end)
+    if snapped_end <= snapped_start:
+        return raw_start, raw_end, [f"trimmed phrase window label '{requested_label}' collapsed during grid snap; using full phrase span instead"]
+    return snapped_start, snapped_end, []
+
 
 
 def _target_duration_seconds(section: PlannedSection, song: SongDNA, config: ResolverConfig) -> float:
@@ -366,7 +413,7 @@ def _resolve_source_window(section: PlannedSection, song: SongDNA, grid: ParentG
     sections = _section_map(song)
     requested_label = (section.source_section_label or "").strip() or None
 
-    phrase_bounds = _phrase_label_bounds(requested_label, song)
+    phrase_bounds = _phrase_label_bounds(requested_label, song, section, config)
     if phrase_bounds is not None:
         raw_start, raw_end, phrase_warnings = phrase_bounds
         warnings.extend(phrase_warnings)
