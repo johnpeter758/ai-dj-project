@@ -127,23 +127,37 @@ def _cap_same_parent_flow_overlap(
     overlap_beats: float,
     transition_mode: str | None,
     cross_parent_handoff: bool,
+    previous_label: str | None,
+    current_label: str | None,
 ) -> tuple[float, str | None]:
     if cross_parent_handoff or transition_mode != "same_parent_flow":
         return overlap_beats, None
 
+    prev = (previous_label or "").strip().lower()
+    curr = (current_label or "").strip().lower()
     cap = {
-        "blend": 4.0,
-        "lift": 3.0,
-        "swap": 2.0,
+        "blend": 2.0,
+        "lift": 2.0,
+        "swap": 1.0,
         "drop": 1.0,
     }.get(transition_in)
-    if cap is None or overlap_beats <= cap:
+    if cap is None:
+        return overlap_beats, None
+
+    if curr in {"build", "payoff", "outro"}:
+        cap = min(cap, 1.0)
+    if prev in {"build", "payoff"} and curr in {"bridge", "outro"}:
+        cap = min(cap, 0.5)
+
+    if overlap_beats <= cap:
         return overlap_beats, None
 
     beat_label = "beat" if math.isclose(cap, 1.0, rel_tol=0.0, abs_tol=1e-9) else "beats"
+    if math.isclose(cap, 0.5, rel_tol=0.0, abs_tol=1e-9):
+        beat_label = "beats"
     return cap, (
         f"transition_mode=same_parent_flow capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} "
-        f"to reduce same-source seam crowding"
+        f"to reduce same-source seam crowding and protect groove clarity"
     )
 
 
@@ -557,6 +571,8 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             overlap_beats,
             sec.transition_mode,
             cross_parent_handoff,
+            previous_label,
+            sec.label,
         )
         if same_parent_warning:
             section_warnings.append(same_parent_warning)
