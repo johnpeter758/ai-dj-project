@@ -306,7 +306,7 @@ def _window_energy_slope(song: SongDNA, start: float, end: float) -> float:
 
 def _candidate_phrase_indices(label: str) -> tuple[int, int] | None:
     parts = label.split('_')
-    if len(parts) == 3 and parts[0] == 'phrase':
+    if len(parts) >= 3 and parts[0] == 'phrase':
         try:
             return int(parts[1]), int(parts[2])
         except ValueError:
@@ -348,6 +348,46 @@ def _section_candidates(song: SongDNA) -> list[_SectionCandidate]:
     ]
 
 
+def _target_section_duration_seconds(song: SongDNA, bar_count: int) -> float:
+    tempo = max(float(song.tempo_bpm or 0.0), 1e-6)
+    return (60.0 / tempo) * 4.0 * bar_count
+
+
+
+def _snap_time_to_available_grid(song: SongDNA, value: float, lower: float, upper: float) -> float:
+    grid = sorted({
+        *(_safe_float_list(song.energy.get('bar_times', [])) or []),
+        *(_safe_float_list(song.energy.get('beat_times', [])) or []),
+        float(lower),
+        float(upper),
+    })
+    if not grid:
+        return min(max(value, lower), upper)
+    best = min(grid, key=lambda item: abs(item - value))
+    return min(max(float(best), lower), upper)
+
+
+
+def _append_candidate(candidates: list[_SectionCandidate], song: SongDNA, label: str, start: float, end: float, origin: str) -> None:
+    if end <= start:
+        return
+    rounded = (round(start, 6), round(end, 6))
+    if any((round(item.start, 6), round(item.end, 6)) == rounded for item in candidates):
+        return
+    candidates.append(
+        _SectionCandidate(
+            label=label,
+            start=start,
+            end=end,
+            duration=end - start,
+            midpoint=(start + end) * 0.5,
+            energy=_window_energy(song, start, end),
+            origin=origin,
+        )
+    )
+
+
+
 def _phrase_window_candidates(song: SongDNA, bar_count: int) -> list[_SectionCandidate]:
     phrase_boundaries = sorted(set(_safe_float_list(song.structure.get('phrase_boundaries_seconds', []))))
     if not phrase_boundaries:
@@ -360,6 +400,10 @@ def _phrase_window_candidates(song: SongDNA, bar_count: int) -> list[_SectionCan
 
     available_phrase_spans = max(1, len(phrase_boundaries) - 1)
     phrases_needed = min(available_phrase_spans, max(1, round(bar_count / 4)))
+    target_duration = _target_section_duration_seconds(song, bar_count)
+    trim_floor = target_duration * 0.82
+    trim_ceiling = target_duration * 1.18
+
     candidates: list[_SectionCandidate] = []
     max_start = max(0, len(phrase_boundaries) - phrases_needed - 1)
     for start_idx in range(max_start + 1):
@@ -368,17 +412,25 @@ def _phrase_window_candidates(song: SongDNA, bar_count: int) -> list[_SectionCan
         end = float(phrase_boundaries[end_idx])
         if end <= start:
             continue
-        candidates.append(
-            _SectionCandidate(
-                label=f'phrase_{start_idx}_{end_idx}',
-                start=start,
-                end=end,
-                duration=end - start,
-                midpoint=(start + end) * 0.5,
-                energy=_window_energy(song, start, end),
-                origin='phrase_window',
-            )
-        )
+        base_label = f'phrase_{start_idx}_{end_idx}'
+        _append_candidate(candidates, song, base_label, start, end, 'phrase_window')
+
+        raw_duration = end - start
+        if raw_duration <= trim_ceiling:
+            continue
+
+        anchor_specs = [
+            ('trim_tail', start, start + target_duration),
+            ('trim_head', end - target_duration, end),
+            ('trim_center', ((start + end) * 0.5) - (target_duration * 0.5), ((start + end) * 0.5) + (target_duration * 0.5)),
+        ]
+        for suffix, raw_start, raw_end in anchor_specs:
+            snapped_start = _snap_time_to_available_grid(song, raw_start, start, end)
+            snapped_end = _snap_time_to_available_grid(song, raw_end, snapped_start, end)
+            trimmed_duration = snapped_end - snapped_start
+            if trimmed_duration < trim_floor or trimmed_duration > trim_ceiling:
+                continue
+            _append_candidate(candidates, song, f'{base_label}_{suffix}', snapped_start, snapped_end, 'phrase_trim')
     return candidates
 
 
@@ -597,7 +649,7 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
 
 def _boundary_confidence(song: SongDNA, candidate: _SectionCandidate) -> float:
     phrase_boundaries = sorted(set(_safe_float_list(song.structure.get('phrase_boundaries_seconds', []))))
-    if candidate.origin != 'phrase_window' or not phrase_boundaries:
+    if candidate.origin not in {'phrase_window', 'phrase_trim'} or not phrase_boundaries:
         return 0.35 if candidate.origin == 'section' else 0.20
 
     boundaries = list(phrase_boundaries)

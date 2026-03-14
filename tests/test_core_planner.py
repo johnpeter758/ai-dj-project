@@ -393,6 +393,54 @@ def test_extended_stub_arrangement_plan_includes_bridge_and_second_payoff_when_c
     assert plan["sections"][5]["start_bar"] == 48
 
 
+def test_phrase_window_candidates_add_phrase_trim_alternates_for_overlong_windows():
+    song = make_song("trimmed.wav", 132.0, "A", "minor", "8A", 4, 0.20)
+    song.duration_seconds = 42.5
+    song.structure["phrase_boundaries_seconds"] = [0.0, 10.625, 21.25, 31.875, 42.5]
+    song.structure["section_boundaries_seconds"] = [10.625, 21.25, 31.875]
+    song.energy["beat_times"] = [float(i) for i in range(1, 43)]
+    song.energy["beat_rms"] = [0.20 + (0.004 * i) for i in range(42)]
+
+    candidates = _enumerate_section_choices(
+        _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend", transition_out="lift"),
+        song,
+        song,
+        previous=None,
+        prior_selections=[],
+    )
+
+    trimmed = [item for item in candidates if item.candidate.origin == "phrase_trim"]
+    assert trimmed
+    assert any(item.candidate.label.startswith("phrase_0_2_trim_") for item in trimmed)
+    assert any(0.82 <= item.candidate.duration / ((60.0 / song.tempo_bpm) * 32.0) <= 1.18 for item in trimmed)
+
+
+
+def test_phrase_trim_candidate_reduces_stretch_pressure_for_overlong_phrase_window():
+    song = make_song("stretchy.wav", 132.0, "A", "minor", "8A", 5, 0.22)
+    song.duration_seconds = 42.5
+    song.structure["phrase_boundaries_seconds"] = [0.0, 10.625, 21.25, 31.875, 42.5]
+    song.structure["section_boundaries_seconds"] = [10.625, 21.25, 31.875]
+    song.energy["beat_times"] = [float(i) for i in range(1, 43)]
+    song.energy["beat_rms"] = [0.18 + (0.004 * i) for i in range(42)]
+
+    ranked = _enumerate_section_choices(
+        _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend", transition_out="lift"),
+        song,
+        song,
+        previous=None,
+        prior_selections=[],
+    )
+
+    base = next(item for item in ranked if item.candidate.label == "phrase_0_2")
+    trimmed = next(item for item in ranked if item.candidate.label.startswith("phrase_0_2_trim_"))
+
+    assert base.score_breakdown["stretch_ratio"] > 1.25
+    assert trimmed.score_breakdown["stretch_ratio"] < base.score_breakdown["stretch_ratio"]
+    assert trimmed.score_breakdown["stretch_penalty"] < base.score_breakdown["stretch_penalty"]
+
+
+
 def test_build_plan_can_override_parent_preference_when_other_parent_has_much_better_payoff_window():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 6, 0.20)
