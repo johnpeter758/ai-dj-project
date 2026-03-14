@@ -44,30 +44,48 @@ def _one_pole_highpass(audio: np.ndarray, cutoff_hz: np.ndarray, sr: int) -> np.
     return out
 
 
-def _transition_filter_profile(transition_type: str | None, transition_mode: str | None) -> tuple[float, float, float, float]:
+def _transition_filter_profile(
+    transition_type: str | None,
+    transition_mode: str | None,
+) -> tuple[float, float, float, float, float, float]:
     incoming_start = 0.0
     incoming_end = 0.0
-    outgoing_start = 20000.0
-    outgoing_end = 20000.0
+    outgoing_lowpass_start = 20000.0
+    outgoing_lowpass_end = 20000.0
+    outgoing_highpass_start = 0.0
+    outgoing_highpass_end = 0.0
 
     if transition_type in {"blend", "lift"}:
         incoming_start, incoming_end = 1800.0, 40.0
-        outgoing_start, outgoing_end = 18000.0, 7000.0
+        outgoing_lowpass_start, outgoing_lowpass_end = 18000.0, 7000.0
+        outgoing_highpass_start, outgoing_highpass_end = 35.0, 120.0
     elif transition_type == "swap":
         incoming_start, incoming_end = 2600.0, 60.0
-        outgoing_start, outgoing_end = 16000.0, 5000.0
+        outgoing_lowpass_start, outgoing_lowpass_end = 16000.0, 5000.0
+        outgoing_highpass_start, outgoing_highpass_end = 40.0, 160.0
     elif transition_type == "drop":
         incoming_start, incoming_end = 3200.0, 80.0
-        outgoing_start, outgoing_end = 14000.0, 4200.0
+        outgoing_lowpass_start, outgoing_lowpass_end = 14000.0, 4200.0
+        outgoing_highpass_start, outgoing_highpass_end = 55.0, 220.0
 
     if transition_mode == "same_parent_flow":
         incoming_start *= 0.6
-        outgoing_end = min(12000.0, max(outgoing_end, 8500.0))
+        outgoing_lowpass_end = min(12000.0, max(outgoing_lowpass_end, 8500.0))
+        outgoing_highpass_end = max(outgoing_highpass_end, 150.0)
     elif transition_mode in {"arrival_handoff", "single_owner_handoff"}:
         incoming_start *= 1.15
-        outgoing_end *= 0.85
+        outgoing_lowpass_end *= 0.6
+        outgoing_highpass_start *= 1.15
+        outgoing_highpass_end *= 1.35
 
-    return incoming_start, incoming_end, outgoing_start, outgoing_end
+    return (
+        incoming_start,
+        incoming_end,
+        outgoing_lowpass_start,
+        outgoing_lowpass_end,
+        outgoing_highpass_start,
+        outgoing_highpass_end,
+    )
 
 
 def _apply_transition_sonics(
@@ -82,7 +100,14 @@ def _apply_transition_sonics(
     if out.size == 0:
         return out
 
-    incoming_start, incoming_end, outgoing_start, outgoing_end = _transition_filter_profile(transition_type, transition_mode)
+    (
+        incoming_start,
+        incoming_end,
+        outgoing_lowpass_start,
+        outgoing_lowpass_end,
+        outgoing_highpass_start,
+        outgoing_highpass_end,
+    ) = _transition_filter_profile(transition_type, transition_mode)
 
     fi = min(out.shape[1], max(0, int(round(fade_in_sec * sr))))
     if fi > 8 and incoming_start > incoming_end > 0.0:
@@ -90,8 +115,11 @@ def _apply_transition_sonics(
         out[:, :fi] = _one_pole_highpass(out[:, :fi], cutoff, sr)
 
     fo = min(out.shape[1], max(0, int(round(fade_out_sec * sr))))
-    if fo > 8 and outgoing_start > outgoing_end > 0.0 and outgoing_end < 19999.0:
-        cutoff = np.linspace(outgoing_start, outgoing_end, fo, endpoint=True, dtype=np.float32)
+    if fo > 8 and outgoing_highpass_end > outgoing_highpass_start > 0.0:
+        cutoff = np.linspace(outgoing_highpass_start, outgoing_highpass_end, fo, endpoint=True, dtype=np.float32)
+        out[:, -fo:] = _one_pole_highpass(out[:, -fo:], cutoff, sr)
+    if fo > 8 and outgoing_lowpass_start > outgoing_lowpass_end > 0.0 and outgoing_lowpass_end < 19999.0:
+        cutoff = np.linspace(outgoing_lowpass_start, outgoing_lowpass_end, fo, endpoint=True, dtype=np.float32)
         out[:, -fo:] = _one_pole_lowpass(out[:, -fo:], cutoff, sr)
 
     return out
@@ -254,15 +282,37 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
         return out
 
     intro = out[:, :overlap_samples]
-    if section.background_owner is not None and section.background_owner != section.foreground_owner:
-        intro = _apply_gain_db(intro, -1.0)
-        intro = _highpass(intro, sr, 135.0)
-        intro = _bandstop(intro, sr, 180.0, 4200.0)
-    elif section.allowed_overlap:
-        intro = _apply_gain_db(intro, -0.5)
-        intro = _highpass(intro, sr, 110.0)
+    cleanup_gain_db = 0.0
+    highpass_hz = 0.0
+    bandstop_low_hz = 0.0
+    bandstop_high_hz = 0.0
 
-    out[:, :overlap_samples] = intro
+    if section.background_owner is not None and section.background_owner != section.foreground_owner:
+        cleanup_gain_db = -1.5
+        highpass_hz = 145.0
+        bandstop_low_hz, bandstop_high_hz = 220.0, 4200.0
+    elif section.transition_mode in {"arrival_handoff", "single_owner_handoff"}:
+        cleanup_gain_db = -1.0
+        highpass_hz = 150.0
+        bandstop_low_hz, bandstop_high_hz = 240.0, 4600.0
+    elif section.allowed_overlap:
+        cleanup_gain_db = -0.75
+        highpass_hz = 125.0
+        bandstop_low_hz, bandstop_high_hz = 260.0, 3200.0
+
+    if cleanup_gain_db != 0.0 or highpass_hz > 0.0 or bandstop_high_hz > bandstop_low_hz:
+        cleaned = intro
+        if cleanup_gain_db != 0.0:
+            cleaned = _apply_gain_db(cleaned, cleanup_gain_db)
+        if highpass_hz > 0.0:
+            cleaned = _highpass(cleaned, sr, highpass_hz)
+        if bandstop_high_hz > bandstop_low_hz:
+            cleaned = _bandstop(cleaned, sr, bandstop_low_hz, bandstop_high_hz)
+
+        recover = np.linspace(0.0, 1.0, overlap_samples, endpoint=True, dtype=np.float32)[np.newaxis, :]
+        intro = cleaned * (1.0 - recover) + intro * recover
+
+    out[:, :overlap_samples] = intro.astype(np.float32)
     return out
 
 

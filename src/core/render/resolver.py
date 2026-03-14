@@ -121,6 +121,32 @@ def _cap_late_payoff_handoff_overlap(
     return overlap_beats, None
 
 
+def _cap_same_parent_flow_overlap(
+    transition_in: str | None,
+    overlap_beats: float,
+    transition_mode: str | None,
+    cross_parent_handoff: bool,
+) -> tuple[float, str | None]:
+    if cross_parent_handoff or transition_mode != "same_parent_flow":
+        return overlap_beats, None
+
+    cap = {
+        "blend": 4.0,
+        "lift": 3.0,
+        "swap": 2.0,
+        "drop": 1.0,
+    }.get(transition_in)
+    if cap is None or overlap_beats <= cap:
+        return overlap_beats, None
+
+    beat_label = "beat" if math.isclose(cap, 1.0, rel_tol=0.0, abs_tol=1e-9) else "beats"
+    return cap, (
+        f"transition_mode=same_parent_flow capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} "
+        f"to reduce same-source seam crowding"
+    )
+
+
+
 def _apply_transition_mode_constraints(
     transition_mode: str | None,
     overlap_beats: float,
@@ -479,6 +505,14 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         if late_handoff_warning:
             section_warnings.append(late_handoff_warning)
         cross_parent_handoff = previous_section is not None and previous_section.source_parent != parent_id
+        overlap_beats, same_parent_warning = _cap_same_parent_flow_overlap(
+            sec.transition_in,
+            overlap_beats,
+            sec.transition_mode,
+            cross_parent_handoff,
+        )
+        if same_parent_warning:
+            section_warnings.append(same_parent_warning)
         overlap_beats, suppress_background_owner, transition_mode_warning = _apply_transition_mode_constraints(
             sec.transition_mode,
             overlap_beats,

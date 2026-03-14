@@ -454,8 +454,11 @@ def test_resolve_render_plan_trims_long_same_parent_flow_arrival_gain(tmp_path: 
 
     manifest = resolve_render_plan(plan, a, b)
 
-    assert manifest.sections[1].overlap_beats_max == transition_overlap_beats('blend')
+    assert transition_overlap_beats('blend') == 8.0
+    assert manifest.sections[1].overlap_beats_max == 4.0
     assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend') - 0.75)
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
+    assert 'transition_mode=same_parent_flow capped overlap from 8.0 to 4.0 beats' in joined
 
 
 
@@ -587,6 +590,26 @@ def test_apply_transition_sonics_lowpasses_outgoing_tail_window():
 
 
 
+def test_apply_transition_sonics_highpasses_outgoing_tail_low_end_on_same_parent_flow():
+    sr = 44100
+    seconds = 4.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    low = np.sin(2 * np.pi * 60.0 * t)
+    mids = 0.5 * np.sin(2 * np.pi * 1200.0 * t)
+    segment = np.vstack([low + mids, low + mids]).astype(np.float32)
+
+    shaped = _apply_transition_sonics(segment, sr, fade_in_sec=0.0, fade_out_sec=1.0, transition_type='blend', transition_mode='same_parent_flow')
+
+    tail = shaped[0, -int(0.2 * sr):]
+    raw_tail = segment[0, -int(0.2 * sr):]
+    tail_t = t[: tail.size]
+    carrier = np.sin(2 * np.pi * 60.0 * tail_t)
+    shaped_low_projection = np.abs(np.mean(tail * carrier))
+    raw_low_projection = np.abs(np.mean(raw_tail * carrier))
+    assert shaped_low_projection < raw_low_projection * 0.85
+
+
+
 def test_render_resolved_plan_rejects_invalid_target_timing_contract(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 440.0)
@@ -653,6 +676,47 @@ def test_render_resolved_plan_cleans_up_low_end_on_cross_parent_overlap(tmp_path
     dirty_intro = y_dirty[int(manifest.work_orders[1].target_start_sec * sr): int(manifest.work_orders[1].target_start_sec * sr) + overlap_samples]
 
     assert np.sqrt(np.mean(clean_intro ** 2)) < np.sqrt(np.mean(dirty_intro ** 2))
+
+
+
+def test_render_resolved_plan_cleans_up_mids_on_same_parent_overlap(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 1200.0, amplitude=0.15)
+    p2 = write_sine(tmp_path / 'b.wav', 1200.0, amplitude=0.15)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(source_path=str(p1), tempo_bpm=120.0, key_tonic='A', key_mode='minor', duration_seconds=12.0),
+            ParentReference(source_path=str(p2), tempo_bpm=120.0, key_tonic='C', key_mode='major', duration_seconds=12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=0.8, harmony=0.8, structure=0.8, energy=0.8, stem_conflict=0.2),
+        sections=[
+            PlannedSection(label='intro', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='cut'),
+            PlannedSection(label='verse', start_bar=4, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='blend', transition_mode='same_parent_flow'),
+        ],
+    )
+    manifest = resolve_render_plan(plan, a, b)
+    dirty_manifest = clone_manifest(
+        manifest,
+        sections=[manifest.sections[0], replace(manifest.sections[1], allowed_overlap=False)],
+        work_orders=[manifest.work_orders[0], replace(manifest.work_orders[1], fade_in_sec=0.0)],
+    )
+
+    cleaned = render_resolved_plan(manifest, tmp_path / 'render_same_parent_cleaned')
+    dirty = render_resolved_plan(dirty_manifest, tmp_path / 'render_same_parent_dirty')
+    y_clean, sr = sf.read(cleaned.raw_wav_path, always_2d=True)
+    y_dirty, _ = sf.read(dirty.raw_wav_path, always_2d=True)
+
+    overlap_samples = int(round(manifest.work_orders[1].fade_in_sec * sr))
+    start = int(round(manifest.work_orders[1].target_start_sec * sr))
+    clean_intro = y_clean[start: start + overlap_samples, 0]
+    dirty_intro = y_dirty[start: start + overlap_samples, 0]
+    t = np.arange(clean_intro.size, dtype=np.float32) / sr
+    carrier = np.sin(2 * np.pi * 1200.0 * t)
+
+    clean_projection = np.abs(np.mean(clean_intro * carrier))
+    dirty_projection = np.abs(np.mean(dirty_intro * carrier))
+    assert clean_projection < dirty_projection * 0.9
 
 
 
