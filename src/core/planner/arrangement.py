@@ -1710,13 +1710,23 @@ def _apply_section_level_authenticity_guard(
     chosen_selections: list[_WindowSelection],
     ranked_choices: list[list[_WindowSelection]],
 ) -> tuple[list[_WindowSelection], list[str]]:
-    if len({selection.parent_id for selection in chosen_selections}) > 1:
+    if not chosen_selections:
         return chosen_selections, []
 
-    dominant_parent = chosen_selections[0].parent_id if chosen_selections else None
-    if dominant_parent is None:
-        return chosen_selections, []
+    major_labels = {'verse', 'build', 'payoff', 'bridge'}
+    chosen_parents = {selection.parent_id for selection in chosen_selections}
+    dominant_parent = chosen_selections[0].parent_id
     alternate_parent = 'B' if dominant_parent == 'A' else 'A'
+
+    full_section_monopoly = len(chosen_parents) == 1
+    chosen_major = [selection for selection in chosen_selections if selection.section_label in major_labels]
+    major_section_monopoly = bool(chosen_major) and len({selection.parent_id for selection in chosen_major}) == 1
+
+    if not full_section_monopoly and not major_section_monopoly:
+        return chosen_selections, []
+    if major_section_monopoly:
+        dominant_parent = chosen_major[0].parent_id
+        alternate_parent = 'B' if dominant_parent == 'A' else 'A'
 
     def _is_safe_authenticity_alternate(current: _WindowSelection, alternate: _WindowSelection, spec: _SectionSpec) -> bool:
         error_delta = alternate.blended_error - current.blended_error
@@ -1750,6 +1760,8 @@ def _apply_section_level_authenticity_guard(
     priority_labels = {'payoff': 0, 'bridge': 1, 'build': 2, 'verse': 3, 'outro': 4, 'intro': 5}
     candidate_swaps: list[tuple[int, _WindowSelection, _WindowSelection, _SectionSpec]] = []
     for idx, (spec, current, ranked) in enumerate(zip(section_specs, chosen_selections, ranked_choices)):
+        if major_section_monopoly and spec.label not in major_labels:
+            continue
         alternate = next((item for item in ranked if item.parent_id == alternate_parent), None)
         if alternate is None:
             continue
@@ -1770,9 +1782,10 @@ def _apply_section_level_authenticity_guard(
     )
     updated = list(chosen_selections)
     updated[idx] = alternate
+    guard_reason = 'full one-parent major-section collapse' if major_section_monopoly and not full_section_monopoly else 'full one-parent section collapse'
     note = (
         f"section-level authenticity guard: {spec.label} switched to {alternate.parent_id}:{alternate.candidate.label} "
-        f"to avoid a full one-parent section collapse; alt delta {alternate.blended_error - current.blended_error:.2f}; "
+        f"to avoid a {guard_reason}; alt delta {alternate.blended_error - current.blended_error:.2f}; "
         f"guarded safe by stretch {alternate.score_breakdown.get('stretch_ratio', 1.0):.2f} "
         f"and groove {alternate.score_breakdown.get('listen_groove_confidence', 1.0):.2f}"
     )

@@ -733,6 +733,46 @@ def test_enumerate_section_choices_penalizes_token_non_major_second_parent_prese
 
 
 
+def test_section_level_authenticity_guard_breaks_major_section_monopoly_even_when_intro_outro_already_use_both_parents():
+    intro = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A")
+    verse = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
+    build = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="B", transition_in="blend", transition_out="swap")
+    payoff = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    outro = _SectionSpec(label="outro", start_bar=40, bar_count=8, target_energy=0.34, source_parent_preference="A", transition_in="blend")
+
+    song_a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+    song_b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.21)
+    a_candidate = _pick_candidate(song_a, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+    b_candidate = _pick_candidate(song_b, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+
+    chosen = [
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.40, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.20, "transition_viability": 0.18, "role_prior": 0.14, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="intro"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.52, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.24, "transition_viability": 0.20, "role_prior": 0.18, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="verse"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.60, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.26, "transition_viability": 0.22, "role_prior": 0.20, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="build"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.72, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.24, "role_prior": 0.22, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="payoff"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.44, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.22, "transition_viability": 0.18, "role_prior": 0.16, "groove_continuity": 0.0, "listen_groove_confidence": 0.83}, section_label="outro"),
+    ]
+    ranked_choices = [
+        [chosen[0]],
+        [chosen[1], _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.80, score_breakdown={"stretch_ratio": 1.01, "stretch_gate": 0.0, "seam_risk": 0.29, "transition_viability": 0.26, "role_prior": 0.24, "groove_continuity": 0.0, "listen_groove_confidence": 0.79}, section_label="verse")],
+        [chosen[2], _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.86, score_breakdown={"stretch_ratio": 1.02, "stretch_gate": 0.0, "seam_risk": 0.30, "transition_viability": 0.28, "role_prior": 0.24, "groove_continuity": 0.0, "listen_groove_confidence": 0.80}, section_label="build")],
+        [chosen[3], _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.90, score_breakdown={"stretch_ratio": 1.01, "stretch_gate": 0.0, "seam_risk": 0.32, "transition_viability": 0.26, "role_prior": 0.25, "groove_continuity": 0.0, "listen_groove_confidence": 0.79}, section_label="payoff")],
+        [chosen[4]],
+    ]
+
+    updated, notes = _apply_section_level_authenticity_guard(
+        [intro, verse, build, payoff, outro],
+        chosen,
+        ranked_choices,
+    )
+
+    major_updated = [selection for selection in updated if selection.section_label in {"verse", "build", "payoff", "bridge"}]
+    assert {selection.parent_id for selection in updated} == {"A", "B"}
+    assert {selection.parent_id for selection in major_updated} == {"A", "B"}
+    assert updated[3].parent_id == "A"
+    assert any("major-section collapse" in note for note in notes)
+
+
 def test_major_section_balance_guard_switches_to_other_parent_before_full_major_monopoly():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 5, 0.23)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 5, 0.24)
