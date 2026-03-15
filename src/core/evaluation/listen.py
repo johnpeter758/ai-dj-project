@@ -11,7 +11,7 @@ from ..analysis.models import SongDNA
 from .models import ListenReport, ListenSubscore
 
 
-TRANSITION_ANALYSIS_VERSION = "0.4.0"
+TRANSITION_ANALYSIS_VERSION = "0.5.0"
 
 
 def _safe_json(path: Path) -> dict[str, Any] | None:
@@ -1209,6 +1209,181 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
     return ListenSubscore(score=score, summary=summary, evidence=evidence, fixes=fixes, details=details)
 
 
+def _song_likeness_score(
+    song: SongDNA,
+    structure: ListenSubscore,
+    groove: ListenSubscore,
+    energy_arc: ListenSubscore,
+    transition: ListenSubscore,
+    coherence: ListenSubscore,
+    mix_sanity: ListenSubscore,
+) -> ListenSubscore:
+    evidence: list[str] = []
+    fixes: list[str] = []
+
+    section_count = len(song.structure.get("sections", []) or [])
+    section_labels = [str(section.get("label") or "").lower() for section in (song.structure.get("sections", []) or [])]
+    recognizable_sections = sum(
+        1
+        for label in section_labels
+        if any(token in label for token in {"intro", "verse", "build", "pre", "payoff", "chorus", "drop", "bridge", "outro"})
+    )
+    recognizable_ratio = recognizable_sections / max(section_count, 1)
+
+    manifest_details = _manifest_overlap_metrics(_load_neighbor_manifest(song)) if _load_neighbor_manifest(song) else None
+    manifest_metrics = (manifest_details or {}).get("aggregate_metrics", {})
+    identity = (manifest_details or {}).get("fusion_identity", {})
+    section_primary_counts = identity.get("section_primary_counts") or {"A": 0, "B": 0}
+
+    primary_sequence: list[str] = []
+    if manifest_details:
+        manifest_payload = _load_neighbor_manifest(song) or {}
+        for section in manifest_payload.get("sections") or []:
+            owner = section.get("source_parent") or section.get("foreground_owner")
+            if owner in {"A", "B"}:
+                primary_sequence.append(str(owner))
+
+    owner_switches = sum(1 for left, right in zip(primary_sequence, primary_sequence[1:]) if left != right)
+    owner_switch_ratio = owner_switches / max(len(primary_sequence) - 1, 1) if len(primary_sequence) >= 2 else 0.0
+    max_parent_share = max(section_primary_counts.values()) / max(sum(section_primary_counts.values()), 1)
+    backbone_continuity = _clamp01(
+        0.28 * _clamp01((structure.score - 55.0) / 30.0)
+        + 0.24 * _clamp01((groove.score - 55.0) / 30.0)
+        + 0.24 * _clamp01((coherence.score - 50.0) / 35.0)
+        + 0.14 * _clamp01((recognizable_ratio - 0.35) / 0.45)
+        + 0.10 * (1.0 - _clamp01((owner_switch_ratio - 0.42) / 0.45))
+    )
+
+    donor_clutter_rejection = _clamp01(
+        0.34 * _clamp01((mix_sanity.score - 45.0) / 35.0)
+        + 0.26 * _clamp01((transition.score - 45.0) / 35.0)
+        + 0.14 * (1.0 - min(float(manifest_metrics.get("avg_overlap_beats", 0.0)) / 4.0, 1.0))
+        + 0.14 * (1.0 - float(manifest_metrics.get("crowding_ratio", 0.0)))
+        + 0.12 * (1.0 - float(manifest_metrics.get("lead_conflict_ratio", 0.0)))
+    )
+
+    climax_conviction = _clamp01(
+        0.45 * _clamp01((energy_arc.score - 50.0) / 35.0)
+        + 0.25 * _clamp01((transition.score - 45.0) / 35.0)
+        + 0.15 * _clamp01((coherence.score - 50.0) / 35.0)
+        + 0.15 * _clamp01((groove.score - 55.0) / 30.0)
+    )
+
+    identity_penalty = 0.0
+    if manifest_details:
+        identity_penalty = (
+            0.28 * float(manifest_metrics.get("background_only_identity_gap", 0.0))
+            + 0.18 * float(manifest_metrics.get("collapse_ratio", 0.0))
+            + 0.18 * _clamp01(max_parent_share - 0.86)
+            + 0.20 * float(manifest_metrics.get("crowding_ratio", 0.0))
+            + 0.16 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
+        )
+
+    raw_norm = _clamp01(
+        0.42 * backbone_continuity
+        + 0.33 * donor_clutter_rejection
+        + 0.25 * climax_conviction
+        - identity_penalty
+    )
+    score = round(100.0 * raw_norm, 1)
+
+    evidence.append(
+        f"backbone continuity {backbone_continuity:.3f}; donor-clutter rejection {donor_clutter_rejection:.3f}; climax conviction {climax_conviction:.3f}; recognizable section ratio {recognizable_ratio:.3f}"
+    )
+    if manifest_details:
+        evidence.append(
+            f"section-owner backbone: counts {section_primary_counts}, switches {owner_switches}, switch ratio {owner_switch_ratio:.3f}, max parent share {max_parent_share:.3f}, background-only identity gap {float(manifest_metrics.get('background_only_identity_gap', 0.0)):.3f}"
+        )
+        evidence.append(
+            f"manifest anti-clutter: avg overlap beats {float(manifest_metrics.get('avg_overlap_beats', 0.0)):.2f}, crowding {float(manifest_metrics.get('crowding_ratio', 0.0)):.2f}, lead conflicts {float(manifest_metrics.get('lead_conflict_ratio', 0.0)):.2f}, seam risk {float(manifest_metrics.get('seam_risk_ratio', 0.0)):.2f}, collapse {float(manifest_metrics.get('collapse_ratio', 0.0)):.2f}"
+        )
+
+    if backbone_continuity < 0.52:
+        fixes.append("Strengthen whole-song backbone continuity; adjacent sections currently behave more like stitched donors than one child song.")
+    if donor_clutter_rejection < 0.52:
+        fixes.append("Reject cluttered donor carryover more aggressively; long overlaps and competing foreground material are making the child feel pasted together.")
+    if climax_conviction < 0.52:
+        fixes.append("Deliver a clearer musical backbone into the payoff; the current section program rises numerically but does not sell one convincing song arc.")
+    if recognizable_ratio < 0.45:
+        fixes.append("Use a more believable section program with recognizable intro/verse/build/payoff turns instead of generic undifferentiated blocks.")
+    if manifest_details and owner_switch_ratio > 0.65:
+        fixes.append("Too many section-owner flips are weakening continuity; keep a steadier backbone and reserve parent swaps for real structural turns.")
+    if manifest_details and float(manifest_metrics.get("background_only_identity_gap", 0.0)) > 0.20:
+        fixes.append("Do not count background-only donor presence as fusion identity; promote real section ownership or reject the render as fake two-parent glue.")
+    if manifest_details and float(manifest_metrics.get("avg_overlap_beats", 0.0)) > 3.0:
+        fixes.append("Reduce donor linger across section seams; current overlap length is high enough to blur the child-song backbone.")
+
+    if score >= 75:
+        summary = "Song-likeness is strong enough that the render reads like one coherent child song more than a stitched mashup."
+    elif score >= 60:
+        summary = "Song-likeness is partial: some backbone is there, but continuity or donor clutter still weakens the illusion of one song."
+    else:
+        summary = "Song-likeness is weak: the render is still reading more like stitched donor material than one coherent song."
+
+    return ListenSubscore(
+        score=score,
+        summary=summary,
+        evidence=evidence,
+        fixes=fixes,
+        details={
+            "aggregate_metrics": {
+                "backbone_continuity": round(backbone_continuity, 3),
+                "donor_clutter_rejection": round(donor_clutter_rejection, 3),
+                "climax_conviction": round(climax_conviction, 3),
+                "recognizable_section_ratio": round(recognizable_ratio, 3),
+                "owner_switch_ratio": round(owner_switch_ratio, 3),
+                "owner_switch_count": owner_switches,
+                "max_parent_share": round(max_parent_share, 3),
+                "background_only_identity_gap": round(float(manifest_metrics.get("background_only_identity_gap", 0.0)), 3),
+            },
+            "manifest_metrics": manifest_details,
+        },
+    )
+
+
+def _build_gating(
+    overall: float,
+    song_likeness: ListenSubscore,
+    groove: ListenSubscore,
+    transition: ListenSubscore,
+    coherence: ListenSubscore,
+    mix_sanity: ListenSubscore,
+) -> tuple[float, str, dict[str, Any]]:
+    hard_fail_reasons: list[str] = []
+    soft_fail_reasons: list[str] = []
+
+    if song_likeness.score < 45.0:
+        hard_fail_reasons.append("song-likeness is too weak")
+    if coherence.score < 42.0:
+        hard_fail_reasons.append("coherence is too weak")
+    if groove.score < 45.0:
+        soft_fail_reasons.append("groove grid is not stable enough")
+    if transition.score < 45.0:
+        soft_fail_reasons.append("transition seams are still too exposed")
+    if mix_sanity.score < 45.0:
+        soft_fail_reasons.append("mix/ownership clutter is still too high")
+    if song_likeness.details.get("aggregate_metrics", {}).get("background_only_identity_gap", 0.0) > 0.35:
+        soft_fail_reasons.append("minority-parent presence is mostly background-only")
+
+    gated_overall = overall
+    if hard_fail_reasons:
+        gated_overall = min(gated_overall, 49.0)
+        status = "reject"
+    elif soft_fail_reasons and (song_likeness.score < 60.0 or coherence.score < 55.0):
+        gated_overall = min(gated_overall, 59.0)
+        status = "review"
+    else:
+        status = "pass"
+
+    return round(gated_overall, 1), status, {
+        "status": status,
+        "hard_fail_reasons": hard_fail_reasons,
+        "soft_fail_reasons": soft_fail_reasons,
+        "song_likeness_floor_triggered": bool(song_likeness.score < 45.0),
+        "coherence_floor_triggered": bool(coherence.score < 42.0),
+    }
+
+
 def _verdict(score: float) -> str:
     if score >= 85:
         return "strong"
@@ -1228,18 +1403,22 @@ def evaluate_song(song: SongDNA) -> ListenReport:
     transition = _transition_score(song)
     coherence = _coherence_score(song)
     mix_sanity = _mix_sanity_score(song)
+    song_likeness = _song_likeness_score(song, structure, groove, energy_arc, transition, coherence, mix_sanity)
 
-    overall = round(
-        0.20 * structure.score
-        + 0.16 * groove.score
-        + 0.18 * energy_arc.score
-        + 0.14 * transition.score
-        + 0.16 * coherence.score
-        + 0.16 * mix_sanity.score,
+    raw_overall = round(
+        0.16 * structure.score
+        + 0.14 * groove.score
+        + 0.15 * energy_arc.score
+        + 0.12 * transition.score
+        + 0.14 * coherence.score
+        + 0.13 * mix_sanity.score
+        + 0.16 * song_likeness.score,
         1,
     )
+    overall, gate_status, gating = _build_gating(raw_overall, song_likeness, groove, transition, coherence, mix_sanity)
 
     reasons = [
+        f"Song-likeness: {song_likeness.summary}",
         f"Structure: {structure.summary}",
         f"Groove: {groove.summary}",
         f"Energy arc: {energy_arc.summary}",
@@ -1247,8 +1426,12 @@ def evaluate_song(song: SongDNA) -> ListenReport:
         f"Coherence: {coherence.summary}",
         f"Mix sanity: {mix_sanity.summary}",
     ]
+    if gate_status != "pass":
+        reasons.insert(0, f"Gate: {gate_status} — {'; '.join(gating['hard_fail_reasons'] + gating['soft_fail_reasons'])}")
+
+    prioritized_parts = [song_likeness, transition, mix_sanity, coherence, groove, energy_arc, structure]
     fixes = []
-    for part in [structure, groove, energy_arc, transition, coherence, mix_sanity]:
+    for part in prioritized_parts:
         fixes.extend(part.fixes)
     deduped_fixes = []
     for item in fixes:
@@ -1265,9 +1448,14 @@ def evaluate_song(song: SongDNA) -> ListenReport:
         transition=transition,
         coherence=coherence,
         mix_sanity=mix_sanity,
+        song_likeness=song_likeness,
         verdict=_verdict(overall),
         top_reasons=reasons,
-        top_fixes=deduped_fixes[:8],
+        top_fixes=deduped_fixes[:10],
+        gating={
+            **gating,
+            "raw_overall_score": raw_overall,
+        },
     )
     report.analysis_version = TRANSITION_ANALYSIS_VERSION
     return report

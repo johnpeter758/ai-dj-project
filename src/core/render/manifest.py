@@ -61,6 +61,10 @@ class ResolvedSection:
     foreground_owner: ParentId
     background_owner: ParentId | None
     low_end_owner: ParentId
+    backbone_owner: ParentId
+    donor_owner: ParentId | None
+    owner_mode: str
+    arrival_focus: str
     vocal_policy: str
     allowed_overlap: bool
     overlap_beats_max: float

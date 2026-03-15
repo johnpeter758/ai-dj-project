@@ -26,10 +26,12 @@ def _listen_report(case: BenchmarkCase) -> dict:
         'transition': {'score': case.component_scores['transition'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
         'coherence': {'score': case.component_scores['coherence'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
         'mix_sanity': {'score': case.component_scores['mix_sanity'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': case.component_scores.get('song_likeness', case.overall_score), 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
         'verdict': case.verdict,
         'top_reasons': [],
         'top_fixes': [],
-        'analysis_version': '0.3.0',
+        'gating': {'status': 'pass', 'raw_overall_score': case.overall_score},
+        'analysis_version': '0.5.0',
     }
 
 

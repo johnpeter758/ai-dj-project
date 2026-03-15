@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,8 @@ class _RoleFeatures:
     plateau_stability: float
     headroom: float
     ramp_consistency: float
+    groove_drive: float
+    groove_stability: float
     hook_strength: float
     payoff_strength: float
     energy_confidence: float
@@ -71,6 +74,15 @@ class _PlannerListenFeedback:
     transition_readiness: float
     coherence_confidence: float
     payoff_readiness: float
+
+
+@dataclass(frozen=True)
+class _BackbonePlan:
+    backbone_parent: str
+    donor_parent: str
+    backbone_score: float
+    donor_score: float
+    backbone_reasons: list[str]
 
 
 ROLE_ALIAS = {
@@ -255,13 +267,95 @@ def _build_section_program(song_a: SongDNA, song_b: SongDNA) -> list[_SectionSpe
     ]
 
     if capacity >= 7:
-        extended_support = max(_song_extended_program_support(song_a), _song_extended_program_support(song_b))
-        if extended_support >= 0.30:
+        support_a = _song_extended_program_support(song_a)
+        support_b = _song_extended_program_support(song_b)
+        extended_support = max(support_a, support_b)
+        shared_support = 0.5 * (support_a + support_b)
+        if extended_support >= 0.42 and shared_support >= 0.36:
             return extended
         return standard
     if capacity >= 5:
         return standard
     return compact
+
+
+def _choose_backbone_parent(song_a: SongDNA, song_b: SongDNA) -> _BackbonePlan:
+    feedback_a = _planner_listen_feedback(song_a)
+    feedback_b = _planner_listen_feedback(song_b)
+    support_a = _song_extended_program_support(song_a)
+    support_b = _song_extended_program_support(song_b)
+    capacity_a = _song_phrase_capacity(song_a)
+    capacity_b = _song_phrase_capacity(song_b)
+
+    mean_rms_a = float(song_a.energy.get('summary', {}).get('mean_bar_rms', song_a.energy.get('summary', {}).get('mean_rms', 0.0)))
+    mean_rms_b = float(song_b.energy.get('summary', {}).get('mean_bar_rms', song_b.energy.get('summary', {}).get('mean_rms', 0.0)))
+    score_a = (
+        0.32 * feedback_a.groove_confidence
+        + 0.25 * feedback_a.coherence_confidence
+        + 0.17 * feedback_a.transition_readiness
+        + 0.14 * support_a
+        + 0.07 * min(1.0, capacity_a / 8.0)
+        + 0.05 * mean_rms_a
+    )
+    score_b = (
+        0.32 * feedback_b.groove_confidence
+        + 0.25 * feedback_b.coherence_confidence
+        + 0.17 * feedback_b.transition_readiness
+        + 0.14 * support_b
+        + 0.07 * min(1.0, capacity_b / 8.0)
+        + 0.05 * mean_rms_b
+    )
+
+    if abs(score_a - score_b) <= 0.01:
+        backbone_parent = 'A' if mean_rms_a >= mean_rms_b else 'B'
+    else:
+        backbone_parent = 'A' if score_a >= score_b else 'B'
+    donor_parent = 'B' if backbone_parent == 'A' else 'A'
+    chosen_feedback = feedback_a if backbone_parent == 'A' else feedback_b
+    chosen_support = support_a if backbone_parent == 'A' else support_b
+    chosen_capacity = capacity_a if backbone_parent == 'A' else capacity_b
+    chosen_score = score_a if backbone_parent == 'A' else score_b
+    other_score = score_b if backbone_parent == 'A' else score_a
+
+    reasons = [
+        f"higher backbone score ({chosen_score:.3f} vs {other_score:.3f})",
+        f"groove={chosen_feedback.groove_confidence:.3f}",
+        f"coherence={chosen_feedback.coherence_confidence:.3f}",
+        f"transition_readiness={chosen_feedback.transition_readiness:.3f}",
+        f"extended_support={chosen_support:.3f}",
+        f"phrase_capacity={chosen_capacity}",
+    ]
+    return _BackbonePlan(
+        backbone_parent=backbone_parent,
+        donor_parent=donor_parent,
+        backbone_score=chosen_score,
+        donor_score=other_score,
+        backbone_reasons=reasons,
+    )
+
+
+def _program_with_backbone(section_specs: list[_SectionSpec], backbone_parent: str, donor_parent: str) -> list[_SectionSpec]:
+    backbone_labels = {'intro', 'verse', 'bridge', 'outro'}
+    donor_labels = {'build'}
+    rewritten: list[_SectionSpec] = []
+    for spec in section_specs:
+        preference = spec.source_parent_preference
+        if spec.label in backbone_labels:
+            preference = backbone_parent
+        elif spec.label in donor_labels:
+            preference = donor_parent
+        rewritten.append(
+            _SectionSpec(
+                label=spec.label,
+                start_bar=spec.start_bar,
+                bar_count=spec.bar_count,
+                target_energy=spec.target_energy,
+                source_parent_preference=preference,
+                transition_in=spec.transition_in,
+                transition_out=spec.transition_out,
+            )
+        )
+    return rewritten
 
 
 def _safe_float_list(values) -> list[float]:
@@ -474,9 +568,15 @@ def _score_slope_flat(value: float) -> float:
     return max(0.0, 1.0 - abs(value))
 
 
-def _window_profile(song: SongDNA, start: float, end: float, bins: int = 4) -> list[float]:
+def _window_profile(song: SongDNA, start: float, end: float, bins: int = 4, *, value_keys: tuple[str, ...] | None = None) -> list[float]:
+    if value_keys is None:
+        value_keys = ('bar_rms', 'beat_rms')
     times = _safe_float_list(song.energy.get('bar_times', [])) or _safe_float_list(song.energy.get('beat_times', []))
-    values = _safe_float_list(song.energy.get('bar_rms', [])) or _safe_float_list(song.energy.get('beat_rms', []))
+    values = []
+    for key in value_keys:
+        values = _safe_float_list(song.energy.get(key, []))
+        if values:
+            break
     window = [(t, e) for t, e in zip(times, values) if start <= t < end]
     if not window:
         mean_energy = _window_energy(song, start, end)
@@ -514,6 +614,7 @@ def _signal_overlap_strength(song: SongDNA, candidate: _SectionCandidate, signal
 def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate], candidate: _SectionCandidate) -> _RoleFeatures:
     phrase_lengths = []
     profiles = {}
+    onset_profiles = {}
     energies = [c.energy for c in candidates]
     min_energy = min(energies) if energies else 0.0
     max_energy = max(energies) if energies else 0.0
@@ -526,11 +627,13 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
         phrase_lengths.append(max(1, end_idx - start_idx))
         slopes.append(_window_energy_slope(song, item.start, item.end))
         profiles[item.label] = _window_profile(song, item.start, item.end)
+        onset_profiles[item.label] = _window_profile(song, item.start, item.end, value_keys=('onset_density', 'onset_strength'))
 
     slope_span = max(max(slopes) - min(slopes), 1e-6) if slopes else 1e-6
     candidate_indices = _candidate_phrase_indices(candidate.label)
     start_idx, end_idx = candidate_indices if candidate_indices is not None else (0, 1)
     candidate_profile = profiles[candidate.label]
+    candidate_onset_profile = onset_profiles[candidate.label]
 
     similarity_scores: list[float] = []
     for other in candidates:
@@ -575,6 +678,20 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
     else:
         ramp_consistency = 0.5
 
+    onset_series_present = bool(_safe_float_list(song.energy.get('onset_density', [])) or _safe_float_list(song.energy.get('onset_strength', [])))
+    if onset_series_present:
+        onset_values = [value for profile in onset_profiles.values() for value in profile]
+        onset_min = min(onset_values) if onset_values else 0.0
+        onset_max = max(onset_values) if onset_values else 1.0
+        onset_span = max(onset_max - onset_min, 1e-6)
+        onset_mean = sum(candidate_onset_profile) / max(len(candidate_onset_profile), 1)
+        groove_drive = _clamp01((onset_mean - onset_min) / onset_span)
+        onset_steps = [abs(candidate_onset_profile[idx + 1] - candidate_onset_profile[idx]) for idx in range(len(candidate_onset_profile) - 1)]
+        groove_stability = _clamp01(1.0 - ((sum(onset_steps) / max(len(onset_steps), 1)) / onset_span)) if onset_steps else 0.5
+    else:
+        groove_drive = 0.5
+        groove_stability = 0.5
+
     return _RoleFeatures(
         start_idx=start_idx,
         end_idx=end_idx,
@@ -593,6 +710,8 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
         plateau_stability=plateau_stability,
         headroom=headroom,
         ramp_consistency=ramp_consistency,
+        groove_drive=groove_drive,
+        groove_stability=groove_stability,
         hook_strength=_signal_overlap_strength(song, candidate, 'hook_windows'),
         payoff_strength=_signal_overlap_strength(song, candidate, 'payoff_windows'),
         energy_confidence=float((song.energy.get('derived', {}) or {}).get('energy_confidence', 0.0)),
@@ -629,18 +748,25 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
         score += 0.85 * features.end_focus
         score += 0.55 * features.lift_strength
         score += 0.75 * features.plateau_stability
+        score += 0.22 * features.groove_drive
+        score += 0.16 * features.groove_stability
     elif canonical_role == 'pre':
         score += 0.35 * features.payoff_strength * signal_confidence
         score += 0.90 * features.lift_strength
         score += 0.45 * features.headroom
         score += 0.55 * features.ramp_consistency
+        score += 0.30 * features.groove_drive
+        score += 0.18 * features.groove_stability
         score += 0.10 * features.end_focus
         score -= 0.55 * (features.plateau_stability * features.end_focus)
         score -= 0.25 * max(0.0, features.end_focus - features.ramp_consistency)
     elif canonical_role == 'verse':
         score += 0.45 * features.hook_strength * signal_confidence
+        score += 0.28 * features.groove_stability
+        score += 0.18 * features.groove_drive
     elif canonical_role == 'bridge':
         score += 0.20 * features.hook_strength * signal_confidence
+        score += 0.15 * features.groove_stability
     elif canonical_role == 'intro':
         score -= 0.15 * features.payoff_strength * signal_confidence
 
@@ -963,12 +1089,13 @@ def _energy_arc_viability(previous: _WindowSelection | None, candidate: _Section
     return max(0.0, min(1.0, (0.38 * delta_fit) + (0.30 * target_fit) + (0.16 * floor_fit) + (0.16 * reset_fit)))
 
 
-def _target_duration_seconds(song: SongDNA, bar_count: int, beats_per_bar: int = 4) -> float:
-    return float(bar_count) * float(beats_per_bar) * 60.0 / max(float(song.tempo_bpm), 1e-6)
+def _target_duration_seconds(song: SongDNA, bar_count: int, beats_per_bar: int = 4, *, reference_tempo_bpm: float | None = None) -> float:
+    tempo_bpm = float(reference_tempo_bpm if reference_tempo_bpm is not None else song.tempo_bpm)
+    return float(bar_count) * float(beats_per_bar) * 60.0 / max(tempo_bpm, 1e-6)
 
 
-def _stretch_profile(song: SongDNA, candidate: _SectionCandidate, bar_count: int) -> tuple[float, float, float]:
-    target_duration = _target_duration_seconds(song, bar_count)
+def _stretch_profile(song: SongDNA, candidate: _SectionCandidate, bar_count: int, *, reference_tempo_bpm: float | None = None) -> tuple[float, float, float]:
+    target_duration = _target_duration_seconds(song, bar_count, reference_tempo_bpm=reference_tempo_bpm)
     source_duration = max(candidate.duration, 1e-6)
     stretch_ratio = source_duration / max(target_duration, 1e-6)
     absolute_mismatch = abs(1.0 - stretch_ratio)
@@ -1153,6 +1280,7 @@ def _selection_fusion_balance_penalty(
             'second_parent_presence_gap': 0.0,
             'weighted_identity_presence_gap': 0.0,
             'late_major_handoff_gap': 0.0,
+            'single_cameo_rebound_gap': 0.0,
         }
 
     same_parent_count = sum(1 for selection in prior_selections if selection.parent_id == parent_id)
@@ -1258,6 +1386,28 @@ def _selection_fusion_balance_penalty(
             if source_parent_preference is not None and parent_id != source_parent_preference:
                 late_major_handoff_gap = min(1.0, late_major_handoff_gap + 0.10)
 
+    single_cameo_rebound_gap = 0.0
+    if current_is_major and len(prior_selections) >= 4:
+        prior_parent_counts = Counter(selection.parent_id for selection in prior_selections)
+        majority_parent, majority_count = max(prior_parent_counts.items(), key=lambda item: item[1])
+        minority_parent, minority_count = min(prior_parent_counts.items(), key=lambda item: item[1])
+        previous_selection = prior_selections[-1]
+        if (
+            len(prior_parent_counts) == 2
+            and majority_count >= 3
+            and minority_count == 1
+            and previous_selection.parent_id == minority_parent
+            and parent_id == majority_parent
+        ):
+            single_cameo_rebound_gap = 0.70
+            if previous_selection.section_label in major_labels:
+                single_cameo_rebound_gap += 0.12
+            if current_section_label in late_major_labels:
+                single_cameo_rebound_gap += 0.08
+            if source_parent_preference is not None and parent_id != source_parent_preference:
+                single_cameo_rebound_gap += 0.10
+            single_cameo_rebound_gap = min(1.0, single_cameo_rebound_gap)
+
     penalty = min(
         1.0,
         (0.45 * share_imbalance)
@@ -1267,7 +1417,8 @@ def _selection_fusion_balance_penalty(
         + (0.55 * major_identity_gap)
         + (0.60 * second_parent_presence_gap)
         + (0.95 * weighted_identity_presence_gap)
-        + (0.75 * late_major_handoff_gap),
+        + (0.75 * late_major_handoff_gap)
+        + (0.80 * single_cameo_rebound_gap),
     )
     return penalty, {
         'parent_share_imbalance': share_imbalance,
@@ -1278,6 +1429,7 @@ def _selection_fusion_balance_penalty(
         'second_parent_presence_gap': second_parent_presence_gap,
         'weighted_identity_presence_gap': weighted_identity_presence_gap,
         'late_major_handoff_gap': late_major_handoff_gap,
+        'single_cameo_rebound_gap': single_cameo_rebound_gap,
     }
 
 
@@ -1425,12 +1577,125 @@ def _selection_groove_continuity_penalty(
     }
 
 
+def _selection_phrase_groove_penalty(spec: _SectionSpec, features: _RoleFeatures) -> tuple[float, dict[str, float]]:
+    if spec.label not in {'verse', 'build', 'payoff', 'bridge'}:
+        return 0.0, {
+            'groove_drive_gap': 0.0,
+            'groove_stability_gap': 0.0,
+        }
+
+    drive_floor = {
+        'verse': 0.42,
+        'build': 0.52,
+        'payoff': 0.50,
+        'bridge': 0.36,
+    }[spec.label]
+    stability_floor = {
+        'verse': 0.52,
+        'build': 0.44,
+        'payoff': 0.42,
+        'bridge': 0.46,
+    }[spec.label]
+    groove_drive_gap = max(0.0, drive_floor - features.groove_drive)
+    groove_stability_gap = max(0.0, stability_floor - features.groove_stability)
+    penalty = min(1.0, (0.75 * groove_drive_gap) + (0.55 * groove_stability_gap))
+    return penalty, {
+        'groove_drive_gap': groove_drive_gap,
+        'groove_stability_gap': groove_stability_gap,
+    }
+
+
+def _backbone_selection_guard_reason(
+    spec: _SectionSpec,
+    parent_id: str,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+    donor_parent: str | None,
+) -> str | None:
+    if backbone_parent is None or donor_parent is None:
+        return None
+
+    structural_labels = {'verse', 'bridge', 'outro'}
+    if spec.label in structural_labels and parent_id != backbone_parent:
+        return 'structural_backbone_only'
+    if spec.label == 'build' and parent_id != donor_parent:
+        return 'build_donor_only'
+
+    if parent_id != donor_parent:
+        return None
+
+    prior_parents = [selection.parent_id for selection in prior_selections]
+    if donor_parent not in prior_parents:
+        return None
+
+    last_donor_idx = max(idx for idx, prior_parent in enumerate(prior_parents) if prior_parent == donor_parent)
+    if backbone_parent in prior_parents[last_donor_idx + 1:]:
+        return 'donor_reentry_after_backbone'
+    return None
+
+
+
+def _selection_backbone_continuity_penalty(
+    spec: _SectionSpec,
+    parent_id: str,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+    donor_parent: str | None,
+) -> tuple[float, dict[str, float]]:
+    if backbone_parent is None or donor_parent is None:
+        return 0.0, {
+            'off_program_structural_handoff': 0.0,
+            'donor_overreach': 0.0,
+            'donor_reentry_after_backbone': 0.0,
+        }
+
+    structural_labels = {'verse', 'bridge', 'outro'}
+    donor_feature_labels = {'build', 'payoff'}
+    off_program_structural_handoff = 0.0
+    donor_overreach = 0.0
+    donor_reentry_after_backbone = 0.0
+
+    if spec.label in structural_labels and parent_id != backbone_parent:
+        off_program_structural_handoff = 1.0
+    elif spec.label == 'build' and parent_id != donor_parent:
+        off_program_structural_handoff = 0.85
+
+    if parent_id == donor_parent and spec.label in donor_feature_labels:
+        donor_count = sum(1 for selection in prior_selections if selection.parent_id == donor_parent)
+        donor_major_count = sum(1 for selection in prior_selections if selection.parent_id == donor_parent and selection.section_label in donor_feature_labels)
+        if donor_count >= 2:
+            donor_overreach += min(1.0, 0.30 + (0.18 * (donor_count - 2)))
+        if donor_major_count >= 2 and spec.label == 'payoff':
+            donor_overreach += min(1.0, 0.35 + (0.20 * (donor_major_count - 2)))
+
+        prior_parents = [selection.parent_id for selection in prior_selections]
+        if donor_parent in prior_parents:
+            last_donor_idx = max(idx for idx, prior_parent in enumerate(prior_parents) if prior_parent == donor_parent)
+            backbone_reclaimed_after_donor = backbone_parent in prior_parents[last_donor_idx + 1:]
+            if backbone_reclaimed_after_donor:
+                donor_reentry_after_backbone = 1.0 if spec.label == 'payoff' else 0.85
+
+    penalty = min(
+        1.0,
+        (0.90 * off_program_structural_handoff)
+        + (0.70 * donor_overreach)
+        + (0.95 * donor_reentry_after_backbone),
+    )
+    return penalty, {
+        'off_program_structural_handoff': off_program_structural_handoff,
+        'donor_overreach': min(1.0, donor_overreach),
+        'donor_reentry_after_backbone': donor_reentry_after_backbone,
+    }
+
+
 def _enumerate_section_choices(
     spec: _SectionSpec,
     song_a: SongDNA,
     song_b: SongDNA,
     previous: _WindowSelection | None,
     prior_selections: list[_WindowSelection] | None = None,
+    backbone_parent: str | None = None,
+    donor_parent: str | None = None,
 ) -> list[_WindowSelection]:
     target_position = SECTION_TARGET_POSITION.get(spec.label, spec.label)
     prior_selections = list(prior_selections or [])
@@ -1438,6 +1703,7 @@ def _enumerate_section_choices(
         'A': (song_a, song_b),
         'B': (song_b, song_a),
     }
+    song_map = {'A': song_a, 'B': song_b}
 
     selections: list[_WindowSelection] = []
     for parent_id, (song, other_song) in by_parent.items():
@@ -1460,6 +1726,20 @@ def _enumerate_section_choices(
             )
             for candidate in candidates
         }
+
+        guard_reason = _backbone_selection_guard_reason(
+            spec,
+            parent_id,
+            prior_selections,
+            backbone_parent,
+            donor_parent,
+        )
+        if guard_reason is not None and any(
+            _backbone_selection_guard_reason(spec, alternate_parent_id, prior_selections, backbone_parent, donor_parent) is None
+            for alternate_parent_id in by_parent
+            if alternate_parent_id != parent_id
+        ):
+            continue
 
         for candidate in candidates:
             position_error = abs((candidate.midpoint / total) - anchor_ratio)
@@ -1484,7 +1764,23 @@ def _enumerate_section_choices(
                 alternate_feedback,
                 spec.transition_in,
             )
-            stretch_ratio, _, stretch_penalty = _stretch_profile(song, candidate, spec.bar_count)
+            phrase_groove_penalty, phrase_groove_metrics = _selection_phrase_groove_penalty(
+                spec,
+                features_map[candidate.label],
+            )
+            backbone_continuity_penalty, backbone_continuity_metrics = _selection_backbone_continuity_penalty(
+                spec,
+                parent_id,
+                prior_selections,
+                backbone_parent,
+                donor_parent,
+            )
+            stretch_ratio, target_duration_seconds, stretch_penalty = _stretch_profile(
+                song,
+                candidate,
+                spec.bar_count,
+                reference_tempo_bpm=song_map[backbone_parent].tempo_bpm if backbone_parent in song_map else None,
+            )
             stretch_gate = 0.0
             if stretch_ratio > _CONSERVATIVE_STRETCH_MAX:
                 stretch_gate = _clamp01((stretch_ratio - _CONSERVATIVE_STRETCH_MAX) / max(1e-6, _HARD_STRETCH_MAX - _CONSERVATIVE_STRETCH_MAX))
@@ -1585,6 +1881,8 @@ def _enumerate_section_choices(
                 + (1.10 * reuse_penalty)
                 + (0.85 * fusion_balance_penalty)
                 + (0.90 * groove_continuity_penalty)
+                + (0.85 * phrase_groove_penalty)
+                + (1.10 * backbone_continuity_penalty)
                 + (0.35 * preference_error)
             )
             selections.append(
@@ -1603,6 +1901,7 @@ def _enumerate_section_choices(
                         'transition_viability': transition_error,
                         'transition_impact': transition_impact_error,
                         'energy_arc': arc_error,
+                        'target_duration_seconds': target_duration_seconds,
                         'stretch_ratio': stretch_ratio,
                         'stretch_penalty': stretch_penalty,
                         'stretch_gate': stretch_gate,
@@ -1638,12 +1937,20 @@ def _enumerate_section_choices(
                         'fusion_second_parent_presence_gap': fusion_balance_metrics['second_parent_presence_gap'],
                         'fusion_weighted_identity_presence_gap': fusion_balance_metrics['weighted_identity_presence_gap'],
                         'fusion_late_major_handoff_gap': fusion_balance_metrics['late_major_handoff_gap'],
+                        'fusion_single_cameo_rebound_gap': fusion_balance_metrics['single_cameo_rebound_gap'],
                         'groove_continuity': groove_continuity_penalty,
                         'groove_same_parent_streak': groove_continuity_metrics['same_parent_streak'],
                         'groove_alternate_groove_edge': groove_continuity_metrics['alternate_groove_edge'],
                         'groove_alternate_transition_edge': groove_continuity_metrics['alternate_transition_edge'],
                         'groove_coherence_gap': groove_continuity_metrics['coherence_gap'],
                         'groove_transition_weight': groove_continuity_metrics['transition_weight'],
+                        'phrase_groove': phrase_groove_penalty,
+                        'phrase_groove_drive_gap': phrase_groove_metrics['groove_drive_gap'],
+                        'phrase_groove_stability_gap': phrase_groove_metrics['groove_stability_gap'],
+                        'backbone_continuity': backbone_continuity_penalty,
+                        'backbone_off_program_structural_handoff': backbone_continuity_metrics['off_program_structural_handoff'],
+                        'backbone_donor_overreach': backbone_continuity_metrics['donor_overreach'],
+                        'backbone_donor_reentry_after_backbone': backbone_continuity_metrics['donor_reentry_after_backbone'],
                         'parent_preference': preference_error,
                         'seam_energy_jump': seam_metrics['energy_jump'],
                         'seam_spectral_jump': seam_metrics['spectral_jump'],
@@ -1847,7 +2154,12 @@ def _apply_section_level_authenticity_guard(
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrangementPlan:
     report = build_compatibility_report(song_a, song_b)
 
-    section_specs = _build_section_program(song_a, song_b)
+    backbone_plan = _choose_backbone_parent(song_a, song_b)
+    section_specs = _program_with_backbone(
+        _build_section_program(song_a, song_b),
+        backbone_plan.backbone_parent,
+        backbone_plan.donor_parent,
+    )
     parent_feedback = {
         'A': _planner_listen_feedback(song_a),
         'B': _planner_listen_feedback(song_b),
@@ -1860,7 +2172,15 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     ranked_choices: list[list[_WindowSelection]] = []
     song_map = {'A': song_a, 'B': song_b}
     for spec in section_specs:
-        ranked = _enumerate_section_choices(spec, song_a, song_b, previous, prior_selections=selection_history)
+        ranked = _enumerate_section_choices(
+            spec,
+            song_a,
+            song_b,
+            previous,
+            prior_selections=selection_history,
+            backbone_parent=backbone_plan.backbone_parent,
+            donor_parent=backbone_plan.donor_parent,
+        )
         chosen, balance_guard_note = _choose_with_major_section_balance_guard(spec, ranked, selection_history)
         ranked_choices.append(ranked)
         chosen_selections.append(chosen)
@@ -1882,6 +2202,9 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     for spec, chosen in zip(section_specs, chosen_selections):
         candidate = chosen.candidate
         transition_mode = _infer_transition_mode(spec, chosen, previous, previous.section_label if previous else None)
+        continuity_treatment = None
+        if transition_mode == 'same_parent_flow' and chosen.parent_id == backbone_plan.backbone_parent and spec.label in {'verse', 'bridge', 'outro'}:
+            continuity_treatment = 'backbone_flow'
         sections.append(
             PlannedSection(
                 label=spec.label,
@@ -1905,12 +2228,17 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 'label': spec.label,
                 'target_energy': round(spec.target_energy, 3),
                 'selected_parent': chosen.parent_id,
+                'selected_role': 'backbone' if chosen.parent_id == backbone_plan.backbone_parent else 'donor',
                 'selected_window_label': candidate.label,
                 'selected_window_origin': candidate.origin,
                 'selected_window_seconds': {'start': round(candidate.start, 3), 'end': round(candidate.end, 3)},
+                'backbone_tempo_bpm': round(song_map[backbone_plan.backbone_parent].tempo_bpm, 3),
+                'candidate_tempo_bpm': round(chosen.song.tempo_bpm, 3),
+                'target_section_seconds': round(chosen.score_breakdown['target_duration_seconds'], 3),
                 'transition_in': spec.transition_in,
                 'transition_out': spec.transition_out,
                 'transition_mode': transition_mode,
+                'continuity_treatment': continuity_treatment,
                 'planner_error': round(chosen.blended_error, 3),
                 'evaluator_alignment': {
                     'listen_feedback_penalty': round(chosen.score_breakdown['listen_feedback'], 3),
@@ -1927,8 +2255,20 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         previous = chosen
 
     program_signature = ' -> '.join(f"{spec.label}({spec.bar_count})" for spec in section_specs)
+    backbone_usage_counts = Counter(selection.parent_id for selection in chosen_selections)
     diagnostics = {
         'planner_evaluator_bridge': 'listen-aligned planner diagnostics',
+        'backbone_plan': {
+            'backbone_parent': backbone_plan.backbone_parent,
+            'donor_parent': backbone_plan.donor_parent,
+            'backbone_score': round(backbone_plan.backbone_score, 3),
+            'donor_score': round(backbone_plan.donor_score, 3),
+            'selection_reasons': backbone_plan.backbone_reasons,
+            'section_usage': {
+                backbone_plan.backbone_parent: backbone_usage_counts.get(backbone_plan.backbone_parent, 0),
+                backbone_plan.donor_parent: backbone_usage_counts.get(backbone_plan.donor_parent, 0),
+            },
+        },
         'parent_listen_feedback': {
             parent_id: {
                 'source_path': song_map[parent_id].source_path,
@@ -1943,12 +2283,17 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         'selected_sections': selection_diagnostics,
     }
     notes = [
+        'Planner now uses an explicit backbone-first child-song architecture: one parent carries macro continuity while the other is inserted selectively as donor material.',
+        'Extended bridge/re-payoff forms are now gated by shared reset/relaunch evidence across the pair so one parent’s local late-song shape does not force a fake second climax onto the child program.',
+        f"Backbone parent: {backbone_plan.backbone_parent}; donor parent: {backbone_plan.donor_parent}; reasons: {', '.join(backbone_plan.backbone_reasons)}.",
         'Planner now ranks explicit phrase windows section-by-section across both parents instead of relying on coarse early/mid/late anchor picking.',
         f'Section program is now capacity-aware instead of fixed: {program_signature}.',
-        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, explicit build-to-payoff contrast scoring, evaluator-style seam-risk priors, planner-facing listen feedback (groove/arc/transition/payoff readiness), history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
+        'Ranking factors are boundary confidence, role prior, target-energy fit, cross-parent compatibility, transition viability, explicit build-to-payoff contrast scoring, evaluator-style seam-risk priors, planner-facing listen feedback (groove/arc/transition/payoff readiness), backbone-continuity pressure, history-aware source-window reuse penalties, and derived hook/payoff confidence signals from canonical bar features.',
         'Sequential selection now discourages replaying the exact same source window or heavily overlapping window later in the child timeline unless the musical fit is clearly stronger.',
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Arrangement artifacts now expose listen-aligned planning_diagnostics so evaluator-facing groove/arc/transition signals are inspectable without parsing note strings.',
+        'Stretch and bar-grid fit are now evaluated against the backbone parent tempo so donor phrases are judged on the child-song grid instead of each source parent silently keeping its own clock.',
+        'For same-parent backbone continuity, diagnostics now flag backbone_flow candidates even though render still uses same_parent_flow until a dedicated low-overlap backbone treatment is wired end-to-end.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',
         *selection_notes,
     ]

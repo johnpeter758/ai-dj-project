@@ -27,9 +27,11 @@ class ListenReport:
     transition: ListenSubscore
     coherence: ListenSubscore
     mix_sanity: ListenSubscore
+    song_likeness: ListenSubscore
     verdict: str
     top_reasons: list[str] = field(default_factory=list)
     top_fixes: list[str] = field(default_factory=list)
+    gating: dict[str, Any] = field(default_factory=dict)
     analysis_version: str = "0.2.0"
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,8 +45,10 @@ class ListenReport:
             "transition": self.transition.to_dict(),
             "coherence": self.coherence.to_dict(),
             "mix_sanity": self.mix_sanity.to_dict(),
+            "song_likeness": self.song_likeness.to_dict(),
             "verdict": self.verdict,
             "top_reasons": self.top_reasons,
             "top_fixes": self.top_fixes,
+            "gating": self.gating,
             "analysis_version": self.analysis_version,
         }

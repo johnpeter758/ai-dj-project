@@ -69,9 +69,12 @@ def _transition_filter_profile(
         outgoing_highpass_start, outgoing_highpass_end = 55.0, 220.0
 
     if transition_mode == "same_parent_flow":
-        incoming_start *= 0.6
-        outgoing_lowpass_end = min(12000.0, max(outgoing_lowpass_end, 8500.0))
-        outgoing_highpass_end = max(outgoing_highpass_end, 150.0)
+        incoming_start *= 0.18
+        incoming_end = min(incoming_end, 20.0)
+        outgoing_lowpass_start = 20000.0
+        outgoing_lowpass_end = 20000.0
+        outgoing_highpass_start *= 0.35
+        outgoing_highpass_end = min(max(outgoing_highpass_end * 0.35, 45.0), 85.0)
     elif transition_mode in {"arrival_handoff", "single_owner_handoff"}:
         incoming_start *= 1.15
         outgoing_lowpass_end *= 0.6
@@ -286,19 +289,27 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
     highpass_hz = 0.0
     bandstop_low_hz = 0.0
     bandstop_high_hz = 0.0
+    recover_curve_exp = 1.0
 
-    if section.background_owner is not None and section.background_owner != section.foreground_owner:
-        cleanup_gain_db = -1.5
-        highpass_hz = 145.0
-        bandstop_low_hz, bandstop_high_hz = 220.0, 4200.0
+    if section.owner_mode == 'backbone_plus_donor_support' and section.background_owner is not None and section.background_owner != section.foreground_owner:
+        cleanup_gain_db = -2.75
+        highpass_hz = 175.0
+        bandstop_low_hz, bandstop_high_hz = 280.0, 5200.0
+        recover_curve_exp = 2.1
     elif section.transition_mode in {"arrival_handoff", "single_owner_handoff"}:
-        cleanup_gain_db = -1.0
-        highpass_hz = 150.0
-        bandstop_low_hz, bandstop_high_hz = 240.0, 4600.0
+        cleanup_gain_db = -1.5
+        highpass_hz = 165.0
+        bandstop_low_hz, bandstop_high_hz = 300.0, 5000.0
+        recover_curve_exp = 1.6
+    elif section.transition_mode == "same_parent_flow":
+        cleanup_gain_db = -0.2
+        highpass_hz = 70.0
+        recover_curve_exp = 1.05
     elif section.allowed_overlap:
         cleanup_gain_db = -0.75
         highpass_hz = 125.0
         bandstop_low_hz, bandstop_high_hz = 260.0, 3200.0
+        recover_curve_exp = 1.2
 
     if cleanup_gain_db != 0.0 or highpass_hz > 0.0 or bandstop_high_hz > bandstop_low_hz:
         cleaned = intro
@@ -309,7 +320,8 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
         if bandstop_high_hz > bandstop_low_hz:
             cleaned = _bandstop(cleaned, sr, bandstop_low_hz, bandstop_high_hz)
 
-        recover = np.linspace(0.0, 1.0, overlap_samples, endpoint=True, dtype=np.float32)[np.newaxis, :]
+        recover = np.linspace(0.0, 1.0, overlap_samples, endpoint=True, dtype=np.float32)
+        recover = np.power(recover, np.float32(recover_curve_exp))[np.newaxis, :]
         intro = cleaned * (1.0 - recover) + intro * recover
 
     out[:, :overlap_samples] = intro.astype(np.float32)

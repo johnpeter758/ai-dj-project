@@ -116,6 +116,39 @@ def test_resolve_render_plan_target_timing_contract(tmp_path: Path):
     assert starts == sorted(starts)
     assert all(duration > 0 for duration in durations)
     assert manifest.sections[-1].target.end_sec == max(section.target.end_sec for section in manifest.sections)
+    assert all(section.target.anchor_bpm == pytest.approx(manifest.target_bpm) for section in manifest.sections)
+
+
+
+def test_resolve_render_plan_uses_common_target_bpm_across_mixed_parent_sections(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 90.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 90.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='intro', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='verse', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2'),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.target_bpm == pytest.approx(120.0)
+    assert manifest.sections[0].target.duration_sec == pytest.approx(8.0)
+    assert manifest.sections[1].target.start_sec == pytest.approx(8.0)
+    assert manifest.sections[1].target.duration_sec == pytest.approx(8.0)
+    assert manifest.sections[1].target.anchor_bpm == pytest.approx(120.0)
+    assert manifest.work_orders[1].target_start_sec == pytest.approx(8.0)
+    assert manifest.work_orders[1].target_duration_sec == pytest.approx(8.0)
 
 
 def test_build_stub_arrangement_plan_prefers_phrase_labels_over_missing_section_fallback(tmp_path: Path):
@@ -373,7 +406,7 @@ def test_resolve_render_plan_applies_transition_aware_incoming_gain(tmp_path: Pa
 
 
 
-def test_resolve_render_plan_only_marks_background_owner_for_cross_parent_handoffs(tmp_path: Path):
+def test_resolve_render_plan_defaults_cross_parent_handoffs_to_backbone_only(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'
     sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
@@ -398,9 +431,15 @@ def test_resolve_render_plan_only_marks_background_owner_for_cross_parent_handof
 
     assert manifest.sections[1].allowed_overlap is True
     assert manifest.sections[1].background_owner is None
+    assert manifest.sections[1].owner_mode == 'backbone_only'
+    assert manifest.sections[1].arrival_focus == 'backbone_led'
     assert manifest.sections[2].allowed_overlap is True
-    assert manifest.sections[2].background_owner == 'A'
+    assert manifest.sections[2].background_owner is None
+    assert manifest.sections[2].owner_mode == 'backbone_only'
+    assert manifest.sections[2].arrival_focus == 'backbone_led'
     assert manifest.sections[2].transition_mode is None
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[2].warnings)
+    assert 'cross-parent overlap defaulted to backbone-only ownership' in joined
 
 
 def test_resolve_render_plan_caps_overlap_for_overstretched_transition(tmp_path: Path):
@@ -419,9 +458,43 @@ def test_resolve_render_plan_caps_overlap_for_overstretched_transition(tmp_path:
     assert manifest.sections[0].stretch_ratio > 1.25
     assert manifest.sections[0].allowed_overlap is True
     assert manifest.sections[0].overlap_beats_max == 2.0
-    assert manifest.work_orders[0].fade_in_sec == transition_overlap_seconds('blend', 128.0, stretch_ratio=manifest.sections[0].stretch_ratio)
+    assert manifest.work_orders[0].fade_in_sec == transition_overlap_seconds('blend', manifest.target_bpm, stretch_ratio=manifest.sections[0].stretch_ratio)
     joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
     assert 'transition overlap capped to 2.0 beats' in joined
+
+
+def test_resolve_render_plan_allows_explicit_crossfade_support_and_marks_donor_led_arrival(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='verse', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='build', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend', transition_mode='crossfade_support'),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[1].background_owner == 'A'
+    assert manifest.sections[1].owner_mode == 'backbone_plus_donor_support'
+    assert manifest.sections[1].arrival_focus == 'donor_led'
+    assert manifest.sections[1].backbone_owner == 'B'
+    assert manifest.sections[1].donor_owner == 'A'
+    assert manifest.sections[1].overlap_beats_max == 2.0
+    assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend', 'crossfade_support') - 0.75)
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
+    assert 'transition_mode=crossfade_support capped overlap from 8.0 to 2.0 beats' in joined
+
 
 
 def test_resolve_render_plan_honors_single_owner_handoff_mode(tmp_path: Path):
@@ -713,7 +786,7 @@ def test_render_resolved_plan_cleans_up_low_end_on_cross_parent_overlap(tmp_path
         compatibility=CompatibilityFactors(tempo=0.8, harmony=0.8, structure=0.8, energy=0.8, stem_conflict=0.2),
         sections=[
             PlannedSection(label='intro', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='cut'),
-            PlannedSection(label='payoff', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend'),
+            PlannedSection(label='payoff', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend', transition_mode='crossfade_support'),
         ],
     )
     manifest = resolve_render_plan(plan, a, b)
@@ -770,6 +843,55 @@ def test_render_resolved_plan_cleans_up_mids_on_same_parent_overlap(tmp_path: Pa
     clean_projection = np.abs(np.mean(clean_intro * carrier))
     dirty_projection = np.abs(np.mean(dirty_intro * carrier))
     assert clean_projection < dirty_projection * 0.9
+
+
+
+def test_render_resolved_plan_keeps_handoff_presence_band_more_suppressed_early(tmp_path: Path):
+    sr = 44100
+    seconds = 12.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    source_a = (0.10 * np.sin(2 * np.pi * 180.0 * t) + 0.16 * np.sin(2 * np.pi * 2800.0 * t)).astype(np.float32)
+    source_b = (0.10 * np.sin(2 * np.pi * 220.0 * t) + 0.16 * np.sin(2 * np.pi * 2800.0 * t)).astype(np.float32)
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, source_a, sr)
+    sf.write(p2, source_b, sr)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(source_path=str(p1), tempo_bpm=120.0, key_tonic='A', key_mode='minor', duration_seconds=12.0),
+            ParentReference(source_path=str(p2), tempo_bpm=120.0, key_tonic='C', key_mode='major', duration_seconds=12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=0.8, harmony=0.8, structure=0.8, energy=0.8, stem_conflict=0.2),
+        sections=[
+            PlannedSection(label='intro', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='cut'),
+            PlannedSection(label='bridge', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend', transition_mode='arrival_handoff'),
+        ],
+    )
+    manifest = resolve_render_plan(plan, a, b)
+    raw_manifest = clone_manifest(
+        manifest,
+        sections=[manifest.sections[0], replace(manifest.sections[1], allowed_overlap=False)],
+        work_orders=[manifest.work_orders[0], replace(manifest.work_orders[1], fade_in_sec=0.0)],
+    )
+
+    cleaned = render_resolved_plan(manifest, tmp_path / 'render_handoff_cleaned')
+    raw = render_resolved_plan(raw_manifest, tmp_path / 'render_handoff_raw')
+    y_clean, _ = sf.read(cleaned.raw_wav_path, always_2d=True)
+    y_raw, _ = sf.read(raw.raw_wav_path, always_2d=True)
+
+    overlap_samples = int(round(manifest.work_orders[1].fade_in_sec * sr))
+    start = int(round(manifest.work_orders[1].target_start_sec * sr))
+    early_samples = max(1, int(round(overlap_samples * 0.35)))
+    clean_intro = y_clean[start: start + early_samples, 0]
+    raw_intro = y_raw[start: start + early_samples, 0]
+    tt = np.arange(clean_intro.size, dtype=np.float32) / sr
+    carrier = np.sin(2 * np.pi * 2800.0 * tt)
+
+    clean_projection = np.abs(np.mean(clean_intro * carrier))
+    raw_projection = np.abs(np.mean(raw_intro * carrier))
+    assert clean_projection < raw_projection * 0.75
 
 
 

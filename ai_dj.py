@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity")
+LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity", "song_likeness")
 
 
 class CliError(RuntimeError):

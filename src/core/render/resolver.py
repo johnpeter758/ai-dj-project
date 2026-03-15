@@ -166,14 +166,24 @@ def _apply_transition_mode_constraints(
     transition_mode: str | None,
     overlap_beats: float,
     cross_parent_handoff: bool,
+    current_label: str | None = None,
 ) -> tuple[float, bool, str | None]:
-    if not cross_parent_handoff or transition_mode is None:
+    if not cross_parent_handoff:
         return overlap_beats, False, None
+    if transition_mode is None:
+        return overlap_beats, True, "cross-parent overlap defaulted to backbone-only ownership; donor support now requires explicit transition_mode=crossfade_support"
     if transition_mode == "arrival_handoff" and overlap_beats > 1.0:
         return 1.0, True, f"transition_mode=arrival_handoff capped overlap from {overlap_beats:.1f} to 1.0 beat and disabled donor background ownership"
     if transition_mode == "single_owner_handoff" and overlap_beats > 2.0:
         return 2.0, True, f"transition_mode=single_owner_handoff capped overlap from {overlap_beats:.1f} to 2.0 beats and disabled donor background ownership"
     if transition_mode == "crossfade_support":
+        curr = (current_label or "").strip().lower()
+        cap = 2.0
+        if curr in {"payoff", "outro"}:
+            cap = 1.0
+        if overlap_beats > cap:
+            beat_label = "beat" if math.isclose(cap, 1.0, rel_tol=0.0, abs_tol=1e-9) else "beats"
+            return cap, False, f"transition_mode=crossfade_support capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} to keep donor insertion brief"
         return overlap_beats, False, None
     return overlap_beats, True, f"transition_mode={transition_mode} disabled donor background ownership for an explicit single-owner handoff"
 
@@ -184,6 +194,7 @@ def _resolve_incoming_gain_db(
     overlap_beats: float,
     previous_label: str | None,
     current_label: str | None,
+    donor_support_active: bool = False,
 ) -> float:
     gain_db = incoming_gain_db(transition_in, transition_mode)
     prev = (previous_label or "").strip().lower()
@@ -193,6 +204,9 @@ def _resolve_incoming_gain_db(
         gain_db -= 0.75
     elif overlap_beats >= 4.0 and transition_in in {"blend", "lift"}:
         gain_db -= 0.5
+
+    if donor_support_active:
+        gain_db -= 0.75
 
     if prev == "payoff" and curr in {"bridge", "outro"} and overlap_beats > 0.0:
         gain_db -= 0.75
@@ -220,7 +234,7 @@ def _snap_time_to_available_grid(song: SongDNA, value: float, lower: float, uppe
 
 
 
-def _phrase_label_bounds(requested_label: str | None, song: SongDNA, section: PlannedSection | None = None, config: ResolverConfig | None = None) -> tuple[float, float, list[str]] | None:
+def _phrase_label_bounds(requested_label: str | None, song: SongDNA, section: PlannedSection | None = None, config: ResolverConfig | None = None, target_bpm: float | None = None) -> tuple[float, float, list[str]] | None:
     if not requested_label:
         return None
     label = requested_label.strip()
@@ -249,7 +263,7 @@ def _phrase_label_bounds(requested_label: str | None, song: SongDNA, section: Pl
     if section is None or config is None:
         return raw_start, raw_end, [f"trimmed phrase window label '{requested_label}' could not be resolved without section timing context"]
 
-    target_duration = _target_duration_seconds(section, song, config)
+    target_duration = _target_duration_seconds(section, song, config, target_bpm=target_bpm)
     trim_kind = trim_match.group(3)
     if trim_kind == "tail":
         trim_start, trim_end = raw_start, raw_start + target_duration
@@ -268,8 +282,9 @@ def _phrase_label_bounds(requested_label: str | None, song: SongDNA, section: Pl
 
 
 
-def _target_duration_seconds(section: PlannedSection, song: SongDNA, config: ResolverConfig) -> float:
-    return section.bar_count * config.beats_per_bar * 60.0 / max(float(song.tempo_bpm), 1e-6)
+def _target_duration_seconds(section: PlannedSection, song: SongDNA, config: ResolverConfig, target_bpm: float | None = None) -> float:
+    bpm = float(target_bpm if target_bpm is not None else song.tempo_bpm)
+    return section.bar_count * config.beats_per_bar * 60.0 / max(bpm, 1e-6)
 
 
 def _is_generic_section_label(label: str | None) -> bool:
@@ -362,9 +377,10 @@ def _select_phrase_safe_window(
     raw_start: float,
     raw_end: float,
     config: ResolverConfig,
+    target_bpm: float | None = None,
 ) -> tuple[SourceSectionRef, list[str]]:
     warnings: list[str] = []
-    target_duration_sec = _target_duration_seconds(section, song, config)
+    target_duration_sec = _target_duration_seconds(section, song, config, target_bpm=target_bpm)
     weak_section = _is_weak_section(requested_label, raw_start, raw_end, song)
 
     if weak_section:
@@ -422,12 +438,18 @@ def _select_phrase_safe_window(
     ), warnings
 
 
-def _resolve_source_window(section: PlannedSection, song: SongDNA, grid: ParentGrid, config: ResolverConfig) -> tuple[SourceSectionRef, list[str]]:
+def _resolve_source_window(
+    section: PlannedSection,
+    song: SongDNA,
+    grid: ParentGrid,
+    config: ResolverConfig,
+    target_bpm: float | None = None,
+) -> tuple[SourceSectionRef, list[str]]:
     warnings: list[str] = []
     sections = _section_map(song)
     requested_label = (section.source_section_label or "").strip() or None
 
-    phrase_bounds = _phrase_label_bounds(requested_label, song, section, config)
+    phrase_bounds = _phrase_label_bounds(requested_label, song, section, config, target_bpm=target_bpm)
     if phrase_bounds is not None:
         raw_start, raw_end, phrase_warnings = phrase_bounds
         warnings.extend(phrase_warnings)
@@ -458,6 +480,7 @@ def _resolve_source_window(section: PlannedSection, song: SongDNA, grid: ParentG
         raw_start,
         raw_end,
         config,
+        target_bpm=target_bpm,
     )
     warnings.extend(selection_warnings)
     return source_ref, warnings
@@ -516,6 +539,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
     work_orders: list[AudioWorkOrder] = []
     warnings: list[str] = []
     fallbacks: list[str] = []
+    target_bpm = float(plan.parents[0].tempo_bpm if plan.parents else parent_a.tempo_bpm)
 
     previous_start_bar: int | None = None
     previous_end_bar = 0
@@ -537,10 +561,10 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
 
         song = song_map[parent_id]
         grid = grid_map[parent_id]
-        source_ref, section_warnings = _resolve_source_window(sec, song, grid, config)
-        anchor_bpm = float(song.tempo_bpm)
-        target_start_sec = sec.start_bar * config.beats_per_bar * 60.0 / anchor_bpm
-        target_duration_sec = sec.bar_count * config.beats_per_bar * 60.0 / anchor_bpm
+        source_ref, section_warnings = _resolve_source_window(sec, song, grid, config, target_bpm=target_bpm)
+        anchor_bpm = target_bpm
+        target_start_sec = sec.start_bar * config.beats_per_bar * 60.0 / target_bpm
+        target_duration_sec = sec.bar_count * config.beats_per_bar * 60.0 / target_bpm
         target_end_sec = target_start_sec + target_duration_sec
         source_duration = max(0.0, source_ref.snapped_end_sec - source_ref.snapped_start_sec)
         raw_stretch_ratio = source_duration / target_duration_sec if target_duration_sec > 0 and source_duration > 0 else 1.0
@@ -580,6 +604,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             sec.transition_mode,
             overlap_beats,
             cross_parent_handoff,
+            sec.label,
         )
         if transition_mode_warning:
             section_warnings.append(transition_mode_warning)
@@ -590,6 +615,11 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         background_owner = None
         if overlap_beats > 0.0 and cross_parent_handoff and not suppress_background_owner:
             background_owner = previous_section.source_parent
+        owner_mode = "backbone_only"
+        arrival_focus = "backbone_led"
+        if background_owner is not None:
+            owner_mode = "backbone_plus_donor_support"
+            arrival_focus = "donor_led" if overlap_beats >= 2.0 else "backbone_led"
         resolved = ResolvedSection(
             index=idx,
             label=sec.label,
@@ -606,6 +636,10 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             foreground_owner=parent_id,
             background_owner=background_owner,
             low_end_owner=parent_id,
+            backbone_owner=parent_id,
+            donor_owner=background_owner,
+            owner_mode=owner_mode,
+            arrival_focus=arrival_focus,
             vocal_policy=f"{parent_id}_only",
             allowed_overlap=overlap_beats > 0,
             overlap_beats_max=overlap_beats,
@@ -639,6 +673,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 overlap_beats,
                 previous_label,
                 sec.label,
+                donor_support_active=background_owner is not None,
             ),
             fade_in_sec=fade_in_sec,
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
@@ -650,7 +685,6 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             conflict_policy="collapse_to_single_source",
         ))
 
-    target_bpm = float(plan.parents[0].tempo_bpm if plan.parents else parent_a.tempo_bpm)
     return ResolvedRenderPlan(
         schema_version="0.1.0",
         sample_rate=config.sample_rate,

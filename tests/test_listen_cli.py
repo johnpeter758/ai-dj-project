@@ -66,6 +66,8 @@ def test_listen_command_writes_json(monkeypatch, tmp_path: Path):
     assert 'structure' in payload
     assert 'coherence' in payload
     assert 'mix_sanity' in payload
+    assert 'song_likeness' in payload
+    assert 'gating' in payload
 
 
 def test_energy_arc_prefers_late_sustained_payoff_over_flat_profile():
@@ -314,10 +316,12 @@ def test_compare_listen_reports_writes_delta_json(tmp_path: Path):
         'transition': {'score': 81.0, 'summary': 'clean', 'evidence': [], 'fixes': [], 'details': {}},
         'coherence': {'score': 83.0, 'summary': 'cohesive', 'evidence': [], 'fixes': [], 'details': {}},
         'mix_sanity': {'score': 84.0, 'summary': 'clear', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 83.0, 'summary': 'coherent child song', 'evidence': [], 'fixes': [], 'details': {}},
         'verdict': 'promising',
         'top_reasons': [],
         'top_fixes': [],
-        'analysis_version': '0.4.0',
+        'gating': {'status': 'pass', 'raw_overall_score': 82.0},
+        'analysis_version': '0.5.0',
     }
     right = {
         **left,
@@ -325,6 +329,7 @@ def test_compare_listen_reports_writes_delta_json(tmp_path: Path):
         'overall_score': 74.0,
         'energy_arc': {'score': 66.0, 'summary': 'flat', 'evidence': [], 'fixes': [], 'details': {}},
         'mix_sanity': {'score': 70.0, 'summary': 'crowded', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 68.0, 'summary': 'stitched', 'evidence': [], 'fixes': [], 'details': {}},
         'verdict': 'mixed',
     }
 
@@ -366,10 +371,12 @@ def test_compare_listen_decision_preserves_tie_tradeoffs(tmp_path: Path):
         'transition': {'score': 80.0, 'summary': 'controlled', 'evidence': [], 'fixes': [], 'details': {}},
         'coherence': {'score': 80.0, 'summary': 'steady', 'evidence': [], 'fixes': [], 'details': {}},
         'mix_sanity': {'score': 79.0, 'summary': 'slightly dense', 'evidence': [], 'fixes': ['thin overlapping mids'], 'details': {}},
+        'song_likeness': {'score': 80.0, 'summary': 'reads like one song', 'evidence': [], 'fixes': [], 'details': {}},
         'verdict': 'promising',
         'top_reasons': ['Clearer structure helps the arrangement read faster.'],
         'top_fixes': ['Stabilize groove and reduce midrange crowding.'],
-        'analysis_version': '0.3.0',
+        'gating': {'status': 'pass', 'raw_overall_score': 80.0},
+        'analysis_version': '0.5.0',
     }
     right = {
         **left,
@@ -377,6 +384,7 @@ def test_compare_listen_decision_preserves_tie_tradeoffs(tmp_path: Path):
         'structure': {'score': 78.0, 'summary': 'less segmented', 'evidence': [], 'fixes': ['sharpen section contrast'], 'details': {}},
         'groove': {'score': 84.0, 'summary': 'tighter pocket', 'evidence': ['beat grid is more stable'], 'fixes': [], 'details': {}},
         'mix_sanity': {'score': 81.0, 'summary': 'cleaner spacing', 'evidence': ['less foreground masking'], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 80.0, 'summary': 'reads like one song', 'evidence': [], 'fixes': [], 'details': {}},
         'top_reasons': ['Groove pocket is tighter and mix spacing is cleaner.'],
         'top_fixes': ['Sharpen section contrast.'],
     }
@@ -493,6 +501,83 @@ def test_manifest_identity_metrics_distinguish_true_two_parent_ownership_from_ba
     assert identity['major_section_primary_counts'] == {'A': 1, 'B': 2}
     assert identity['background_only_presence_counts'] == {'A': 3, 'B': 0}
     assert identity['minority_parent'] == 'A'
+
+
+
+def test_song_likeness_gate_rejects_non_song_like_render(tmp_path: Path):
+    run_dir = tmp_path / 'non_song_like'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    (run_dir / 'render_manifest.json').write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "section_0", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 6.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "both", "stretch_ratio": 1.25, "transition_out": "blend"},
+    {"index": 1, "label": "section_1", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 6.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "both", "stretch_ratio": 1.22, "transition_in": "swap", "transition_out": "blend"},
+    {"index": 2, "label": "section_2", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 5.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "both", "stretch_ratio": 1.18, "transition_in": "swap", "transition_out": "blend"},
+    {"index": 3, "label": "section_3", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 5.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "both", "stretch_ratio": 1.16, "transition_in": "swap"}
+  ],
+  "work_orders": []
+}""" % audio.as_posix(), encoding='utf-8')
+
+    song = DummySong(str(audio))
+    song.structure['sections'] = [
+        {'label': 'section_0', 'start': 0.0, 'end': 30.0},
+        {'label': 'section_1', 'start': 30.0, 'end': 60.0},
+        {'label': 'section_2', 'start': 60.0, 'end': 90.0},
+        {'label': 'section_3', 'start': 90.0, 'end': 120.0},
+    ]
+    song.structure['phrase_boundaries_seconds'] = [0, 30, 60, 90]
+    song.structure['novelty_boundaries_seconds'] = [30, 60, 90]
+    song.energy['rms'] = [0.18, 0.18, 0.18, 0.18, 0.06, 0.06, 0.06, 0.06, 0.17, 0.17, 0.17, 0.17]
+    song.energy['spectral_centroid'] = [3400, 3400, 3400, 3400, 1200, 1200, 1200, 1200, 3300, 3300, 3300, 3300]
+    song.energy['spectral_rolloff'] = [7600, 7600, 7600, 7600, 2400, 2400, 2400, 2400, 7200, 7200, 7200, 7200]
+    song.energy['onset_density'] = [0.56, 0.56, 0.56, 0.56, 0.10, 0.10, 0.10, 0.10, 0.52, 0.52, 0.52, 0.52]
+    song.energy['low_band_ratio'] = [0.66, 0.66, 0.66, 0.66, 0.24, 0.24, 0.24, 0.24, 0.62, 0.62, 0.62, 0.62]
+    song.energy['spectral_flatness'] = [0.34, 0.34, 0.34, 0.34, 0.12, 0.12, 0.12, 0.12, 0.32, 0.32, 0.32, 0.32]
+
+    report = evaluate_song(song)
+
+    assert report.song_likeness.score < 45.0
+    assert report.gating['status'] == 'reject'
+    assert report.overall_score <= 49.0
+    assert any('backbone continuity' in fix.lower() or 'cluttered donor carryover' in fix.lower() for fix in report.top_fixes)
+
+
+
+def test_song_likeness_rewards_clear_backbone_and_major_sections(tmp_path: Path):
+    run_dir = tmp_path / 'song_like'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    (run_dir / 'render_manifest.json').write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "A", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "A", "background_owner": null, "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 1, "label": "verse", "source_parent": "A", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "A", "background_owner": null, "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 2, "label": "build", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 1.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0, "transition_in": "lift"},
+    {"index": 3, "label": "payoff", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 1.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0, "transition_in": "drop"},
+    {"index": 4, "label": "outro", "source_parent": "A", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "A", "background_owner": null, "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0}
+  ],
+  "work_orders": []
+}""" % audio.as_posix(), encoding='utf-8')
+
+    song = DummySong(str(audio))
+    song.structure['sections'] = [
+        {'label': 'intro', 'start': 0.0, 'end': 16.0},
+        {'label': 'verse', 'start': 16.0, 'end': 40.0},
+        {'label': 'build', 'start': 40.0, 'end': 64.0},
+        {'label': 'payoff', 'start': 64.0, 'end': 96.0},
+        {'label': 'outro', 'start': 96.0, 'end': 120.0},
+    ]
+
+    report = evaluate_song(song)
+    metrics = report.song_likeness.details['aggregate_metrics']
+
+    assert report.song_likeness.score >= 60.0
+    assert report.gating['status'] == 'pass'
+    assert metrics['backbone_continuity'] > 0.55
+    assert metrics['recognizable_section_ratio'] >= 0.8
 
 
 
