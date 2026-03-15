@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import server
 from server import app
@@ -83,6 +84,18 @@ def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_pat
         ],
     }), encoding='utf-8')
 
+    listener_agent = runs_dir / 'listener_agent_latest.json'
+    listener_agent.write_text(json.dumps({
+        'listener_agent': {'purpose': 'Reject weak outputs'},
+        'summary': ['Listener agent kept 1 of 2 candidates for human review.'],
+        'recommended_for_human_review': [
+            {'label': 'fusion_case', 'listener_rank': 81.0, 'overall_score': 78.0, 'verdict': 'promising'}
+        ],
+        'rejected': [
+            {'label': 'baseline_case', 'hard_fail_reasons': ['does not sound like one real song']}
+        ],
+    }), encoding='utf-8')
+
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
     monkeypatch.setattr(server, '_extract_current_task', lambda: {'summary': 'Evaluator surfacing', 'source': None, 'details': []})
     monkeypatch.setattr(server, '_latest_commit', lambda: {})
@@ -96,8 +109,53 @@ def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_pat
     assert payload['latest_benchmark_listen_result']['winner'] == 'fusion_case'
     assert payload['latest_benchmark_listen_result']['top_entry']['wins'] == 2
     assert payload['latest_benchmark_listen_result']['leader_gap'] == 13.0
+    assert payload['latest_listener_agent_result']['recommended_count'] == 1
+    assert payload['latest_listener_agent_result']['winner'] == 'fusion_case'
+    assert payload['latest_listener_agent_result']['top_reject_reason'] == 'does not sound like one real song'
     assert payload['latest_manifest']['diagnostics']['warning_count'] == 1
     assert payload['latest_manifest']['diagnostics']['overlap_section_count'] == 1
     assert payload['latest_manifest']['diagnostics']['stretch_risk_count'] == 1
     assert payload['latest_run_summary']['run_dir'] == 'fusion_case'
     assert payload['latest_run_summary']['manifest']['name'] == 'render_manifest.json'
+
+
+def test_listener_agent_api_runs_on_recent_render_outputs(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    first = runs_dir / 'fusion_a'
+    second = runs_dir / 'fusion_b'
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / 'child_master.wav').write_bytes(b'fake')
+    (second / 'child_master.wav').write_bytes(b'fake')
+    (first / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(first / 'child_master.wav')}}), encoding='utf-8')
+    (second / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(second / 'child_master.wav')}}), encoding='utf-8')
+
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        out_index = cmd.index('--output') + 1
+        out_path = Path(cmd[out_index])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps({
+            'listener_agent': {'purpose': 'Reject non-song outputs'},
+            'summary': ['Listener agent kept 1 of 2 candidates for human review.'],
+            'recommended_for_human_review': [
+                {'label': 'fusion_a', 'listener_rank': 80.0, 'overall_score': 76.0, 'verdict': 'promising'}
+            ],
+            'rejected': [
+                {'label': 'fusion_b', 'hard_fail_reasons': ['transitions still read like track switching']}
+            ],
+        }), encoding='utf-8')
+        return SimpleNamespace(returncode=0, stdout='ok', stderr='')
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    client = app.test_client()
+    response = client.post('/api/listener-agent', json={'shortlist': 1})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['status'] == 'success'
+    assert payload['input_count'] == 2
+    assert payload['shortlist'] == 1
+    assert payload['report']['recommended_for_human_review'][0]['label'] == 'fusion_a'
+    assert payload['report']['rejected'][0]['hard_fail_reasons'][0] == 'transitions still read like track switching'

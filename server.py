@@ -293,6 +293,57 @@ def _latest_benchmark_listen_result() -> dict | None:
     return result
 
 
+def _latest_listener_agent_result() -> dict | None:
+    match = _find_latest_json(
+        lambda _path, payload: "listener_agent" in payload and "recommended_for_human_review" in payload and "rejected" in payload
+    )
+    if not match:
+        return None
+    path, payload = match
+    recommended = payload.get("recommended_for_human_review") or []
+    rejected = payload.get("rejected") or []
+    top_survivor = recommended[0] if recommended else None
+    top_reject = rejected[0] if rejected else None
+    result = _artifact_entry(path)
+    result.update({
+        "recommended_count": len(recommended),
+        "rejected_count": len(rejected),
+        "winner": top_survivor.get("label") if top_survivor else None,
+        "summary": list(payload.get("summary") or [])[:3],
+        "top_survivor": {
+            "label": top_survivor.get("label"),
+            "listener_rank": top_survivor.get("listener_rank"),
+            "overall_score": top_survivor.get("overall_score"),
+            "verdict": top_survivor.get("verdict"),
+        } if top_survivor else None,
+        "top_reject_reason": ((top_reject.get("hard_fail_reasons") or [None])[0] if top_reject else None),
+    })
+    return result
+
+
+def _recent_render_inputs(limit: int = 4) -> list[str]:
+    manifests = sorted(
+        [
+            path for path in RUNS_DIR.rglob("render_manifest.json")
+            if path.is_file() and "ui_uploads" not in path.parts
+        ],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    seen: set[str] = set()
+    results: list[str] = []
+    for manifest in manifests:
+        run_dir = manifest.parent.resolve()
+        key = str(run_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(key)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def _latest_manifest_summary() -> dict | None:
     match = _find_latest_json(lambda path, payload: path.name == "render_manifest.json" and "sections" in payload and "work_orders" in payload)
     if not match:
@@ -348,6 +399,7 @@ def _workloop_status() -> dict:
     latest_eval = _latest_evaluator_result()
     latest_compare = _latest_compare_listen_result()
     latest_benchmark = _latest_benchmark_listen_result()
+    latest_listener_agent = _latest_listener_agent_result()
     latest_artifact = _latest_artifact()
     latest_manifest = _latest_manifest_summary()
     latest_run = _latest_run_summary()
@@ -366,12 +418,14 @@ def _workloop_status() -> dict:
         "latest_evaluator_result": latest_eval,
         "latest_compare_listen_result": latest_compare,
         "latest_benchmark_listen_result": latest_benchmark,
+        "latest_listener_agent_result": latest_listener_agent,
         "latest_manifest": latest_manifest,
         "latest_run_summary": latest_run,
         "links": {
             "fuse_ui": "/",
             "debug_ui": "/debug",
             "status_ui": "/status",
+            "listener_agent_api": "/api/listener-agent",
         },
     }
 
@@ -423,6 +477,74 @@ def api_updates():
     except Exception:
         entries = []
     return jsonify({"status": "ok", "entries": list(reversed(entries))})
+
+
+@app.route("/api/listener-agent", methods=["POST"])
+def api_listener_agent():
+    data = request.get_json(silent=True) or {}
+    raw_inputs = data.get("inputs") or []
+    shortlist = max(1, min(int(data.get("shortlist", 3) or 3), 10))
+
+    if raw_inputs:
+        inputs: list[str] = []
+        for raw in raw_inputs:
+            path = Path(str(raw)).expanduser().resolve()
+            try:
+                path.relative_to(RUNS_DIR.resolve())
+            except ValueError:
+                return jsonify({"status": "error", "error": "listener-agent inputs must stay inside runs/"}), 403
+            if not path.exists():
+                return jsonify({"status": "error", "error": f"listener-agent input not found: {path}"}), 404
+            inputs.append(str(path))
+    else:
+        inputs = _recent_render_inputs(limit=max(shortlist + 1, 3))
+
+    if not inputs:
+        return jsonify({"status": "error", "error": "No render outputs were found for listener-agent evaluation."}), 404
+
+    report_dir = RUNS_DIR / "listener_agent"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    output_path = report_dir / f"listener_agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    cmd = [
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
+        str(BASE_DIR / "ai_dj.py"),
+        "listener-agent",
+        *inputs,
+        "--shortlist",
+        str(shortlist),
+        "--output",
+        str(output_path),
+    ]
+
+    try:
+        proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "error": "Listener agent timed out.", "inputs": inputs}), 500
+
+    if proc.returncode != 0:
+        return jsonify(
+            {
+                "status": "error",
+                "error": "Listener agent failed.",
+                "inputs": inputs,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        ), 500
+
+    payload = _load_json_file(output_path) or {}
+    return jsonify(
+        {
+            "status": "success",
+            "inputs": inputs,
+            "input_count": len(inputs),
+            "shortlist": shortlist,
+            "report_path": str(output_path),
+            "report": payload,
+            "stdout": proc.stdout,
+        }
+    )
 
 
 @app.route("/api/fuse-upload", methods=["POST"])

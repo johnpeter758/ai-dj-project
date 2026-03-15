@@ -18,6 +18,8 @@
     .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
     .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#1f2937; color:#cbd5e1; font-size:12px; margin-right:8px; }
     .two-col { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    button { padding:10px 14px; border-radius:10px; border:none; background:#7c3aed; color:#fff; font-weight:700; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
     @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -35,6 +37,11 @@
         <div class="stat"><div class="label">Latest listen</div><div id="latestEval" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest compare-listen</div><div id="latestCompare" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest benchmark-listen</div><div id="latestBenchmark" class="mono">Loading…</div></div>
+        <div class="stat">
+          <div class="label">Latest listener-agent</div>
+          <div id="latestListenerAgent" class="mono">Loading…</div>
+          <div style="margin-top:12px;"><button id="runListenerAgentBtn">Run listener-agent on recent renders</button></div>
+        </div>
       </div>
     </div>
 
@@ -79,6 +86,12 @@
       const top = bench.top_entry || {};
       return `${artifactLink(bench)}<br><span class="pill">winner ${esc(bench.winner || '—')}</span><span class="pill">entries ${esc(bench.entry_count ?? 0)}</span><span class="pill">pairs ${esc(bench.comparison_count ?? 0)}</span>${bench.leader_gap !== null && bench.leader_gap !== undefined ? `<br>Leader gap vs runner-up: ${esc(bench.leader_gap)}` : ''}${top.label ? `<br><br><strong>Top run</strong><br>${esc(top.label)} · wins ${esc(top.wins ?? 0)} / losses ${esc(top.losses ?? 0)} · net ${esc(top.net_score_delta ?? '—')} · overall ${esc(top.overall_score ?? '—')}${top.verdict ? ` · ${esc(top.verdict)}` : ''}` : ''}`;
     }
+    function renderListenerAgent(agent) {
+      if (!agent) return 'No listener-agent result yet.';
+      const survivor = agent.top_survivor || {};
+      const summary = (agent.summary || []).map(line => esc(line)).join('<br>');
+      return `${artifactLink(agent)}<br><span class="pill">survivors ${esc(agent.recommended_count ?? 0)}</span><span class="pill">rejected ${esc(agent.rejected_count ?? 0)}</span>${agent.winner ? `<br><br><strong>Top survivor</strong><br>${esc(agent.winner)}${survivor.listener_rank !== undefined ? ` · rank ${esc(survivor.listener_rank)}` : ''}${survivor.overall_score !== undefined ? ` · overall ${esc(survivor.overall_score)}` : ''}${survivor.verdict ? ` · ${esc(survivor.verdict)}` : ''}` : ''}${agent.top_reject_reason ? `<br><br><strong>Top reject reason</strong><br>${esc(agent.top_reject_reason)}` : ''}${summary ? `<br><br>${summary}` : ''}`;
+    }
     function renderManifest(manifest) {
       if (!manifest) return 'No render manifest found yet.';
       const d = manifest.diagnostics || {};
@@ -110,9 +123,46 @@
       document.getElementById('latestEval').innerHTML = renderListen(data.latest_evaluator_result);
       document.getElementById('latestCompare').innerHTML = renderCompare(data.latest_compare_listen_result);
       document.getElementById('latestBenchmark').innerHTML = renderBenchmark(data.latest_benchmark_listen_result);
+      document.getElementById('latestListenerAgent').innerHTML = renderListenerAgent(data.latest_listener_agent_result);
       document.getElementById('latestManifest').innerHTML = renderManifest(data.latest_manifest);
       document.getElementById('latestRun').innerHTML = renderRun(data.latest_run_summary);
     }
+    async function runListenerAgent() {
+      const btn = document.getElementById('runListenerAgentBtn');
+      btn.disabled = true;
+      btn.textContent = 'Running listener-agent…';
+      try {
+        const res = await fetch('/api/listener-agent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shortlist: 3 })
+        });
+        const data = await res.json();
+        if (data.status !== 'success') {
+          document.getElementById('latestListenerAgent').innerHTML = `<span class="mono">${esc(data.error || 'Listener agent failed.')}</span>`;
+        } else {
+          document.getElementById('latestListenerAgent').innerHTML = renderListenerAgent({
+            ...data.report,
+            name: data.report_path ? data.report_path.split('/').pop() : 'listener_agent.json',
+            path: data.report_path,
+            relative_path: data.report_path,
+            download_url: data.report_path ? `/api/artifact?path=${encodeURIComponent(data.report_path)}` : '#',
+            recommended_count: (data.report.recommended_for_human_review || []).length,
+            rejected_count: (data.report.rejected || []).length,
+            winner: (data.report.recommended_for_human_review || [])[0]?.label || null,
+            top_survivor: (data.report.recommended_for_human_review || [])[0] || null,
+            top_reject_reason: ((data.report.rejected || [])[0]?.hard_fail_reasons || [null])[0],
+            summary: data.report.summary || [],
+          });
+        }
+      } catch (err) {
+        document.getElementById('latestListenerAgent').innerHTML = `<span class="mono">${esc(err)}</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Run listener-agent on recent renders';
+      }
+    }
+    document.getElementById('runListenerAgentBtn').addEventListener('click', runListenerAgent);
     loadStatus();
     setInterval(loadStatus, 15000);
   </script>
