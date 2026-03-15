@@ -122,6 +122,17 @@ Purpose:
 - fail fast when the listener starts preferring artistically worse outputs
 - turn subjective quality expectations into a repeatable regression gate
 
+### Build a reference-driven improvement brief for one fusion
+
+```bash
+python3 scripts/listen_feedback_loop.py runs/fusion_candidate runs/reference_a runs/reference_b --output runs/checkpoint/listen_feedback_brief.json
+```
+
+Purpose:
+- compare one fusion directly against known-good references
+- summarize the component gaps vs those references
+- map the worst gaps to the next code targets in planner / render / evaluator
+
 ## Current checkpoint highlights
 
 - deterministic render v1 stack exists and is tested
