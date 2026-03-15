@@ -93,16 +93,16 @@ ROLE_ALIAS = {
 
 ROLE_PRIOR_WEIGHTS = {
     'intro': {
-        'position_low': 1.55,
-        'position_high': 0.05,
-        'energy_low': 1.20,
-        'energy_high': 0.05,
-        'slope_up': 0.30,
-        'slope_down': 0.45,
-        'repetition': 0.20,
-        'novelty': 0.40,
-        'section_early': 0.60,
-        'section_late': 0.05,
+        'position_low': 1.85,
+        'position_high': 0.02,
+        'energy_low': 1.30,
+        'energy_high': 0.03,
+        'slope_up': 0.22,
+        'slope_down': 0.55,
+        'repetition': 0.34,
+        'novelty': 0.12,
+        'section_early': 0.90,
+        'section_late': 0.02,
     },
     'verse': {
         'position_low': 0.55,
@@ -209,10 +209,17 @@ def _song_phrase_energy_profile(song: SongDNA) -> list[float]:
     return [_window_energy(song, 0.0, duration)]
 
 
-def _song_extended_program_support(song: SongDNA) -> float:
+def _song_payoff_family_metrics(song: SongDNA) -> dict[str, float]:
     profile = _song_phrase_energy_profile(song)
     if len(profile) < 7:
-        return 0.0
+        return {
+            'reset_depth': 0.0,
+            'relaunch_strength': 0.0,
+            'final_advantage': 0.0,
+            'first_payoff': 0.0,
+            'final_payoff': 0.0,
+            'bridge_floor': 0.0,
+        }
 
     total = len(profile)
     bridge_start = max(1, int(total * 0.56))
@@ -227,15 +234,23 @@ def _song_extended_program_support(song: SongDNA) -> float:
     energy_high = max(profile)
     energy_span = max(energy_high - energy_low, 1e-6)
 
-    reset_depth = _clamp01((first_payoff - bridge_floor) / energy_span)
-    relaunch_strength = _clamp01((final_payoff - bridge_floor) / energy_span)
-    final_advantage = _clamp01((final_payoff - first_payoff) / energy_span + 0.5)
+    return {
+        'reset_depth': _clamp01((first_payoff - bridge_floor) / energy_span),
+        'relaunch_strength': _clamp01((final_payoff - bridge_floor) / energy_span),
+        'final_advantage': _clamp01((final_payoff - first_payoff) / energy_span + 0.5),
+        'first_payoff': first_payoff,
+        'final_payoff': final_payoff,
+        'bridge_floor': bridge_floor,
+    }
 
+
+def _song_extended_program_support(song: SongDNA) -> float:
+    metrics = _song_payoff_family_metrics(song)
     feedback = _planner_listen_feedback(song)
     return _clamp01(
-        0.35 * reset_depth
-        + 0.35 * relaunch_strength
-        + 0.10 * final_advantage
+        0.35 * metrics['reset_depth']
+        + 0.35 * metrics['relaunch_strength']
+        + 0.10 * metrics['final_advantage']
         + 0.10 * feedback.payoff_readiness
         + 0.10 * feedback.energy_arc_strength
     )
@@ -269,9 +284,24 @@ def _build_section_program(song_a: SongDNA, song_b: SongDNA) -> list[_SectionSpe
     if capacity >= 7:
         support_a = _song_extended_program_support(song_a)
         support_b = _song_extended_program_support(song_b)
+        family_a = _song_payoff_family_metrics(song_a)
+        family_b = _song_payoff_family_metrics(song_b)
         extended_support = max(support_a, support_b)
         shared_support = 0.5 * (support_a + support_b)
-        if extended_support >= 0.42 and shared_support >= 0.36:
+        strongest_payoff_gain = max(
+            family_a['final_payoff'] - family_a['first_payoff'],
+            family_b['final_payoff'] - family_b['first_payoff'],
+        )
+        shared_payoff_gain = 0.5 * (
+            (family_a['final_payoff'] - family_a['first_payoff'])
+            + (family_b['final_payoff'] - family_b['first_payoff'])
+        )
+        if (
+            extended_support >= 0.42
+            and shared_support >= 0.36
+            and strongest_payoff_gain >= 0.03
+            and shared_payoff_gain >= 0.015
+        ):
             return extended
         return standard
     if capacity >= 5:
@@ -768,7 +798,11 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
         score += 0.20 * features.hook_strength * signal_confidence
         score += 0.15 * features.groove_stability
     elif canonical_role == 'intro':
-        score -= 0.15 * features.payoff_strength * signal_confidence
+        score += 0.32 * features.headroom
+        score += 0.18 * max(0.0, 1.0 - features.end_focus)
+        score += 0.12 * max(0.0, 1.0 - features.hook_strength)
+        score -= 0.22 * features.payoff_strength * signal_confidence
+        score -= 0.12 * features.end_focus
 
     return score
 
@@ -1522,6 +1556,43 @@ def _selection_build_to_payoff_contrast_penalty(
     }
 
 
+def _selection_source_role_position_penalty(
+    spec: _SectionSpec,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+) -> tuple[float, dict[str, float]]:
+    position = max(0.0, min(1.0, features.position))
+    too_early_gap = 0.0
+    too_late_gap = 0.0
+
+    if spec.label == 'intro':
+        too_late_gap = max(0.0, (position - 0.34) / 0.24)
+    elif spec.label == 'verse':
+        too_early_gap = max(0.0, (0.10 - position) / 0.10)
+        too_late_gap = max(0.0, (position - 0.56) / 0.20)
+    elif spec.label == 'build':
+        too_early_gap = max(0.0, (0.22 - position) / 0.16)
+        too_late_gap = max(0.0, (position - 0.78) / 0.16)
+    elif spec.label == 'payoff':
+        too_early_gap = max(0.0, (0.52 - position) / 0.18)
+    elif spec.label == 'bridge':
+        too_early_gap = max(0.0, (0.44 - position) / 0.16)
+        too_late_gap = max(0.0, (position - 0.88) / 0.12)
+    elif spec.label == 'outro':
+        too_early_gap = max(0.0, (0.74 - position) / 0.18)
+
+    phrase_trim_bonus = 0.0
+    if candidate.origin == 'phrase_trim':
+        phrase_trim_bonus = min(0.12, 0.06 + (0.06 * max(0.0, abs(position - 0.5) - 0.15)))
+
+    penalty = min(1.0, (0.90 * too_early_gap) + (1.00 * too_late_gap) - phrase_trim_bonus)
+    return max(0.0, penalty), {
+        'source_role_too_early_gap': too_early_gap,
+        'source_role_too_late_gap': too_late_gap,
+        'source_role_trim_bonus': phrase_trim_bonus,
+    }
+
+
 def _selection_groove_continuity_penalty(
     prior_selections: list[_WindowSelection],
     parent_id: str,
@@ -1605,6 +1676,250 @@ def _selection_phrase_groove_penalty(spec: _SectionSpec, features: _RoleFeatures
     }
 
 
+def _payoff_candidate_block_metrics(
+    song: SongDNA,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+    previous: _WindowSelection | None,
+) -> dict[str, float]:
+    payoff_hit = _clamp01(
+        (0.34 * features.end_focus)
+        + (0.26 * features.plateau_stability)
+        + (0.20 * features.payoff_strength)
+        + (0.12 * features.hook_strength)
+        + (0.08 * features.lift_strength)
+    )
+    sustained_conviction = _clamp01(
+        (0.30 * features.tail_energy)
+        + (0.24 * features.plateau_stability)
+        + (0.18 * features.payoff_strength)
+        + (0.16 * features.end_focus)
+        + (0.12 * features.energy_confidence)
+    )
+    song_duration = max(float(song.duration_seconds), 1e-6)
+    start_position = candidate.start / song_duration
+    candidate_position = max(0.0, min(1.0, features.position))
+    early_position_gap = max(0.0, 0.56 - candidate_position)
+    early_start_gap = max(0.0, 0.60 - start_position)
+    weak_conviction_gap = max(0.0, 0.60 - payoff_hit)
+    sustained_gap = max(0.0, 0.62 - sustained_conviction)
+    weak_tail_gap = max(0.0, 0.58 - features.tail_energy)
+    build_lift_gap = 0.0
+    if previous is not None and previous.section_label in {'build', 'bridge'}:
+        desired_lift = 0.16 if previous.section_label == 'bridge' else 0.10
+        build_lift_gap = max(0.0, desired_lift - (candidate.energy - previous.candidate.energy))
+
+    hard_block = (
+        (start_position < 0.30 and weak_conviction_gap > 0.05)
+        or (weak_conviction_gap > 0.22 and sustained_gap > 0.18)
+        or (weak_conviction_gap > 0.10 and weak_tail_gap > 0.12 and build_lift_gap > 0.10)
+    )
+    return {
+        'payoff_hit': payoff_hit,
+        'sustained_conviction': sustained_conviction,
+        'early_position_gap': early_position_gap,
+        'early_start_gap': early_start_gap,
+        'weak_conviction_gap': weak_conviction_gap,
+        'sustained_gap': sustained_gap,
+        'weak_tail_gap': weak_tail_gap,
+        'build_lift_gap': build_lift_gap,
+        'hard_block': 1.0 if hard_block else 0.0,
+    }
+
+
+def _section_identity_metrics(spec: _SectionSpec, features: _RoleFeatures) -> dict[str, float]:
+    if spec.label == 'intro':
+        intro_identity = _clamp01(
+            (0.32 * _score_position_low(features.position))
+            + (0.22 * _score_energy_low(features.normalized_energy))
+            + (0.16 * features.headroom)
+            + (0.12 * max(0.0, 1.0 - features.end_focus))
+            + (0.10 * max(0.0, 1.0 - features.hook_strength))
+            + (0.08 * _score_slope_down(features.energy_slope))
+        )
+        fake_intro_risk = _clamp01(
+            (0.32 * _score_position_mid(features.position, center=0.45, width=0.32))
+            + (0.18 * _score_energy_mid_high(features.normalized_energy))
+            + (0.18 * features.groove_drive)
+            + (0.12 * features.groove_stability)
+            + (0.10 * features.hook_strength)
+            + (0.10 * features.end_focus)
+            + (0.08 * features.payoff_strength)
+        )
+        return {
+            'intro_identity': intro_identity,
+            'verse_identity': 0.0,
+            'fake_intro_risk': fake_intro_risk,
+        }
+    if spec.label == 'verse':
+        verse_identity = _clamp01(
+            (0.24 * _score_position_mid(features.position, center=0.34, width=0.30))
+            + (0.18 * _score_energy_mid(features.normalized_energy))
+            + (0.16 * _score_slope_flat(features.energy_slope))
+            + (0.16 * features.groove_stability)
+            + (0.12 * features.groove_drive)
+            + (0.08 * features.repetition)
+            + (0.06 * features.hook_strength)
+        )
+        intro_like_risk = _clamp01(
+            (0.30 * _score_position_low(features.position))
+            + (0.20 * _score_energy_low(features.normalized_energy))
+            + (0.18 * features.headroom)
+            + (0.16 * max(0.0, 1.0 - features.groove_drive))
+            + (0.16 * max(0.0, 1.0 - features.groove_stability))
+        )
+        return {
+            'intro_identity': 0.0,
+            'verse_identity': verse_identity,
+            'fake_intro_risk': intro_like_risk,
+        }
+    return {
+        'intro_identity': 0.0,
+        'verse_identity': 0.0,
+        'fake_intro_risk': 0.0,
+    }
+
+
+def _is_hard_fake_intro_candidate(spec: _SectionSpec, metrics: dict[str, float]) -> bool:
+    return (
+        spec.label == 'intro'
+        and metrics['intro_identity'] < 0.52
+        and metrics['fake_intro_risk'] > 0.58
+    )
+
+
+def _opening_lane_pair_metrics(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> dict[str, float]:
+    if spec.label != 'verse' or parent_id != backbone_parent or not prior_selections:
+        return {
+            'opening_joint_identity_gap': 0.0,
+            'opening_joint_lane_gap': 0.0,
+        }
+
+    prior_intro = next(
+        (
+            selection for selection in reversed(prior_selections)
+            if selection.parent_id == parent_id and selection.section_label == 'intro'
+        ),
+        None,
+    )
+    if prior_intro is None:
+        return {
+            'opening_joint_identity_gap': 0.0,
+            'opening_joint_lane_gap': 0.0,
+        }
+
+    intro_features = _candidate_role_features(prior_intro.song, _phrase_window_candidates(prior_intro.song, spec.bar_count), prior_intro.candidate)
+    intro_identity = _section_identity_metrics(_SectionSpec(label='intro', start_bar=0, bar_count=spec.bar_count, target_energy=0.0, source_parent_preference=parent_id), intro_features)['intro_identity']
+    verse_identity = _section_identity_metrics(spec, features)['verse_identity']
+    continuity = _opening_continuity_metrics(spec, parent_id, candidate, prior_selections, backbone_parent)
+    joint_identity_gap = max(0.0, 0.65 - ((0.48 * intro_identity) + (0.52 * verse_identity)))
+    joint_lane_gap = _clamp01(
+        (0.55 * continuity['opening_phrase_jump_gap'])
+        + (0.30 * continuity['opening_time_jump_gap'])
+        + (0.15 * continuity['opening_rewind_gap'])
+    )
+    return {
+        'opening_joint_identity_gap': joint_identity_gap,
+        'opening_joint_lane_gap': joint_lane_gap,
+    }
+
+
+def _opening_continuity_metrics(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidate: _SectionCandidate,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> dict[str, float]:
+    if spec.label != 'verse' or parent_id != backbone_parent or not prior_selections:
+        return {
+            'opening_phrase_jump_gap': 0.0,
+            'opening_time_jump_gap': 0.0,
+            'opening_rewind_gap': 0.0,
+        }
+
+    prior_intro = next(
+        (
+            selection for selection in reversed(prior_selections)
+            if selection.parent_id == parent_id and selection.section_label == 'intro'
+        ),
+        None,
+    )
+    if prior_intro is None:
+        return {
+            'opening_phrase_jump_gap': 0.0,
+            'opening_time_jump_gap': 0.0,
+            'opening_rewind_gap': 0.0,
+        }
+
+    intro_candidate = prior_intro.candidate
+    intro_indices = _candidate_phrase_indices(intro_candidate.label)
+    verse_indices = _candidate_phrase_indices(candidate.label)
+
+    opening_phrase_jump_gap = 0.0
+    if intro_indices is not None and verse_indices is not None:
+        phrase_jump = verse_indices[0] - intro_indices[1]
+        if phrase_jump < 0:
+            opening_phrase_jump_gap = min(1.0, abs(phrase_jump) / 1.5)
+        elif phrase_jump > 1:
+            opening_phrase_jump_gap = min(1.0, (phrase_jump - 1) / 2.0)
+
+    intro_span = max(intro_candidate.duration, candidate.duration, 1e-6)
+    raw_time_jump = candidate.start - intro_candidate.end
+    opening_time_jump_gap = 0.0
+    if raw_time_jump > 0.0:
+        opening_time_jump_gap = min(1.0, max(0.0, raw_time_jump - (0.35 * intro_span)) / max(1e-6, 0.90 * intro_span))
+
+    opening_rewind_gap = 0.0
+    if candidate.start < intro_candidate.start:
+        opening_rewind_gap = min(1.0, (intro_candidate.start - candidate.start) / intro_span)
+
+    return {
+        'opening_phrase_jump_gap': opening_phrase_jump_gap,
+        'opening_time_jump_gap': opening_time_jump_gap,
+        'opening_rewind_gap': opening_rewind_gap,
+    }
+
+
+def _is_hard_opening_continuity_candidate(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidate: _SectionCandidate,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> bool:
+    metrics = _opening_continuity_metrics(spec, parent_id, candidate, prior_selections, backbone_parent)
+    return (
+        metrics['opening_rewind_gap'] <= 0.0
+        and metrics['opening_phrase_jump_gap'] <= 0.50
+        and metrics['opening_time_jump_gap'] <= 0.60
+    )
+
+
+def _selection_opening_continuity_penalty(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidate: _SectionCandidate,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> tuple[float, dict[str, float]]:
+    metrics = _opening_continuity_metrics(spec, parent_id, candidate, prior_selections, backbone_parent)
+    penalty = min(
+        1.0,
+        (1.10 * metrics['opening_phrase_jump_gap'])
+        + (0.95 * metrics['opening_time_jump_gap'])
+        + (0.90 * metrics['opening_rewind_gap']),
+    )
+    return penalty, metrics
+
+
 def _backbone_selection_guard_reason(
     spec: _SectionSpec,
     parent_id: str,
@@ -1641,12 +1956,15 @@ def _selection_backbone_continuity_penalty(
     prior_selections: list[_WindowSelection],
     backbone_parent: str | None,
     donor_parent: str | None,
+    candidate: _SectionCandidate | None = None,
 ) -> tuple[float, dict[str, float]]:
     if backbone_parent is None or donor_parent is None:
         return 0.0, {
             'off_program_structural_handoff': 0.0,
             'donor_overreach': 0.0,
             'donor_reentry_after_backbone': 0.0,
+            'forward_backbone_rewind': 0.0,
+            'forward_backbone_jump': 0.0,
         }
 
     structural_labels = {'verse', 'bridge', 'outro'}
@@ -1654,6 +1972,8 @@ def _selection_backbone_continuity_penalty(
     off_program_structural_handoff = 0.0
     donor_overreach = 0.0
     donor_reentry_after_backbone = 0.0
+    forward_backbone_rewind = 0.0
+    forward_backbone_jump = 0.0
 
     if spec.label in structural_labels and parent_id != backbone_parent:
         off_program_structural_handoff = 1.0
@@ -1675,16 +1995,31 @@ def _selection_backbone_continuity_penalty(
             if backbone_reclaimed_after_donor:
                 donor_reentry_after_backbone = 1.0 if spec.label == 'payoff' else 0.85
 
+    if candidate is not None and parent_id == backbone_parent and spec.label in structural_labels:
+        last_backbone = next((selection for selection in reversed(prior_selections) if selection.parent_id == backbone_parent), None)
+        if last_backbone is not None and last_backbone.candidate is not None:
+            prior = last_backbone.candidate
+            reference_span = max(prior.duration, candidate.duration, 1e-6)
+            if candidate.start < prior.start:
+                forward_backbone_rewind = min(1.0, (prior.start - candidate.start) / reference_span)
+            elif candidate.start > prior.end:
+                allowed_gap = 0.30 * reference_span
+                forward_backbone_jump = min(1.0, max(0.0, candidate.start - prior.end - allowed_gap) / max(1e-6, 0.85 * reference_span))
+
     penalty = min(
         1.0,
         (0.90 * off_program_structural_handoff)
         + (0.70 * donor_overreach)
-        + (0.95 * donor_reentry_after_backbone),
+        + (0.95 * donor_reentry_after_backbone)
+        + (1.05 * forward_backbone_rewind)
+        + (0.80 * forward_backbone_jump),
     )
     return penalty, {
         'off_program_structural_handoff': off_program_structural_handoff,
         'donor_overreach': min(1.0, donor_overreach),
         'donor_reentry_after_backbone': donor_reentry_after_backbone,
+        'forward_backbone_rewind': forward_backbone_rewind,
+        'forward_backbone_jump': forward_backbone_jump,
     }
 
 
@@ -1741,7 +2076,84 @@ def _enumerate_section_choices(
         ):
             continue
 
+        hard_opening_candidates = {
+            candidate.label
+            for candidate in candidates
+            if _is_hard_opening_continuity_candidate(
+                spec,
+                parent_id,
+                candidate,
+                prior_selections,
+                backbone_parent,
+            )
+        }
+        identity_map = {
+            candidate.label: _section_identity_metrics(spec, features_map[candidate.label])
+            for candidate in candidates
+        }
+        viable_intro_labels = [
+            candidate.label
+            for candidate in candidates
+            if not _is_hard_fake_intro_candidate(spec, identity_map[candidate.label])
+        ]
+        payoff_block_metrics_map = {
+            candidate.label: _payoff_candidate_block_metrics(
+                song,
+                candidate,
+                features_map[candidate.label],
+                previous,
+            )
+            for candidate in candidates
+        } if spec.label == 'payoff' and spec.start_bar >= 24 else {}
+        viable_payoff_labels = [
+            candidate.label
+            for candidate in candidates
+            if payoff_block_metrics_map.get(candidate.label, {}).get('hard_block', 0.0) <= 0.0
+        ]
+
         for candidate in candidates:
+            if hard_opening_candidates and candidate.label not in hard_opening_candidates:
+                continue
+            if spec.label == 'intro' and viable_intro_labels and candidate.label not in viable_intro_labels:
+                continue
+            if spec.label == 'payoff' and viable_payoff_labels and candidate.label not in viable_payoff_labels:
+                continue
+
+            identity_metrics = identity_map[candidate.label]
+            payoff_block_metrics = payoff_block_metrics_map.get(candidate.label, {
+                'payoff_hit': 0.0,
+                'sustained_conviction': 0.0,
+                'early_position_gap': 0.0,
+                'early_start_gap': 0.0,
+                'weak_conviction_gap': 0.0,
+                'sustained_gap': 0.0,
+                'weak_tail_gap': 0.0,
+                'build_lift_gap': 0.0,
+                'hard_block': 0.0,
+            })
+            opening_lane_metrics = _opening_lane_pair_metrics(
+                spec,
+                parent_id,
+                candidate,
+                features_map[candidate.label],
+                prior_selections,
+                backbone_parent,
+            )
+            if spec.label == 'intro':
+                section_identity_penalty = min(
+                    1.0,
+                    max(0.0, 0.62 - identity_metrics['intro_identity'])
+                    + (0.90 * identity_metrics['fake_intro_risk']),
+                )
+            elif spec.label == 'verse':
+                section_identity_penalty = min(
+                    1.0,
+                    max(0.0, 0.58 - identity_metrics['verse_identity'])
+                    + (0.55 * identity_metrics['fake_intro_risk']),
+                )
+            else:
+                section_identity_penalty = 0.0
+
             position_error = abs((candidate.midpoint / total) - anchor_ratio)
             energy_error = abs(candidate.energy - spec.target_energy) / energy_span
             role_error = 1.0 - role_scores.get(candidate.label, 0.0)
@@ -1768,12 +2180,20 @@ def _enumerate_section_choices(
                 spec,
                 features_map[candidate.label],
             )
+            opening_continuity_penalty, opening_continuity_metrics = _selection_opening_continuity_penalty(
+                spec,
+                parent_id,
+                candidate,
+                prior_selections,
+                backbone_parent,
+            )
             backbone_continuity_penalty, backbone_continuity_metrics = _selection_backbone_continuity_penalty(
                 spec,
                 parent_id,
                 prior_selections,
                 backbone_parent,
                 donor_parent,
+                candidate,
             )
             stretch_ratio, target_duration_seconds, stretch_penalty = _stretch_profile(
                 song,
@@ -1796,6 +2216,11 @@ def _enumerate_section_choices(
                 candidate,
                 features_map[candidate.label],
                 previous,
+            )
+            source_role_position_penalty, source_role_position_metrics = _selection_source_role_position_penalty(
+                spec,
+                candidate,
+                features_map[candidate.label],
             )
             preference_error = 0.0 if spec.source_parent_preference in {None, parent_id} else 1.0
             final_payoff_delivery_penalty = 0.0
@@ -1878,11 +2303,16 @@ def _enumerate_section_choices(
                 + (0.85 * final_payoff_delivery_penalty)
                 + (0.95 * build_to_payoff_contrast_penalty)
                 + (1.05 * section_shape_penalty)
+                + (1.05 * source_role_position_penalty)
                 + (1.10 * reuse_penalty)
                 + (0.85 * fusion_balance_penalty)
                 + (0.90 * groove_continuity_penalty)
                 + (0.85 * phrase_groove_penalty)
-                + (1.10 * backbone_continuity_penalty)
+                + (1.05 * section_identity_penalty)
+                + (1.15 * opening_continuity_penalty)
+                + (0.95 * opening_lane_metrics['opening_joint_identity_gap'])
+                + (1.10 * opening_lane_metrics['opening_joint_lane_gap'])
+                + (1.20 * backbone_continuity_penalty)
                 + (0.35 * preference_error)
             )
             selections.append(
@@ -1917,6 +2347,19 @@ def _enumerate_section_choices(
                         'shape_intro_hotspot': section_shape_metrics['intro_hotspot'],
                         'shape_payoff_underhit': section_shape_metrics['payoff_underhit'],
                         'shape_late_drop_gap': section_shape_metrics['late_drop_gap'],
+                        'payoff_hard_block': payoff_block_metrics['hard_block'],
+                        'payoff_hit': payoff_block_metrics['payoff_hit'],
+                        'payoff_sustained_conviction': payoff_block_metrics['sustained_conviction'],
+                        'payoff_early_position_gap': payoff_block_metrics['early_position_gap'],
+                        'payoff_early_start_gap': payoff_block_metrics['early_start_gap'],
+                        'payoff_weak_conviction_gap': payoff_block_metrics['weak_conviction_gap'],
+                        'payoff_sustained_gap': payoff_block_metrics['sustained_gap'],
+                        'payoff_weak_tail_gap': payoff_block_metrics['weak_tail_gap'],
+                        'payoff_build_lift_gap': payoff_block_metrics['build_lift_gap'],
+                        'source_role_position': source_role_position_penalty,
+                        'source_role_too_early_gap': source_role_position_metrics['source_role_too_early_gap'],
+                        'source_role_too_late_gap': source_role_position_metrics['source_role_too_late_gap'],
+                        'source_role_trim_bonus': source_role_position_metrics['source_role_trim_bonus'],
                         'listen_groove_confidence': feedback.groove_confidence,
                         'listen_energy_arc_strength': feedback.energy_arc_strength,
                         'listen_transition_readiness': feedback.transition_readiness,
@@ -1947,10 +2390,22 @@ def _enumerate_section_choices(
                         'phrase_groove': phrase_groove_penalty,
                         'phrase_groove_drive_gap': phrase_groove_metrics['groove_drive_gap'],
                         'phrase_groove_stability_gap': phrase_groove_metrics['groove_stability_gap'],
+                        'section_identity': section_identity_penalty,
+                        'intro_identity': identity_metrics['intro_identity'],
+                        'verse_identity': identity_metrics['verse_identity'],
+                        'fake_intro_risk': identity_metrics['fake_intro_risk'],
+                        'opening_continuity': opening_continuity_penalty,
+                        'opening_phrase_jump_gap': opening_continuity_metrics['opening_phrase_jump_gap'],
+                        'opening_time_jump_gap': opening_continuity_metrics['opening_time_jump_gap'],
+                        'opening_rewind_gap': opening_continuity_metrics['opening_rewind_gap'],
+                        'opening_joint_identity_gap': opening_lane_metrics['opening_joint_identity_gap'],
+                        'opening_joint_lane_gap': opening_lane_metrics['opening_joint_lane_gap'],
                         'backbone_continuity': backbone_continuity_penalty,
                         'backbone_off_program_structural_handoff': backbone_continuity_metrics['off_program_structural_handoff'],
                         'backbone_donor_overreach': backbone_continuity_metrics['donor_overreach'],
                         'backbone_donor_reentry_after_backbone': backbone_continuity_metrics['donor_reentry_after_backbone'],
+                        'backbone_forward_rewind': backbone_continuity_metrics['forward_backbone_rewind'],
+                        'backbone_forward_jump': backbone_continuity_metrics['forward_backbone_jump'],
                         'parent_preference': preference_error,
                         'seam_energy_jump': seam_metrics['energy_jump'],
                         'seam_spectral_jump': seam_metrics['spectral_jump'],

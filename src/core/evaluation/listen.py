@@ -1209,6 +1209,177 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
     return ListenSubscore(score=score, summary=summary, evidence=evidence, fixes=fixes, details=details)
 
 
+def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
+    sections = song.structure.get("sections", []) or []
+    duration = max(float(song.duration_seconds or 0.0), 1e-6)
+    if not sections:
+        return {
+            "readable_section_ratio": 0.0,
+            "boundary_recovery": 0.0,
+            "role_plausibility": 0.0,
+            "climax_conviction": 0.0,
+            "audio_boundary_clarity": 0.0,
+            "section_contrast": 0.0,
+            "narrative_flow": 0.0,
+            "label_support_ratio": 0.0,
+        }
+
+    phrase_boundaries = sorted(set(_safe_float_list(song.structure.get("phrase_boundaries_seconds", []) or [])))
+    novelty_boundaries = sorted(set(_safe_float_list(song.structure.get("novelty_boundaries_seconds", []) or [])))
+    candidate_boundaries = sorted({b for b in phrase_boundaries + novelty_boundaries if 0.0 < b < duration})
+    tolerance = max(_median_beat_interval(song) * 2.0, duration / max(len(sections) * 10.0, 8.0), 0.75)
+
+    bar_rms = _energy_series(song, "rms")
+    bar_onset = _energy_series(song, "onset_density")
+    bar_low = _energy_series(song, "low_band_ratio")
+    bar_flat = _energy_series(song, "spectral_flatness")
+    bar_t = _series_times(bar_rms, duration)
+
+    def _section_energy(start: float, end: float) -> float:
+        if bar_rms.size == 0:
+            return 0.0
+        if bar_t.size == 0:
+            return float(np.mean(bar_rms))
+        mask = (bar_t >= start) & (bar_t < end)
+        if not np.any(mask):
+            mid = (start + end) * 0.5
+            idx = int(np.argmin(np.abs(bar_t - mid)))
+            return float(bar_rms[idx])
+        onset_mean = float(np.mean(bar_onset[mask])) if bar_onset.size == bar_rms.size else 0.0
+        low_mean = float(np.mean(bar_low[mask])) if bar_low.size == bar_rms.size else 0.0
+        flat_mean = float(np.mean(bar_flat[mask])) if bar_flat.size == bar_rms.size else 0.0
+        return float(
+            0.55 * np.mean(bar_rms[mask])
+            + 0.20 * onset_mean
+            + 0.15 * low_mean
+            + 0.10 * max(0.0, 1.0 - flat_mean)
+        )
+
+    section_energies = [
+        _section_energy(float(section.get("start", 0.0) or 0.0), float(section.get("end", 0.0) or 0.0))
+        for section in sections
+    ]
+    energy_low = min(section_energies) if section_energies else 0.0
+    energy_high = max(section_energies) if section_energies else 0.0
+    energy_span = max(energy_high - energy_low, 1e-6)
+
+    readable_sections = 0
+    boundary_hits = 0
+    role_scores: list[float] = []
+    climax_scores: list[float] = []
+    boundary_clarity_scores: list[float] = []
+    narrative_flow_scores: list[float] = []
+    label_hits = 0
+    known_tokens = {"intro", "verse", "build", "pre", "payoff", "chorus", "drop", "bridge", "outro"}
+
+    for idx, section in enumerate(sections):
+        start = float(section.get("start", 0.0) or 0.0)
+        end = max(float(section.get("end", start) or start), start)
+        if end <= start:
+            continue
+        span = end - start
+        center = (start + end) * 0.5
+        rel_center = center / duration
+        energy_norm = _clamp01((section_energies[idx] - energy_low) / energy_span) if section_energies else 0.0
+
+        start_gap = min((abs(start - boundary) for boundary in candidate_boundaries), default=duration)
+        end_gap = min((abs(end - boundary) for boundary in candidate_boundaries), default=duration)
+        start_support = _clamp01(1.0 - start_gap / max(tolerance, 1e-6)) if idx > 0 else 1.0
+        end_support = _clamp01(1.0 - end_gap / max(tolerance, 1e-6)) if idx < len(sections) - 1 else 1.0
+        boundary_support = 0.5 * (start_support + end_support)
+        if idx > 0 and start_support >= 0.5:
+            boundary_hits += 1
+        if idx < len(sections) - 1 and end_support >= 0.5:
+            boundary_hits += 1
+
+        label = str(section.get("role") or section.get("label") or "").lower()
+        has_known_label = any(token in label for token in known_tokens)
+        if has_known_label:
+            label_hits += 1
+
+        expected_profile = []
+        if rel_center < 0.18:
+            expected_profile.append(1.0 - energy_norm)
+        if 0.12 <= rel_center <= 0.55:
+            expected_profile.append(1.0 - abs(energy_norm - 0.45) / 0.45)
+        if 0.35 <= rel_center <= 0.78:
+            expected_profile.append(1.0 - abs(energy_norm - 0.65) / 0.35)
+        if rel_center >= 0.55:
+            expected_profile.append(energy_norm)
+        if rel_center >= 0.82:
+            expected_profile.append(1.0 - abs(energy_norm - 0.35) / 0.35)
+        position_energy_fit = float(np.mean([_clamp01(v) for v in expected_profile])) if expected_profile else 0.5
+
+        transition_bonus = 0.0
+        transition_in = str(section.get("transition_in") or "").lower()
+        transition_out = str(section.get("transition_out") or "").lower()
+        if transition_in in {"lift", "drop"}:
+            transition_bonus += 0.15 * energy_norm
+        if transition_out in {"lift", "drop"}:
+            transition_bonus += 0.10 * energy_norm
+        if has_known_label:
+            role_hint = 0.0
+            if any(token in label for token in {"intro", "outro"}):
+                role_hint = 1.0 - energy_norm
+            elif any(token in label for token in {"verse", "bridge"}):
+                role_hint = 1.0 - abs(energy_norm - 0.45) / 0.45
+            elif any(token in label for token in {"build", "pre"}):
+                role_hint = 1.0 - abs(energy_norm - 0.68) / 0.32
+            elif any(token in label for token in {"payoff", "chorus", "drop"}):
+                role_hint = energy_norm
+            position_energy_fit = 0.65 * position_energy_fit + 0.35 * _clamp01(role_hint)
+
+        prev_energy_norm = _clamp01((section_energies[idx - 1] - energy_low) / energy_span) if idx > 0 and section_energies else energy_norm
+        next_energy_norm = _clamp01((section_energies[idx + 1] - energy_low) / energy_span) if idx + 1 < len(section_energies) else energy_norm
+        local_contrast = max(abs(energy_norm - prev_energy_norm), abs(next_energy_norm - energy_norm)) if len(section_energies) > 1 else 0.0
+        contrast_score = _clamp01((local_contrast - 0.08) / 0.28)
+
+        role_score = _clamp01(0.58 * position_energy_fit + 0.27 * boundary_support + 0.15 * contrast_score + transition_bonus)
+        role_scores.append(role_score)
+
+        readability = _clamp01(0.45 * boundary_support + 0.35 * position_energy_fit + 0.20 * contrast_score)
+        if readability >= 0.55:
+            readable_sections += 1
+
+        if idx > 0:
+            boundary_clarity_scores.append(_clamp01(0.55 * start_support + 0.45 * contrast_score))
+        if idx < len(sections) - 1:
+            boundary_clarity_scores.append(_clamp01(0.55 * end_support + 0.45 * contrast_score))
+
+        local_climax = _clamp01(
+            0.50 * energy_norm
+            + 0.20 * boundary_support
+            + 0.15 * contrast_score
+            + 0.15 * _clamp01(1.0 - abs(rel_center - 0.72) / 0.28)
+        )
+        if transition_in == "drop":
+            local_climax = _clamp01(local_climax + 0.15)
+        climax_scores.append(local_climax)
+
+        if idx > 0:
+            expected_direction = 0.0
+            if rel_center >= 0.55:
+                expected_direction = 1.0
+            elif rel_center <= 0.18:
+                expected_direction = -0.4
+            actual_direction = energy_norm - prev_energy_norm
+            direction_fit = 1.0 - min(abs(actual_direction - expected_direction), 1.0)
+            narrative_flow_scores.append(_clamp01(0.65 * direction_fit + 0.35 * contrast_score))
+
+    internal_boundary_count = max((len(sections) - 1) * 2, 1)
+    return {
+        "readable_section_ratio": round(readable_sections / max(len(sections), 1), 3),
+        "boundary_recovery": round(boundary_hits / internal_boundary_count, 3),
+        "role_plausibility": round(float(np.mean(role_scores)) if role_scores else 0.0, 3),
+        "climax_conviction": round(max(climax_scores) if climax_scores else 0.0, 3),
+        "audio_boundary_clarity": round(float(np.mean(boundary_clarity_scores)) if boundary_clarity_scores else 0.0, 3),
+        "section_contrast": round(float(np.mean([abs(section_energies[idx] - section_energies[idx - 1]) for idx in range(1, len(section_energies))])) / max(energy_span, 1e-6) if len(section_energies) > 1 else 0.0, 3),
+        "narrative_flow": round(float(np.mean(narrative_flow_scores)) if narrative_flow_scores else 0.0, 3),
+        "label_support_ratio": round(label_hits / max(len(sections), 1), 3),
+    }
+
+
+
 def _song_likeness_score(
     song: SongDNA,
     structure: ListenSubscore,
@@ -1222,13 +1393,22 @@ def _song_likeness_score(
     fixes: list[str] = []
 
     section_count = len(song.structure.get("sections", []) or [])
-    section_labels = [str(section.get("label") or "").lower() for section in (song.structure.get("sections", []) or [])]
-    recognizable_sections = sum(
-        1
-        for label in section_labels
-        if any(token in label for token in {"intro", "verse", "build", "pre", "payoff", "chorus", "drop", "bridge", "outro"})
+    readability = _section_readability_metrics(song)
+    readable_section_ratio = float(readability["readable_section_ratio"])
+    boundary_recovery = float(readability["boundary_recovery"])
+    role_plausibility = float(readability["role_plausibility"])
+    planner_climax_conviction = float(readability["climax_conviction"])
+    audio_boundary_clarity = float(readability["audio_boundary_clarity"])
+    section_contrast = float(readability["section_contrast"])
+    narrative_flow = float(readability["narrative_flow"])
+    label_support_ratio = float(readability["label_support_ratio"])
+    recognizable_ratio = _clamp01(
+        0.42 * readable_section_ratio
+        + 0.24 * boundary_recovery
+        + 0.18 * role_plausibility
+        + 0.10 * audio_boundary_clarity
+        + 0.06 * min(label_support_ratio, 0.5)
     )
-    recognizable_ratio = recognizable_sections / max(section_count, 1)
 
     manifest_details = _manifest_overlap_metrics(_load_neighbor_manifest(song)) if _load_neighbor_manifest(song) else None
     manifest_metrics = (manifest_details or {}).get("aggregate_metrics", {})
@@ -1247,26 +1427,36 @@ def _song_likeness_score(
     owner_switch_ratio = owner_switches / max(len(primary_sequence) - 1, 1) if len(primary_sequence) >= 2 else 0.0
     max_parent_share = max(section_primary_counts.values()) / max(sum(section_primary_counts.values()), 1)
     backbone_continuity = _clamp01(
-        0.28 * _clamp01((structure.score - 55.0) / 30.0)
-        + 0.24 * _clamp01((groove.score - 55.0) / 30.0)
-        + 0.24 * _clamp01((coherence.score - 50.0) / 35.0)
-        + 0.14 * _clamp01((recognizable_ratio - 0.35) / 0.45)
+        0.22 * _clamp01((structure.score - 55.0) / 30.0)
+        + 0.18 * _clamp01((groove.score - 55.0) / 30.0)
+        + 0.18 * _clamp01((coherence.score - 50.0) / 35.0)
+        + 0.14 * recognizable_ratio
+        + 0.10 * boundary_recovery
+        + 0.10 * audio_boundary_clarity
+        + 0.08 * narrative_flow
         + 0.10 * (1.0 - _clamp01((owner_switch_ratio - 0.42) / 0.45))
     )
 
     donor_clutter_rejection = _clamp01(
-        0.34 * _clamp01((mix_sanity.score - 45.0) / 35.0)
-        + 0.26 * _clamp01((transition.score - 45.0) / 35.0)
+        0.30 * _clamp01((mix_sanity.score - 45.0) / 35.0)
+        + 0.22 * _clamp01((transition.score - 45.0) / 35.0)
+        + 0.12 * role_plausibility
+        + 0.08 * audio_boundary_clarity
+        + 0.08 * (1.0 - section_contrast)
         + 0.14 * (1.0 - min(float(manifest_metrics.get("avg_overlap_beats", 0.0)) / 4.0, 1.0))
-        + 0.14 * (1.0 - float(manifest_metrics.get("crowding_ratio", 0.0)))
-        + 0.12 * (1.0 - float(manifest_metrics.get("lead_conflict_ratio", 0.0)))
+        + 0.10 * (1.0 - float(manifest_metrics.get("crowding_ratio", 0.0)))
+        + 0.06 * (1.0 - float(manifest_metrics.get("lead_conflict_ratio", 0.0)))
     )
 
     climax_conviction = _clamp01(
-        0.45 * _clamp01((energy_arc.score - 50.0) / 35.0)
-        + 0.25 * _clamp01((transition.score - 45.0) / 35.0)
-        + 0.15 * _clamp01((coherence.score - 50.0) / 35.0)
-        + 0.15 * _clamp01((groove.score - 55.0) / 30.0)
+        0.28 * _clamp01((energy_arc.score - 50.0) / 35.0)
+        + 0.16 * _clamp01((transition.score - 45.0) / 35.0)
+        + 0.12 * _clamp01((coherence.score - 50.0) / 35.0)
+        + 0.10 * _clamp01((groove.score - 55.0) / 30.0)
+        + 0.14 * planner_climax_conviction
+        + 0.10 * role_plausibility
+        + 0.10 * audio_boundary_clarity
+        + 0.10 * section_contrast
     )
 
     identity_penalty = 0.0
@@ -1288,7 +1478,10 @@ def _song_likeness_score(
     score = round(100.0 * raw_norm, 1)
 
     evidence.append(
-        f"backbone continuity {backbone_continuity:.3f}; donor-clutter rejection {donor_clutter_rejection:.3f}; climax conviction {climax_conviction:.3f}; recognizable section ratio {recognizable_ratio:.3f}"
+        f"backbone continuity {backbone_continuity:.3f}; donor-clutter rejection {donor_clutter_rejection:.3f}; climax conviction {climax_conviction:.3f}; readable section ratio {recognizable_ratio:.3f}"
+    )
+    evidence.append(
+        f"section readability: readable sections {readable_section_ratio:.3f}, boundary recovery {boundary_recovery:.3f}, audio boundary clarity {audio_boundary_clarity:.3f}, role plausibility {role_plausibility:.3f}, narrative flow {narrative_flow:.3f}, section contrast {section_contrast:.3f}, planner/audio climax {planner_climax_conviction:.3f}, label support {label_support_ratio:.3f}"
     )
     if manifest_details:
         evidence.append(
@@ -1304,8 +1497,12 @@ def _song_likeness_score(
         fixes.append("Reject cluttered donor carryover more aggressively; long overlaps and competing foreground material are making the child feel pasted together.")
     if climax_conviction < 0.52:
         fixes.append("Deliver a clearer musical backbone into the payoff; the current section program rises numerically but does not sell one convincing song arc.")
+    if boundary_recovery < 0.45:
+        fixes.append("Recover phrase/section seams more faithfully; weak boundary support is making section turns feel arbitrary instead of planned.")
+    if role_plausibility < 0.48:
+        fixes.append("Make section roles more plausible in timing and energy shape; the current program does not read like stable setup/build/payoff behavior.")
     if recognizable_ratio < 0.45:
-        fixes.append("Use a more believable section program with recognizable intro/verse/build/payoff turns instead of generic undifferentiated blocks.")
+        fixes.append("Use a more believable section program with readable section turns instead of generic undifferentiated blocks.")
     if manifest_details and owner_switch_ratio > 0.65:
         fixes.append("Too many section-owner flips are weakening continuity; keep a steadier backbone and reserve parent swaps for real structural turns.")
     if manifest_details and float(manifest_metrics.get("background_only_identity_gap", 0.0)) > 0.20:
@@ -1331,6 +1528,13 @@ def _song_likeness_score(
                 "donor_clutter_rejection": round(donor_clutter_rejection, 3),
                 "climax_conviction": round(climax_conviction, 3),
                 "recognizable_section_ratio": round(recognizable_ratio, 3),
+                "boundary_recovery": round(boundary_recovery, 3),
+                "audio_boundary_clarity": round(audio_boundary_clarity, 3),
+                "role_plausibility": round(role_plausibility, 3),
+                "narrative_flow": round(narrative_flow, 3),
+                "section_contrast": round(section_contrast, 3),
+                "planner_audio_climax_conviction": round(planner_climax_conviction, 3),
+                "label_support_ratio": round(label_support_ratio, 3),
                 "owner_switch_ratio": round(owner_switch_ratio, 3),
                 "owner_switch_count": owner_switches,
                 "max_parent_share": round(max_parent_share, 3),

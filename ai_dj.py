@@ -18,6 +18,17 @@ from typing import Any, Optional
 LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity", "song_likeness")
 
 
+LISTENER_AGENT_COMPONENT_WEIGHTS = {
+    "overall_score": 0.32,
+    "song_likeness": 0.22,
+    "groove": 0.14,
+    "energy_arc": 0.14,
+    "transition": 0.08,
+    "coherence": 0.06,
+    "mix_sanity": 0.04,
+}
+
+
 class CliError(RuntimeError):
     """User-facing CLI error."""
 
@@ -263,6 +274,37 @@ def _short_label(path_str: Optional[str], fallback: str) -> str:
     return Path(path_str).name or fallback
 
 
+def _stable_case_id(path_str: str) -> str:
+    resolved = str(Path(path_str).expanduser().resolve())
+    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:10]
+
+
+def _report_component_snapshot(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    snapshot: dict[str, dict[str, Any]] = {}
+    for key in LISTEN_COMPONENT_KEYS:
+        component = report.get(key) or {}
+        snapshot[key] = {
+            "score": float(component.get("score") or 0.0),
+            "summary": component.get("summary"),
+        }
+    return snapshot
+
+
+def _report_strengths_and_weaknesses(report: dict[str, Any], limit: int = 2) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ranked = [
+        {
+            "component": key,
+            "label": _metric_label(key),
+            "score": float((report.get(key) or {}).get("score") or 0.0),
+            "summary": (report.get(key) or {}).get("summary"),
+        }
+        for key in LISTEN_COMPONENT_KEYS
+    ]
+    strengths = sorted(ranked, key=lambda item: (-item["score"], item["component"]))[:limit]
+    weaknesses = sorted(ranked, key=lambda item: (item["score"], item["component"]))[:limit]
+    return strengths, weaknesses
+
+
 def _stable_compare_output_path(left_input: str, right_input: str) -> Path:
     left_name = Path(left_input).expanduser().name or "left"
     right_name = Path(right_input).expanduser().name or "right"
@@ -462,6 +504,7 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
             return {
                 "input_path": str(path),
                 "input_label": _short_label(raw_input, path.name or "listen_report"),
+                "case_id": _stable_case_id(str(path)),
                 "report_origin": "listen_report",
                 "resolved_audio_path": payload.get("source_path"),
                 "render_manifest_path": None,
@@ -481,6 +524,7 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
     return {
         "input_path": str(path),
         "input_label": _short_label(raw_input, path.name or report_origin),
+        "case_id": _stable_case_id(str(path)),
         "report_origin": report_origin,
         "resolved_audio_path": str(analyzed_path),
         "render_manifest_path": str(render_manifest_path) if render_manifest_path else None,
@@ -514,8 +558,18 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
 
     left_label = left.get("input_label") or "left"
     right_label = right.get("input_label") or "right"
+    ranked_component_swings = [
+        {
+            "component": key,
+            "label": _metric_label(key),
+            "delta": round(abs(float(delta)), 1),
+            "winner": ("left" if delta > 0 else "right" if delta < 0 else "tie"),
+        }
+        for key, delta in sorted(component_deltas.items(), key=lambda item: abs(item[1]), reverse=True)
+    ]
     comparison = {
-        "schema_version": "0.1.0",
+        "schema_version": "0.2.0",
+        "comparison_id": f"{left.get('case_id')}__vs__{right.get('case_id')}",
         "left": left,
         "right": right,
         "deltas": {
@@ -535,6 +589,21 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
             left_label,
             right_label,
         ),
+        "diagnostics": {
+            "ranked_component_swings": ranked_component_swings,
+            "left_profile": {
+                "case_id": left.get("case_id"),
+                "strengths": _report_strengths_and_weaknesses(left_report)[0],
+                "weaknesses": _report_strengths_and_weaknesses(left_report)[1],
+                "components": _report_component_snapshot(left_report),
+            },
+            "right_profile": {
+                "case_id": right.get("case_id"),
+                "strengths": _report_strengths_and_weaknesses(right_report)[0],
+                "weaknesses": _report_strengths_and_weaknesses(right_report)[1],
+                "components": _report_component_snapshot(right_report),
+            },
+        },
         "summary": _summarize_comparison(
             left_report,
             right_report,
@@ -614,6 +683,7 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
     scoreboard = {
         item['input_label']: {
             'label': item['input_label'],
+            'case_id': item['case_id'],
             'input_path': item['input_path'],
             'report_origin': item['report_origin'],
             'overall_score': float(item['report']['overall_score']),
@@ -623,6 +693,8 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
             'losses': 0,
             'net_score_delta': 0.0,
             'pairwise': {},
+            'strengths': _report_strengths_and_weaknesses(item['report'])[0],
+            'weaknesses': _report_strengths_and_weaknesses(item['report'])[1],
         }
         for item in resolved
     }
@@ -658,13 +730,24 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
                 scoreboard[left_label]['ties'] += 1
                 scoreboard[right_label]['ties'] += 1
 
+            deciding_components = list((comparison.get('decision') or {}).get('deciding_components') or [])
+            biggest_swing = deciding_components[0] if deciding_components else None
             comparisons.append(
                 {
+                    'comparison_id': comparison.get('comparison_id'),
                     'left': left_label,
                     'right': right_label,
+                    'left_case_id': left.get('case_id'),
+                    'right_case_id': right.get('case_id'),
                     'winner': winner,
                     'overall_score_delta': delta,
                     'decision': comparison.get('decision', {}),
+                    'diagnostics': {
+                        'biggest_swing': biggest_swing,
+                        'winner_reasons': list((comparison.get('decision') or {}).get('winner_reasons') or []),
+                        'loser_fixes': list((comparison.get('decision') or {}).get('loser_fixes') or []),
+                        'ranked_component_swings': list((comparison.get('diagnostics') or {}).get('ranked_component_swings') or [])[:3],
+                    },
                 }
             )
 
@@ -674,8 +757,17 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
     )
 
     return {
-        'schema_version': '0.1.0',
+        'schema_version': '0.2.0',
         'inputs': [item['input_path'] for item in resolved],
+        'case_index': [
+            {
+                'label': item['input_label'],
+                'case_id': item['case_id'],
+                'input_path': item['input_path'],
+                'report_origin': item['report_origin'],
+            }
+            for item in resolved
+        ],
         'ranking': ranking,
         'comparisons': comparisons,
         'winner': ranking[0]['label'] if ranking else None,
@@ -698,6 +790,193 @@ def benchmark_listen(inputs: list[str], output: Optional[str]) -> int:
             f"- {row['label']}: wins={row['wins']} ties={row['ties']} losses={row['losses']} "
             f"net_delta={row['net_score_delta']:+.1f} overall={row['overall_score']:.1f}"
         )
+    return 0
+
+
+
+def _stable_listener_agent_output_path(inputs: list[str]) -> Path:
+    resolved = sorted(str(Path(item).expanduser().resolve()) for item in inputs)
+    digest = hashlib.sha1("||".join(resolved).encode("utf-8")).hexdigest()[:10]
+    return (Path("runs") / "listener_agent" / f"listener_agent__{digest}.json").resolve()
+
+
+def _listener_component_score(report: dict[str, Any], key: str) -> float:
+    if key == "overall_score":
+        return float(report.get("overall_score") or 0.0)
+    return float((report.get(key) or {}).get("score") or 0.0)
+
+
+def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
+    report = item["report"]
+    gate_status = str((report.get("gating") or {}).get("status") or "unknown")
+    overall = _listener_component_score(report, "overall_score")
+    song_likeness = _listener_component_score(report, "song_likeness")
+    groove = _listener_component_score(report, "groove")
+    energy_arc = _listener_component_score(report, "energy_arc")
+    transition = _listener_component_score(report, "transition")
+    coherence = _listener_component_score(report, "coherence")
+    mix_sanity = _listener_component_score(report, "mix_sanity")
+    verdict = str(report.get("verdict") or "unknown")
+
+    hard_fail_reasons: list[str] = []
+    if gate_status == "reject":
+        hard_fail_reasons.append("hard listen gate rejected the track")
+    if verdict in {"weak", "poor"}:
+        hard_fail_reasons.append("listener verdict says the output is weak or poor")
+    if overall < 55.0:
+        hard_fail_reasons.append("overall musical quality is still too low")
+    if song_likeness < 45.0:
+        hard_fail_reasons.append("does not sound like one real song")
+    if groove < 45.0:
+        hard_fail_reasons.append("groove is too unstable to trust")
+    if energy_arc < 45.0:
+        hard_fail_reasons.append("section arc / payoff shape is too weak")
+    if transition < 45.0:
+        hard_fail_reasons.append("transitions still read like track switching")
+
+    if hard_fail_reasons:
+        decision = "reject"
+    elif verdict in {"mixed"} or overall < 70.0 or song_likeness < 60.0 or groove < 55.0 or energy_arc < 55.0:
+        decision = "borderline"
+    else:
+        decision = "survivor"
+
+    listener_rank = round(sum(
+        LISTENER_AGENT_COMPONENT_WEIGHTS[key] * _listener_component_score(report, key)
+        for key in LISTENER_AGENT_COMPONENT_WEIGHTS
+    ), 1)
+
+    strengths, weaknesses = _report_strengths_and_weaknesses(report, limit=3)
+    return {
+        "label": item.get("input_label"),
+        "case_id": item.get("case_id"),
+        "input_path": item.get("input_path"),
+        "report_origin": item.get("report_origin"),
+        "resolved_audio_path": item.get("resolved_audio_path"),
+        "render_manifest_path": item.get("render_manifest_path"),
+        "overall_score": round(overall, 1),
+        "verdict": verdict,
+        "gate_status": gate_status,
+        "decision": decision,
+        "listener_rank": listener_rank,
+        "hard_fail_reasons": hard_fail_reasons,
+        "top_reasons": list((report.get("top_reasons") or [])[:4]),
+        "top_fixes": list((report.get("top_fixes") or [])[:4]),
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "component_scores": {
+            key: round(_listener_component_score(report, key), 1)
+            for key in LISTENER_AGENT_COMPONENT_WEIGHTS
+            if key != "overall_score"
+        },
+    }
+
+
+def _build_listener_agent_report(inputs: list[str], shortlist: int = 3) -> dict[str, Any]:
+    if not inputs:
+        raise CliError("listener-agent requires at least one input")
+
+    resolved = [_resolve_compare_input(path) for path in inputs]
+    assessments = [_listener_agent_case_assessment(item) for item in resolved]
+    label_counts: dict[str, int] = {}
+    for row in assessments:
+        label = str(row.get("label") or "")
+        label_counts[label] = label_counts.get(label, 0) + 1
+    for row in assessments:
+        label = str(row.get("label") or "")
+        if label_counts.get(label, 0) > 1:
+            input_path = Path(str(row.get("input_path") or "")).expanduser()
+            parent = input_path.parent.name or "case"
+            row["label"] = f"{parent}/{input_path.name}"
+    assessments_sorted = sorted(
+        assessments,
+        key=lambda row: (
+            {"survivor": 0, "borderline": 1, "reject": 2}.get(row["decision"], 3),
+            -float(row["listener_rank"]),
+            row["label"] or "",
+        ),
+    )
+    survivors = [row for row in assessments_sorted if row["decision"] == "survivor"]
+    borderlines = [row for row in assessments_sorted if row["decision"] == "borderline"]
+    rejected = [row for row in assessments_sorted if row["decision"] == "reject"]
+    recommended = survivors[: max(shortlist, 0)]
+
+    summary: list[str] = []
+    if recommended:
+        summary.append(
+            f"Listener agent kept {len(recommended)} of {len(assessments_sorted)} candidates for human review."
+        )
+    else:
+        summary.append("Listener agent found no outputs good enough for human review.")
+    if rejected:
+        summary.append(
+            "Hard rejects: "
+            + "; ".join(
+                f"{row['label']} ({'; '.join(row['hard_fail_reasons'][:2])})"
+                for row in rejected[:3]
+            )
+            + "."
+        )
+    if borderlines and not recommended:
+        summary.append(
+            "Borderline-only pool: "
+            + "; ".join(f"{row['label']} ({row['overall_score']:.1f})" for row in borderlines[:3])
+            + "."
+        )
+
+    survivor_inputs = [row["input_path"] for row in survivors]
+    survivor_benchmark = _build_listen_benchmark(survivor_inputs) if len(survivor_inputs) >= 2 else None
+
+    return {
+        "schema_version": "0.1.0",
+        "listener_agent": {
+            "purpose": "Reject non-song outputs and only recommend promising survivors for human listening.",
+            "hard_reject_rules": [
+                "hard listen gate rejected the track",
+                "does not sound like one real song",
+                "groove is too unstable to trust",
+                "section arc / payoff shape is too weak",
+                "transitions still read like track switching",
+            ],
+        },
+        "inputs": inputs,
+        "summary": summary,
+        "recommended_for_human_review": recommended,
+        "survivors": survivors,
+        "borderline": borderlines,
+        "rejected": rejected,
+        "counts": {
+            "total": len(assessments_sorted),
+            "survivors": len(survivors),
+            "borderline": len(borderlines),
+            "rejected": len(rejected),
+        },
+        "survivor_benchmark": survivor_benchmark,
+    }
+
+
+def listener_agent(inputs: list[str], output: Optional[str], shortlist: int = 3) -> int:
+    report = _build_listener_agent_report(inputs, shortlist=shortlist)
+    resolved_output = _resolve_output_path(
+        output,
+        default_path=_stable_listener_agent_output_path(inputs),
+        default_filename="listener_agent.json",
+    )
+    if resolved_output:
+        _write_json(resolved_output, report)
+        print(f"Wrote listener-agent report: {resolved_output}")
+
+    if output is None:
+        print(json.dumps(report, indent=2, sort_keys=True))
+
+    print(report["summary"][0])
+    for row in report["recommended_for_human_review"]:
+        print(
+            f"- KEEP {row['label']}: rank={row['listener_rank']:.1f} overall={row['overall_score']:.1f} verdict={row['verdict']}"
+        )
+    for row in report["rejected"][:5]:
+        reason = "; ".join(row["hard_fail_reasons"][:2]) or "listener rejected the output"
+        print(f"- REJECT {row['label']}: {reason}")
     return 0
 
 
@@ -754,6 +1033,7 @@ Suggested first checkpoint:
   python3 ai_dj.py listen song.wav --output runs/checkpoint/listen_report.json
   python3 ai_dj.py compare-listen left.json right.json --output runs/checkpoint/listen_compare.json
   python3 ai_dj.py benchmark-listen runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listen_benchmark.json
+  python3 ai_dj.py listener-agent runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listener_agent.json
   python3 ai_dj.py prototype song_a.wav song_b.wav --output-dir runs/prototype-001
   python3 ai_dj.py fusion song_a.wav song_b.wav --output runs/render-prototype
 ''',
@@ -784,6 +1064,11 @@ Suggested first checkpoint:
     benchmark_parser = subparsers.add_parser("benchmark-listen", help="Round-robin benchmark multiple listen reports, audio files, or rendered outputs")
     benchmark_parser.add_argument("inputs", nargs="+", help="Two or more inputs: listen JSON, audio file, render manifest JSON, or render output directory")
     benchmark_parser.add_argument("--output", "-o", help="Path to output benchmark JSON")
+
+    listener_agent_parser = subparsers.add_parser("listener-agent", help="Gate multiple outputs so only promising survivors reach human listening")
+    listener_agent_parser.add_argument("inputs", nargs="+", help="One or more inputs: listen JSON, audio file, render manifest JSON, or render output directory")
+    listener_agent_parser.add_argument("--shortlist", type=int, default=3, help="Maximum number of survivors to recommend for human review")
+    listener_agent_parser.add_argument("--output", "-o", help="Path to output listener-agent JSON")
 
     fus_parser = subparsers.add_parser("fusion", help="Render a first-pass fused audio prototype")
     fus_parser.add_argument("track1", help="Path to first track")
@@ -823,6 +1108,8 @@ Suggested first checkpoint:
             return compare_listen(args.left, args.right, args.output)
         if args.command == "benchmark-listen":
             return benchmark_listen(args.inputs, args.output)
+        if args.command == "listener-agent":
+            return listener_agent(args.inputs, args.output, args.shortlist)
         if args.command == "doctor":
             return doctor(args.output)
     except CliError as exc:

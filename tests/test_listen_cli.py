@@ -344,12 +344,16 @@ def test_compare_listen_reports_writes_delta_json(tmp_path: Path):
 
     payload = json.loads(out.read_text(encoding='utf-8'))
     assert payload['winner']['overall'] == 'left'
+    assert payload['comparison_id'] == f"{payload['left']['case_id']}__vs__{payload['right']['case_id']}"
     assert payload['deltas']['overall_score_delta'] == 8.0
     assert payload['deltas']['component_score_deltas']['energy_arc'] == 13.0
     assert payload['winner']['components']['mix_sanity'] == 'left'
     assert payload['left']['report_origin'] == 'listen_report'
     assert payload['right']['report_origin'] == 'listen_report'
     assert payload['summary']
+    assert payload['diagnostics']['ranked_component_swings'][0]['component'] == 'song_likeness'
+    assert payload['diagnostics']['left_profile']['strengths'][0]['component'] == 'structure'
+    assert payload['diagnostics']['right_profile']['weaknesses'][0]['component'] == 'energy_arc'
     assert payload['decision']['winner'] == 'left'
     assert payload['decision']['winner_label'] == 'left_listen.json'
     assert payload['decision']['loser_label'] == 'right_listen.json'
@@ -566,10 +570,12 @@ def test_song_likeness_rewards_clear_backbone_and_major_sections(tmp_path: Path)
     song.structure['sections'] = [
         {'label': 'intro', 'start': 0.0, 'end': 16.0},
         {'label': 'verse', 'start': 16.0, 'end': 40.0},
-        {'label': 'build', 'start': 40.0, 'end': 64.0},
-        {'label': 'payoff', 'start': 64.0, 'end': 96.0},
+        {'label': 'build', 'start': 40.0, 'end': 64.0, 'transition_in': 'lift'},
+        {'label': 'payoff', 'start': 64.0, 'end': 96.0, 'transition_in': 'drop'},
         {'label': 'outro', 'start': 96.0, 'end': 120.0},
     ]
+    song.structure['phrase_boundaries_seconds'] = [0, 16, 40, 64, 96, 120]
+    song.structure['novelty_boundaries_seconds'] = [16, 40, 64, 96]
 
     report = evaluate_song(song)
     metrics = report.song_likeness.details['aggregate_metrics']
@@ -578,6 +584,96 @@ def test_song_likeness_rewards_clear_backbone_and_major_sections(tmp_path: Path)
     assert report.gating['status'] == 'pass'
     assert metrics['backbone_continuity'] > 0.55
     assert metrics['recognizable_section_ratio'] >= 0.8
+    assert metrics['boundary_recovery'] >= 0.7
+    assert metrics['role_plausibility'] >= 0.55
+
+
+
+def test_song_likeness_uses_boundary_and_audio_readability_even_with_generic_labels():
+    readable_song = DummySong('generic_readable.wav')
+    weak_song = DummySong('generic_weak.wav')
+
+    for current in (readable_song, weak_song):
+        current.structure['sections'] = [
+            {'label': 'section_0', 'start': 0.0, 'end': 16.0},
+            {'label': 'section_1', 'start': 16.0, 'end': 40.0},
+            {'label': 'section_2', 'start': 40.0, 'end': 64.0, 'transition_in': 'lift'},
+            {'label': 'section_3', 'start': 64.0, 'end': 96.0, 'transition_in': 'drop'},
+            {'label': 'section_4', 'start': 96.0, 'end': 120.0},
+        ]
+
+    readable_song.structure['phrase_boundaries_seconds'] = [0, 16, 40, 64, 96, 120]
+    readable_song.structure['novelty_boundaries_seconds'] = [16, 40, 64, 96]
+    readable_song.energy['bar_rms'] = [0.08, 0.09, 0.10, 0.11, 0.16, 0.18, 0.19, 0.20, 0.24, 0.27, 0.31, 0.35, 0.42, 0.45, 0.40, 0.28]
+    readable_song.energy['bar_onset_density'] = [0.14, 0.15, 0.16, 0.16, 0.18, 0.20, 0.21, 0.22, 0.26, 0.28, 0.30, 0.32, 0.40, 0.43, 0.36, 0.24]
+    readable_song.energy['bar_low_band_ratio'] = [0.24, 0.25, 0.25, 0.26, 0.27, 0.28, 0.29, 0.29, 0.31, 0.32, 0.34, 0.35, 0.38, 0.40, 0.36, 0.30]
+    readable_song.energy['bar_spectral_flatness'] = [0.22, 0.22, 0.21, 0.21, 0.20, 0.19, 0.19, 0.18, 0.17, 0.16, 0.15, 0.15, 0.13, 0.13, 0.14, 0.18]
+
+    weak_song.structure['phrase_boundaries_seconds'] = [0, 30, 60, 90, 120]
+    weak_song.structure['novelty_boundaries_seconds'] = [28, 88]
+    weak_song.energy['bar_rms'] = [0.30, 0.31, 0.30, 0.31, 0.10, 0.11, 0.10, 0.11, 0.33, 0.34, 0.33, 0.34, 0.12, 0.12, 0.13, 0.12]
+    weak_song.energy['bar_onset_density'] = [0.34, 0.35, 0.34, 0.35, 0.12, 0.12, 0.13, 0.12, 0.36, 0.36, 0.35, 0.36, 0.14, 0.14, 0.15, 0.14]
+    weak_song.energy['bar_low_band_ratio'] = [0.35, 0.35, 0.35, 0.35, 0.22, 0.22, 0.22, 0.22, 0.36, 0.36, 0.36, 0.36, 0.24, 0.24, 0.24, 0.24]
+    weak_song.energy['bar_spectral_flatness'] = [0.16, 0.16, 0.16, 0.16, 0.18, 0.18, 0.18, 0.18, 0.15, 0.15, 0.15, 0.15, 0.19, 0.19, 0.19, 0.19]
+
+    readable_report = evaluate_song(readable_song)
+    weak_report = evaluate_song(weak_song)
+    readable_metrics = readable_report.song_likeness.details['aggregate_metrics']
+    weak_metrics = weak_report.song_likeness.details['aggregate_metrics']
+
+    assert readable_metrics['label_support_ratio'] == 0.0
+    assert weak_metrics['label_support_ratio'] == 0.0
+    assert readable_metrics['boundary_recovery'] > weak_metrics['boundary_recovery']
+    assert readable_metrics['role_plausibility'] > weak_metrics['role_plausibility']
+    assert readable_metrics['planner_audio_climax_conviction'] > weak_metrics['planner_audio_climax_conviction']
+    assert readable_metrics['recognizable_section_ratio'] > weak_metrics['recognizable_section_ratio']
+    assert readable_report.song_likeness.score > weak_report.song_likeness.score
+
+
+
+def test_song_likeness_does_not_overreward_section_label_tokens_without_audio_support():
+    readable_generic = DummySong('readable_generic.wav')
+    weak_labeled = DummySong('weak_labeled.wav')
+
+    readable_generic.structure['sections'] = [
+        {'label': 'section_0', 'start': 0.0, 'end': 16.0},
+        {'label': 'section_1', 'start': 16.0, 'end': 40.0},
+        {'label': 'section_2', 'start': 40.0, 'end': 64.0, 'transition_in': 'lift'},
+        {'label': 'section_3', 'start': 64.0, 'end': 96.0, 'transition_in': 'drop'},
+        {'label': 'section_4', 'start': 96.0, 'end': 120.0},
+    ]
+    readable_generic.structure['phrase_boundaries_seconds'] = [0, 16, 40, 64, 96, 120]
+    readable_generic.structure['novelty_boundaries_seconds'] = [16, 40, 64, 96]
+    readable_generic.energy['bar_rms'] = [0.08, 0.09, 0.10, 0.11, 0.15, 0.17, 0.18, 0.19, 0.24, 0.27, 0.31, 0.35, 0.42, 0.45, 0.40, 0.26]
+    readable_generic.energy['bar_onset_density'] = [0.14, 0.15, 0.16, 0.16, 0.18, 0.19, 0.20, 0.21, 0.25, 0.27, 0.29, 0.31, 0.38, 0.42, 0.35, 0.22]
+    readable_generic.energy['bar_low_band_ratio'] = [0.24, 0.24, 0.25, 0.25, 0.27, 0.28, 0.28, 0.29, 0.31, 0.32, 0.33, 0.35, 0.38, 0.40, 0.36, 0.29]
+    readable_generic.energy['bar_spectral_flatness'] = [0.22, 0.22, 0.21, 0.21, 0.20, 0.19, 0.19, 0.18, 0.17, 0.16, 0.15, 0.15, 0.13, 0.13, 0.14, 0.18]
+
+    weak_labeled.structure['sections'] = [
+        {'label': 'intro', 'start': 0.0, 'end': 30.0},
+        {'label': 'verse', 'start': 30.0, 'end': 60.0},
+        {'label': 'build', 'start': 60.0, 'end': 90.0, 'transition_in': 'lift'},
+        {'label': 'payoff', 'start': 90.0, 'end': 120.0, 'transition_in': 'drop'},
+    ]
+    weak_labeled.structure['phrase_boundaries_seconds'] = [0, 30, 60, 90, 120]
+    weak_labeled.structure['novelty_boundaries_seconds'] = [28, 88]
+    weak_labeled.energy['bar_rms'] = [0.30, 0.31, 0.30, 0.31, 0.10, 0.11, 0.10, 0.11, 0.33, 0.34, 0.33, 0.34, 0.12, 0.12, 0.13, 0.12]
+    weak_labeled.energy['bar_onset_density'] = [0.34, 0.35, 0.34, 0.35, 0.12, 0.12, 0.13, 0.12, 0.36, 0.36, 0.35, 0.36, 0.14, 0.14, 0.15, 0.14]
+    weak_labeled.energy['bar_low_band_ratio'] = [0.35, 0.35, 0.35, 0.35, 0.22, 0.22, 0.22, 0.22, 0.36, 0.36, 0.36, 0.36, 0.24, 0.24, 0.24, 0.24]
+    weak_labeled.energy['bar_spectral_flatness'] = [0.16, 0.16, 0.16, 0.16, 0.18, 0.18, 0.18, 0.18, 0.15, 0.15, 0.15, 0.15, 0.19, 0.19, 0.19, 0.19]
+
+    readable_report = evaluate_song(readable_generic)
+    weak_report = evaluate_song(weak_labeled)
+
+    readable_metrics = readable_report.song_likeness.details['aggregate_metrics']
+    weak_metrics = weak_report.song_likeness.details['aggregate_metrics']
+
+    assert weak_metrics['label_support_ratio'] > readable_metrics['label_support_ratio']
+    assert readable_metrics['role_plausibility'] > weak_metrics['role_plausibility']
+    assert readable_metrics['planner_audio_climax_conviction'] > weak_metrics['planner_audio_climax_conviction']
+    assert readable_report.song_likeness.score > weak_report.song_likeness.score
+    assert readable_metrics['recognizable_section_ratio'] > 0.75
+    assert weak_report.song_likeness.score < 82.0
 
 
 
@@ -616,3 +712,94 @@ def test_manifest_aware_transition_and_mix_penalties(tmp_path: Path):
     assert any('manifest' in line.lower() for line in report.transition.evidence)
     assert any('manifest' in line.lower() for line in report.mix_sanity.evidence)
     assert any('manifest' in fix.lower() or 'lead-vocal ownership' in fix.lower() or 'overlap' in fix.lower() for fix in report.top_fixes + report.transition.fixes + report.mix_sanity.fixes)
+
+
+def test_listener_agent_rejects_non_songs_and_only_recommends_survivors(tmp_path: Path):
+    strong = {
+        'source_path': 'strong.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 82.0,
+        'structure': {'score': 85.0, 'summary': 'strong', 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': 78.0, 'summary': 'stable pocket', 'evidence': [], 'fixes': [], 'details': {}},
+        'energy_arc': {'score': 79.0, 'summary': 'late payoff lands', 'evidence': [], 'fixes': [], 'details': {}},
+        'transition': {'score': 77.0, 'summary': 'transitions feel musical', 'evidence': [], 'fixes': [], 'details': {}},
+        'coherence': {'score': 83.0, 'summary': 'cohesive', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 80.0, 'summary': 'clear enough', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 81.0, 'summary': 'reads like one song', 'evidence': [], 'fixes': [], 'details': {}},
+        'verdict': 'promising',
+        'top_reasons': ['The render reads like one coherent song.'],
+        'top_fixes': [],
+        'gating': {'status': 'pass', 'raw_overall_score': 82.0},
+        'analysis_version': '0.5.0',
+    }
+    poor = {
+        'source_path': 'poor.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 34.0,
+        'structure': {'score': 52.0, 'summary': 'generic blocks', 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': 31.0, 'summary': 'unstable', 'evidence': [], 'fixes': ['stabilize groove'], 'details': {}},
+        'energy_arc': {'score': 28.0, 'summary': 'flat and front-loaded', 'evidence': [], 'fixes': ['build a real payoff'], 'details': {}},
+        'transition': {'score': 33.0, 'summary': 'track switching', 'evidence': [], 'fixes': ['reduce obvious switches'], 'details': {}},
+        'coherence': {'score': 40.0, 'summary': 'stitched', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 39.0, 'summary': 'messy', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 20.0, 'summary': 'not one song', 'evidence': [], 'fixes': ['make it sound like one song'], 'details': {}},
+        'verdict': 'poor',
+        'top_reasons': ['The render does not read like one song.'],
+        'top_fixes': ['Reject this output.'],
+        'gating': {'status': 'reject', 'raw_overall_score': 34.0},
+        'analysis_version': '0.5.0',
+    }
+
+    strong_path = tmp_path / 'strong.json'
+    poor_path = tmp_path / 'poor.json'
+    out = tmp_path / 'listener_agent.json'
+    strong_path.write_text(json.dumps(strong), encoding='utf-8')
+    poor_path.write_text(json.dumps(poor), encoding='utf-8')
+
+    rc = ai_dj.listener_agent([str(strong_path), str(poor_path)], str(out), shortlist=1)
+    assert rc == 0
+
+    payload = json.loads(out.read_text(encoding='utf-8'))
+    assert payload['counts']['total'] == 2
+    assert payload['counts']['survivors'] == 1
+    assert payload['counts']['rejected'] == 1
+    assert payload['recommended_for_human_review'][0]['label'] == 'strong.json'
+    assert payload['recommended_for_human_review'][0]['decision'] == 'survivor'
+    assert payload['rejected'][0]['label'] == 'poor.json'
+    assert payload['rejected'][0]['decision'] == 'reject'
+    assert 'does not sound like one real song' in payload['rejected'][0]['hard_fail_reasons']
+    assert payload['summary'][0].startswith('Listener agent kept 1 of 2')
+
+
+
+def test_listener_agent_returns_no_human_shortlist_when_everything_is_bad(tmp_path: Path):
+    weak = {
+        'source_path': 'weak.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 48.0,
+        'structure': {'score': 60.0, 'summary': 'okay', 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': 42.0, 'summary': 'loose', 'evidence': [], 'fixes': [], 'details': {}},
+        'energy_arc': {'score': 40.0, 'summary': 'weak arc', 'evidence': [], 'fixes': [], 'details': {}},
+        'transition': {'score': 41.0, 'summary': 'switchy', 'evidence': [], 'fixes': [], 'details': {}},
+        'coherence': {'score': 49.0, 'summary': 'uneven', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 45.0, 'summary': 'rough', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 38.0, 'summary': 'still stitched', 'evidence': [], 'fixes': [], 'details': {}},
+        'verdict': 'weak',
+        'top_reasons': [],
+        'top_fixes': ['Reject this version.'],
+        'gating': {'status': 'reject', 'raw_overall_score': 48.0},
+        'analysis_version': '0.5.0',
+    }
+
+    weak_path = tmp_path / 'weak.json'
+    weak_path.write_text(json.dumps(weak), encoding='utf-8')
+    out = tmp_path / 'listener_agent_none.json'
+
+    rc = ai_dj.listener_agent([str(weak_path)], str(out), shortlist=3)
+    assert rc == 0
+
+    payload = json.loads(out.read_text(encoding='utf-8'))
+    assert payload['recommended_for_human_review'] == []
+    assert payload['counts']['survivors'] == 0
+    assert payload['counts']['rejected'] == 1
+    assert payload['summary'][0] == 'Listener agent found no outputs good enough for human review.'

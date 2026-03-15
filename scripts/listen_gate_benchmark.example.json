@@ -1,0 +1,50 @@
+{
+  "expected_order": [
+    "fusion_candidate",
+    "baseline",
+    "known_bad"
+  ],
+  "cases": [
+    {
+      "label": "fusion_candidate",
+      "input": "runs/fusion_candidate/listen_report.json",
+      "expect": {
+        "gating_status": "pass",
+        "overall_score_at_least": 75.0,
+        "component_score_at_least": {
+          "song_likeness": 60.0,
+          "transition": 55.0
+        },
+        "better_than": [
+          {
+            "other": "baseline",
+            "overall_score_delta_at_least": 2.0,
+            "component_score_delta_at_least": {
+              "song_likeness": 5.0
+            }
+          },
+          {
+            "other": "known_bad",
+            "overall_score_delta_at_least": 10.0,
+            "component_score_delta_at_least": {
+              "song_likeness": 15.0,
+              "energy_arc": 10.0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "baseline",
+      "input": "runs/simple_fuse_20260312_145930"
+    },
+    {
+      "label": "known_bad",
+      "input": "runs/validation_20260314_backbone_reset_rerun/fusion_rerun",
+      "expect": {
+        "gating_status": "reject",
+        "overall_score_at_most": 55.0
+      }
+    }
+  ]
+}

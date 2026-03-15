@@ -42,7 +42,7 @@ It is **not** producer-grade yet. The main gap is still musical intelligence: st
 
 ## Best entry points
 
-- `ai_dj.py` — CLI for doctor / analyze / prototype / fusion / listen / compare-listen
+- `ai_dj.py` — CLI for doctor / analyze / prototype / fusion / listen / compare-listen / benchmark-listen / listener-agent
 - `src/core/analysis/` — analysis foundation and SongDNA generation
 - `src/core/planner/` — song director + section planner
 - `src/core/render/` — transition/ownership execution + deterministic render v1
@@ -99,6 +99,28 @@ Writes:
 - `child_master.wav`
 - `child_master.mp3` (if `ffmpeg` is installed)
 - `render_manifest.json`
+
+### Gate multiple renders with the Listener agent
+
+```bash
+python3 ai_dj.py listener-agent runs/render_a runs/render_b runs/render_c --output runs/checkpoint/listener_agent.json
+```
+
+Purpose:
+- reject non-songs before a human has to hear them
+- shortlist only the strongest survivors for review
+- preserve structured reasons/fixes for rejected outputs
+
+### Run a fixed human-aligned listen benchmark gate
+
+```bash
+python3 scripts/listen_gate_benchmark.py scripts/listen_gate_benchmark.example.json --output runs/checkpoint/listen_gate_benchmark.json
+```
+
+Purpose:
+- enforce labeled good / baseline / bad ordering
+- fail fast when the listener starts preferring artistically worse outputs
+- turn subjective quality expectations into a repeatable regression gate
 
 ## Current checkpoint highlights
 

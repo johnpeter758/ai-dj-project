@@ -240,13 +240,18 @@ def test_build_listen_benchmark_returns_ranked_scoreboard(tmp_path: Path):
 
     assert benchmark['winner'] == 'producer_grade.json'
     assert [row['label'] for row in benchmark['ranking']] == ['producer_grade.json', 'middling.json', 'weak.json']
+    assert len(benchmark['case_index']) == 3
     top = benchmark['ranking'][0]
+    assert top['case_id']
     assert top['wins'] == 2
     assert top['losses'] == 0
     assert top['net_score_delta'] == 32.0
+    assert top['strengths'][0]['component'] == 'energy_arc'
     assert top['pairwise']['middling.json']['winner'] == 'left'
     assert top['pairwise']['weak.json']['overall_score_delta'] == 22.0
     assert len(benchmark['comparisons']) == 3
+    assert benchmark['comparisons'][0]['comparison_id']
+    assert benchmark['comparisons'][0]['diagnostics']['biggest_swing']['component']
 
 
 def test_benchmark_listen_writes_json_artifact(tmp_path: Path):
@@ -288,3 +293,5 @@ def test_benchmark_listen_writes_json_artifact(tmp_path: Path):
     assert payload['winner'] == 'left.json'
     assert payload['ranking'][0]['label'] == 'left.json'
     assert payload['ranking'][1]['label'] == 'right.json'
+    assert payload['comparisons'][0]['diagnostics']['ranked_component_swings'][0]['winner'] == 'left'
+    assert payload['ranking'][1]['weaknesses'][0]['component']
