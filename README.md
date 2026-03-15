@@ -133,6 +133,25 @@ Purpose:
 - summarize the component gaps vs those references
 - map the worst gaps to the next code targets in planner / render / evaluator
 
+### Run a bounded closed-loop listener improvement cycle
+
+```bash
+python3 scripts/closed_loop_listener_runner.py song_a.mp3 song_b.mp3 runs/reference_a runs/reference_b \
+  --output-root runs/closed_loop/demo \
+  --max-iterations 3 \
+  --quality-gate 85 \
+  --change-command "python scripts/your_patch_step.py --brief {feedback_json}" \
+  --test-command "./.venv/bin/python -m pytest -q"
+```
+
+Purpose:
+- render a candidate
+- compare it against known-good references
+- write a code-targeted improvement brief
+- optionally call an external patch step
+- rerun tests
+- stop on plateau or quality-gate success while tracking the best iteration
+
 ## Current checkpoint highlights
 
 - deterministic render v1 stack exists and is tested
