@@ -42,6 +42,16 @@ def _numeric_at_most(label: str, actual: Any, maximum: float, failures: list[str
         failures.append(f"{label}: expected <= {maximum}, got {actual}")
 
 
+def _get_nested(payload: dict[str, Any], path: str) -> Any:
+    current: Any = payload
+    for token in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(token)
+    return current
+
+
+
 def _evaluate_case_expectations(case_result: dict[str, Any]) -> list[str]:
     expect = case_result.get("expect") or {}
     report = case_result.get("report") or {}
@@ -69,6 +79,11 @@ def _evaluate_case_expectations(case_result: dict[str, Any]) -> list[str]:
         _numeric_at_least(f"component[{key}]", component_scores.get(key), float(minimum), failures)
     for key, maximum in (expect.get("component_score_at_most") or {}).items():
         _numeric_at_most(f"component[{key}]", component_scores.get(key), float(maximum), failures)
+
+    for metric_path, minimum in (expect.get("metric_at_least") or {}).items():
+        _numeric_at_least(f"metric[{metric_path}]", _get_nested(report, str(metric_path)), float(minimum), failures)
+    for metric_path, maximum in (expect.get("metric_at_most") or {}).items():
+        _numeric_at_most(f"metric[{metric_path}]", _get_nested(report, str(metric_path)), float(maximum), failures)
 
     return failures
 
@@ -100,13 +115,23 @@ def _evaluate_pairwise_expectations(
                     "reason": f"expected overall win over {other}, got {pair['winner']['overall']}",
                 })
                 continue
+            actual_overall_delta = float(pair["deltas"]["overall_score_delta"])
             min_delta = rule.get("overall_score_delta_at_least")
-            if min_delta is not None and float(pair["deltas"]["overall_score_delta"]) < float(min_delta):
+            if min_delta is not None and actual_overall_delta < float(min_delta):
                 failures.append({
                     "case": label,
                     "other": other,
                     "reason": (
                         f"expected overall score delta >= {min_delta}, got {pair['deltas']['overall_score_delta']}"
+                    ),
+                })
+            max_delta = rule.get("overall_score_delta_at_most")
+            if max_delta is not None and actual_overall_delta > float(max_delta):
+                failures.append({
+                    "case": label,
+                    "other": other,
+                    "reason": (
+                        f"expected overall score delta <= {max_delta}, got {pair['deltas']['overall_score_delta']}"
                     ),
                 })
             for component, minimum in (rule.get("component_score_delta_at_least") or {}).items():
@@ -116,6 +141,14 @@ def _evaluate_pairwise_expectations(
                         "case": label,
                         "other": other,
                         "reason": f"expected {component} delta >= {minimum}, got {actual}",
+                    })
+            for component, maximum in (rule.get("component_score_delta_at_most") or {}).items():
+                actual = (pair["deltas"].get("component_score_deltas") or {}).get(component)
+                if actual is None or float(actual) > float(maximum):
+                    failures.append({
+                        "case": label,
+                        "other": other,
+                        "reason": f"expected {component} delta <= {maximum}, got {actual}",
                     })
 
     expected_order = [str(item) for item in (cases[0].get("_spec_order") or [])] if cases else []

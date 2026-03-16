@@ -96,6 +96,14 @@ def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_pat
         ],
     }), encoding='utf-8')
 
+    active_sprint = runs_dir / 'active_sprint_status.json'
+    active_sprint.write_text(json.dumps({
+        'active': True,
+        'task': 'Close the listen/eval loop in UI',
+        'started_at': '2026-03-15 11:00 EDT',
+        'last_heartbeat': '2026-03-15 11:05 EDT',
+    }), encoding='utf-8')
+
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
     monkeypatch.setattr(server, '_extract_current_task', lambda: {'summary': 'Evaluator surfacing', 'source': None, 'details': []})
     monkeypatch.setattr(server, '_latest_commit', lambda: {})
@@ -109,9 +117,16 @@ def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_pat
     assert payload['latest_benchmark_listen_result']['winner'] == 'fusion_case'
     assert payload['latest_benchmark_listen_result']['top_entry']['wins'] == 2
     assert payload['latest_benchmark_listen_result']['leader_gap'] == 13.0
+    assert payload['latest_benchmark_listen_result']['ranking_preview'][0]['label'] == 'fusion_case'
+    assert payload['latest_benchmark_listen_result']['ranking_preview'][1]['label'] == 'baseline_case'
     assert payload['latest_listener_agent_result']['recommended_count'] == 1
     assert payload['latest_listener_agent_result']['winner'] == 'fusion_case'
     assert payload['latest_listener_agent_result']['top_reject_reason'] == 'does not sound like one real song'
+    assert payload['active_sprint']['status'] == 'active'
+    assert payload['active_sprint']['task'] == 'Close the listen/eval loop in UI'
+    assert payload['workloop_visualization']['progress_percent'] == 86
+    assert payload['workloop_visualization']['current_stage']['key'] == 'code'
+    assert payload['workloop_visualization']['stages'][0]['key'] == 'code'
     assert payload['latest_manifest']['diagnostics']['warning_count'] == 1
     assert payload['latest_manifest']['diagnostics']['overlap_section_count'] == 1
     assert payload['latest_manifest']['diagnostics']['stretch_risk_count'] == 1
@@ -159,3 +174,144 @@ def test_listener_agent_api_runs_on_recent_render_outputs(tmp_path, monkeypatch)
     assert payload['shortlist'] == 1
     assert payload['report']['recommended_for_human_review'][0]['label'] == 'fusion_a'
     assert payload['report']['rejected'][0]['hard_fail_reasons'][0] == 'transitions still read like track switching'
+
+
+def test_listener_agent_api_uses_explicit_run_scoped_inputs(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    first = runs_dir / 'fusion_a'
+    second = runs_dir / 'fusion_b'
+    ignored = runs_dir / 'fusion_c'
+    for path in (first, second, ignored):
+        path.mkdir(parents=True)
+        (path / 'child_master.wav').write_bytes(b'fake')
+        (path / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(path / 'child_master.wav')}}), encoding='utf-8')
+
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+    seen_cmd: list[str] = []
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        seen_cmd[:] = cmd
+        out_index = cmd.index('--output') + 1
+        out_path = Path(cmd[out_index])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps({
+            'listener_agent': {'purpose': 'Reject non-song outputs'},
+            'summary': ['Listener agent kept 1 of 2 explicit candidates for human review.'],
+            'recommended_for_human_review': [
+                {'label': 'fusion_b', 'listener_rank': 82.0, 'overall_score': 78.0, 'verdict': 'promising'}
+            ],
+            'rejected': [
+                {'label': 'fusion_a', 'hard_fail_reasons': ['intro still reads like track switching']}
+            ],
+        }), encoding='utf-8')
+        return SimpleNamespace(returncode=0, stdout='ok', stderr='')
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    client = app.test_client()
+    response = client.post('/api/listener-agent', json={
+        'inputs': [str(second), str(first)],
+        'shortlist': 2,
+    })
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['status'] == 'success'
+    assert payload['inputs'] == [str(second.resolve()), str(first.resolve())]
+    input_index = seen_cmd.index('listener-agent') + 1
+    shortlist_index = seen_cmd.index('--shortlist')
+    assert seen_cmd[input_index:shortlist_index] == [str(second.resolve()), str(first.resolve())]
+    assert str(ignored.resolve()) not in seen_cmd
+    assert payload['report']['recommended_for_human_review'][0]['label'] == 'fusion_b'
+
+
+def test_listener_agent_api_rejects_non_numeric_shortlist(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    runs_dir.mkdir(parents=True)
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+
+    client = app.test_client()
+    response = client.post('/api/listener-agent', json={'shortlist': 'top-two'})
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['status'] == 'error'
+    assert 'shortlist must be an integer' in payload['error']
+
+
+def test_closed_loop_api_runs_bounded_loop_and_returns_report(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    music_dir = tmp_path / 'music'
+    runs_dir.mkdir(parents=True)
+    music_dir.mkdir(parents=True)
+
+    song_a = music_dir / 'song_a.wav'
+    song_b = music_dir / 'song_b.wav'
+    reference = runs_dir / 'ref.wav'
+    song_a.write_bytes(b'a')
+    song_b.write_bytes(b'b')
+    reference.write_bytes(b'r')
+
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+    monkeypatch.setattr(server, 'MUSIC_DIR', music_dir)
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        assert 'closed-loop' in cmd
+        out_index = cmd.index('--output') + 1
+        out_dir = Path(cmd[out_index])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / 'closed_loop_report.json').write_text(json.dumps({
+            'best_iteration': {'iteration': 2, 'candidate_overall_score': 81.0, 'candidate_verdict': 'promising'},
+            'stop_reason': 'plateau:1',
+            'summary': ['Best iteration was 2 with overall score 81.0.'],
+        }), encoding='utf-8')
+        return SimpleNamespace(returncode=0, stdout='closed-loop ok', stderr='')
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    client = app.test_client()
+    response = client.post('/api/closed-loop', json={
+        'song_a': str(song_a),
+        'song_b': str(song_b),
+        'references': [str(reference)],
+        'max_iterations': 2,
+        'plateau_limit': 1,
+        'quality_gate': 88,
+    })
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['status'] == 'success'
+    assert payload['song_a'] == str(song_a.resolve())
+    assert payload['song_b'] == str(song_b.resolve())
+    assert payload['references'] == [str(reference.resolve())]
+    assert payload['config']['max_iterations'] == 2
+    assert payload['config']['plateau_limit'] == 1
+    assert payload['report']['best_iteration']['iteration'] == 2
+    assert payload['report']['stop_reason'] == 'plateau:1'
+
+
+def test_closed_loop_api_rejects_paths_outside_music_or_runs(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    music_dir = tmp_path / 'music'
+    runs_dir.mkdir(parents=True)
+    music_dir.mkdir(parents=True)
+    reference = runs_dir / 'ref.wav'
+    reference.write_bytes(b'r')
+    outsider = tmp_path / 'elsewhere.wav'
+    outsider.write_bytes(b'x')
+
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+    monkeypatch.setattr(server, 'MUSIC_DIR', music_dir)
+
+    client = app.test_client()
+    response = client.post('/api/closed-loop', json={
+        'song_a': str(outsider),
+        'song_b': str(outsider),
+        'references': [str(reference)],
+    })
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert payload['status'] == 'error'
+    assert 'must stay inside music/ or runs/' in payload['error']

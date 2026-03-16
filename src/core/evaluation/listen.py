@@ -44,6 +44,17 @@ def _load_neighbor_manifest(song: SongDNA) -> dict[str, Any] | None:
     return None
 
 
+def _manifest_primary_sequence(manifest: dict[str, Any] | None) -> list[str]:
+    if not manifest:
+        return []
+    primary_sequence: list[str] = []
+    for section in manifest.get('sections') or []:
+        owner = section.get('source_parent') or section.get('foreground_owner')
+        if owner in {'A', 'B'}:
+            primary_sequence.append(str(owner))
+    return primary_sequence
+
+
 def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     sections = manifest.get('sections') or []
     work_orders = manifest.get('work_orders') or []
@@ -59,6 +70,9 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     conservative_collapses = 0
     seam_risk_sections = 0
     stretch_warning_sections = 0
+    low_end_switches = 0
+    low_end_overlap_switches = 0
+    low_end_owner_sequence: list[str] = []
     transition_risk_rows: list[dict[str, Any]] = []
     section_primary_counts = {'A': 0, 'B': 0}
     foreground_owner_counts = {'A': 0, 'B': 0}
@@ -88,6 +102,8 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
             foreground_owner_counts[fg] += 1
         if bg in background_only_presence_counts and bg not in {primary_owner, fg, low}:
             background_only_presence_counts[bg] += 1
+        if low in {'A', 'B'}:
+            low_end_owner_sequence.append(str(low))
 
         overlap_risk = 0.0
         if allowed_overlap:
@@ -98,8 +114,7 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
                 long_overlap_sections += 1
 
         if fg and bg and fg == bg:
-            multi_owner_conflicts += 1
-            overlap_risk += 0.7
+            overlap_risk += 0.2
         if fg and low and fg != low and allowed_overlap:
             overlap_risk += 0.15
 
@@ -133,6 +148,14 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
                 'risk': round(min(overlap_risk, 1.5), 3),
             })
 
+    for left, right in zip(sections, sections[1:]):
+        left_low = left.get('low_end_owner')
+        right_low = right.get('low_end_owner')
+        if left_low in {'A', 'B'} and right_low in {'A', 'B'} and left_low != right_low:
+            low_end_switches += 1
+            if bool(left.get('allowed_overlap', False)) or bool(right.get('allowed_overlap', False)):
+                low_end_overlap_switches += 1
+
     owner_orders = {}
     for order in work_orders:
         idx = int(order.get('section_index', -1))
@@ -157,6 +180,33 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         conservative_collapses = max(conservative_collapses, 1)
 
     section_count = max(len(sections), 1)
+    low_end_owner_count = len(low_end_owner_sequence)
+    low_end_switch_ratio = low_end_switches / max(low_end_owner_count - 1, 1) if low_end_owner_count >= 2 else 0.0
+    low_end_overlap_switch_ratio = low_end_overlap_switches / max(low_end_owner_count - 1, 1) if low_end_owner_count >= 2 else 0.0
+    low_end_ping_pong_count = sum(
+        1
+        for left, mid, right in zip(low_end_owner_sequence, low_end_owner_sequence[1:], low_end_owner_sequence[2:])
+        if left == right and left != mid
+    )
+    low_end_ping_pong_ratio = low_end_ping_pong_count / max(low_end_owner_count - 2, 1) if low_end_owner_count >= 3 else 0.0
+    longest_low_end_run = 0
+    current_low_end_run = 0
+    previous_low_end_owner: str | None = None
+    for owner in low_end_owner_sequence:
+        if owner == previous_low_end_owner:
+            current_low_end_run += 1
+        else:
+            current_low_end_run = 1
+            previous_low_end_owner = owner
+        longest_low_end_run = max(longest_low_end_run, current_low_end_run)
+    low_end_longest_run_ratio = longest_low_end_run / max(low_end_owner_count, 1) if low_end_owner_count else 0.0
+    low_end_owner_majority_ratio = max((low_end_owner_sequence.count('A'), low_end_owner_sequence.count('B')), default=0) / max(low_end_owner_count, 1) if low_end_owner_count else 0.0
+    low_end_owner_stability_risk = _clamp01(
+        0.45 * _clamp01((low_end_switch_ratio - 0.22) / 0.48)
+        + 0.25 * _clamp01((low_end_overlap_switch_ratio - 0.10) / 0.40)
+        + 0.20 * _clamp01((low_end_ping_pong_ratio - 0.10) / 0.45)
+        + 0.10 * _clamp01((0.45 - low_end_longest_run_ratio) / 0.25)
+    )
     true_two_parent_section_ratio = round(min(section_primary_counts.values()) / section_count, 3)
     true_two_parent_major_section_ratio = round(min(major_section_primary_counts.values()) / section_count, 3)
     background_only_presence_ratio = round(sum(background_only_presence_counts.values()) / section_count, 3)
@@ -177,6 +227,14 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         'seam_risk_ratio': round(seam_risk_sections / section_count, 3),
         'stretch_warning_ratio': round(stretch_warning_sections / section_count, 3),
         'collapse_ratio': round(conservative_collapses / section_count, 3),
+        'low_end_owner_switch_count': low_end_switches,
+        'low_end_owner_switch_ratio': round(low_end_switch_ratio, 3),
+        'low_end_overlap_switch_ratio': round(low_end_overlap_switch_ratio, 3),
+        'low_end_ping_pong_count': low_end_ping_pong_count,
+        'low_end_ping_pong_ratio': round(low_end_ping_pong_ratio, 3),
+        'low_end_longest_run_ratio': round(low_end_longest_run_ratio, 3),
+        'low_end_owner_majority_ratio': round(low_end_owner_majority_ratio, 3),
+        'low_end_owner_stability_risk': round(low_end_owner_stability_risk, 3),
         'true_two_parent_section_ratio': true_two_parent_section_ratio,
         'true_two_parent_major_section_ratio': true_two_parent_major_section_ratio,
         'background_only_presence_ratio': background_only_presence_ratio,
@@ -546,15 +604,133 @@ def _groove_score(song: SongDNA) -> ListenSubscore:
     intervals = np.diff(np.asarray(beat_times, dtype=float))
     median_interval = float(np.median(intervals)) if intervals.size else 0.0
     cv = float(np.std(intervals) / max(np.mean(intervals), 1e-6)) if intervals.size else 1.0
-    stability = _clamp01(1.0 - min(cv / 0.12, 1.0))
+    beat_stability = _clamp01(1.0 - min(cv / 0.12, 1.0))
     tempo_consistency = _score_band(median_interval, 0.35, 0.75, 0.25)
-    score = round(100.0 * (0.7 * stability + 0.3 * tempo_consistency), 1)
 
-    evidence.append(f"{len(beat_times)} beats detected; median beat interval {median_interval:.3f}s; interval variation {cv:.3f}")
+    def _pocket_metrics(onset_values: np.ndarray, low_values: np.ndarray) -> tuple[float, float, float, np.ndarray]:
+        target_len = max(onset_values.size, low_values.size)
+        if target_len < 2:
+            return 0.55, 0.55, 0.0, np.asarray([], dtype=float)
+
+        def _resample(values: np.ndarray) -> np.ndarray:
+            if values.size == 0:
+                return np.full(target_len, 0.0, dtype=float)
+            if values.size == target_len:
+                return values.astype(float)
+            if target_len <= 1 or values.size <= 1:
+                return np.full(target_len, float(np.mean(values)), dtype=float)
+            source_x = np.linspace(0.0, 1.0, num=values.size, endpoint=True)
+            target_x = np.linspace(0.0, 1.0, num=target_len, endpoint=True)
+            return np.interp(target_x, source_x, values.astype(float))
+
+        def _normalize(values: np.ndarray) -> np.ndarray:
+            if values.size == 0:
+                return values
+            low_v = float(np.min(values))
+            high_v = float(np.max(values))
+            span = max(high_v - low_v, 1e-6)
+            return (values - low_v) / span
+
+        onset = _resample(onset_values)
+        low = _resample(low_values)
+        groove_series = 0.65 * _normalize(onset) + 0.35 * _normalize(low)
+        groove_steps = np.diff(groove_series) if groove_series.size >= 2 else np.asarray([], dtype=float)
+        if groove_steps.size == 0:
+            return 0.55, 0.55, 0.0, groove_series
+
+        abs_steps = np.abs(groove_steps)
+        down_steps = np.maximum(-groove_steps, 0.0)
+        stability = _clamp01(
+            1.0 - (float(np.median(abs_steps)) + 2.4 * float(np.mean(down_steps))) / 0.18
+        )
+        consistency = _clamp01(
+            1.0 - (float(np.percentile(abs_steps, 90)) + 1.6 * float(np.percentile(down_steps, 90))) / 0.42
+        )
+        collapse = _clamp01(float(np.max(down_steps)) / 0.55)
+        return stability, consistency, collapse, groove_series
+
+    energy = song.energy or {}
+    bar_onset = _safe_array(energy.get("bar_onset_density") or energy.get("onset_density"))
+    bar_low = _safe_array(energy.get("bar_low_band_ratio") or energy.get("low_band_ratio"))
+    beat_onset = _safe_array(energy.get("beat_onset_density"))
+    beat_low = _safe_array(energy.get("beat_low_band_ratio"))
+
+    bar_pocket_stability = 0.55
+    bar_pocket_consistency = 0.55
+    bar_collapse_severity = 0.0
+    bar_groove_series = np.asarray([], dtype=float)
+    if bar_onset.size >= 8 or bar_low.size >= 8:
+        bar_pocket_stability, bar_pocket_consistency, bar_collapse_severity, bar_groove_series = _pocket_metrics(bar_onset, bar_low)
+
+    beat_pulse_stability = bar_pocket_stability
+    beat_pulse_consistency = bar_pocket_consistency
+    beat_collapse_severity = bar_collapse_severity
+    beat_groove_series = np.asarray([], dtype=float)
+    if beat_onset.size >= 16 or beat_low.size >= 16:
+        beat_pulse_stability, beat_pulse_consistency, beat_collapse_severity, beat_groove_series = _pocket_metrics(beat_onset, beat_low)
+
+    if beat_groove_series.size:
+        pocket_stability = 0.45 * bar_pocket_stability + 0.55 * beat_pulse_stability
+        pocket_consistency = 0.45 * bar_pocket_consistency + 0.55 * beat_pulse_consistency
+        collapse_severity = max(bar_collapse_severity, 0.65 * beat_collapse_severity + 0.35 * bar_collapse_severity)
+        groove_series = beat_groove_series
+    else:
+        pocket_stability = bar_pocket_stability
+        pocket_consistency = bar_pocket_consistency
+        collapse_severity = bar_collapse_severity
+        groove_series = bar_groove_series
+
+    score = round(
+        100.0
+        * (
+            0.50 * beat_stability
+            + 0.20 * tempo_consistency
+            + 0.18 * pocket_stability
+            + 0.12 * pocket_consistency
+            - 0.20 * collapse_severity
+        ),
+        1,
+    )
+
+    evidence.append(
+        f"{len(beat_times)} beats detected; median beat interval {median_interval:.3f}s; interval variation {cv:.3f}"
+    )
+    if bar_groove_series.size:
+        evidence.append(
+            "bar-pocket stability %.3f, consistency %.3f, max collapse %.3f"
+            % (bar_pocket_stability, bar_pocket_consistency, bar_collapse_severity)
+        )
+    if beat_groove_series.size:
+        evidence.append(
+            "beat-pocket stability %.3f, consistency %.3f, max collapse %.3f"
+            % (beat_pulse_stability, beat_pulse_consistency, beat_collapse_severity)
+        )
     if cv > 0.10:
         fixes.append("Stabilize beat/downbeat tracking or use a stronger bar-grid estimator for planning and evaluation.")
-    summary = "Groove grid looks reasonably stable." if score >= 70 else "Groove grid looks unstable or under-detected."
-    return ListenSubscore(score=score, summary=summary, evidence=evidence, fixes=fixes)
+    if collapse_severity > 0.45:
+        fixes.append("Tighten bar-to-bar rhythmic continuity; the beat grid exists but the pocket collapses abruptly across adjacent windows.")
+    elif pocket_stability < 0.45:
+        fixes.append("Reduce abrupt onset/low-end churn between adjacent bars and beats so the groove pocket stays locked.")
+    summary = "Groove grid looks reasonably stable." if score >= 70 else "Groove grid looks unstable, collapsed, or under-detected."
+    return ListenSubscore(
+        score=score,
+        summary=summary,
+        evidence=evidence,
+        fixes=fixes,
+        details={
+            "beat_stability": round(beat_stability, 4),
+            "tempo_consistency": round(tempo_consistency, 4),
+            "pocket_stability": round(pocket_stability, 4),
+            "pocket_consistency": round(pocket_consistency, 4),
+            "collapse_severity": round(collapse_severity, 4),
+            "bar_pocket_stability": round(bar_pocket_stability, 4),
+            "bar_pocket_consistency": round(bar_pocket_consistency, 4),
+            "bar_collapse_severity": round(bar_collapse_severity, 4),
+            "beat_pulse_stability": round(beat_pulse_stability, 4),
+            "beat_pulse_consistency": round(beat_pulse_consistency, 4),
+            "beat_collapse_severity": round(beat_collapse_severity, 4),
+        },
+    )
 
 
 def _energy_arc_score(song: SongDNA) -> ListenSubscore:
@@ -610,6 +786,10 @@ def _energy_arc_score(song: SongDNA) -> ListenSubscore:
     payoff_strength = float(derived.get("payoff_strength") or 0.0)
     hook_strength = float(derived.get("hook_strength") or 0.0)
     hook_repetition = float(derived.get("hook_repetition") or 0.0)
+    hook_spend = float(derived.get("hook_spend") or 0.0)
+    early_hook_strength = float(derived.get("early_hook_strength") or 0.0)
+    late_hook_strength = float(derived.get("late_hook_strength") or 0.0)
+    late_payoff_strength = float(derived.get("late_payoff_strength") or 0.0)
     energy_confidence = float(derived.get("energy_confidence") or 0.0)
 
     contrast_score = _clamp01((contrast - 0.10) / 0.35)
@@ -617,16 +797,18 @@ def _energy_arc_score(song: SongDNA) -> ListenSubscore:
     peak_late_bonus = _score_band(peak_position, 0.45, 0.95, 0.25)
     trajectory_score = 0.65 * late_lift_score + 0.35 * peak_late_bonus
     payoff_score = _clamp01(0.50 * payoff_strength + 0.30 * hook_strength + 0.20 * hook_repetition)
+    anti_spend_score = 1.0 - hook_spend
     stability_score = (
         0.65 * _score_band(step_median, 0.015, 0.14, 0.08)
         + 0.35 * _score_band(step_p90, 0.04, 0.32, 0.12)
     )
 
     raw_score = (
-        0.30 * contrast_score
-        + 0.30 * trajectory_score
-        + 0.25 * payoff_score
-        + 0.15 * stability_score
+        0.26 * contrast_score
+        + 0.24 * trajectory_score
+        + 0.24 * payoff_score
+        + 0.11 * stability_score
+        + 0.15 * anti_spend_score
     )
     confidence_gate = 0.70 + 0.30 * _clamp01(energy_confidence)
     final_norm = _clamp01(raw_score) * confidence_gate
@@ -636,7 +818,7 @@ def _energy_arc_score(song: SongDNA) -> ListenSubscore:
         f"bar-energy contrast {contrast:.3f}; quartile means early={early_mean:.3f}, mid={mid_mean:.3f}, late={late_mean:.3f}; late lift {late_lift:.3f}"
     )
     evidence.append(
-        f"peak energy occurs at {peak_position * 100.0:.0f}% of song duration; payoff {payoff_strength:.3f}, hook {hook_strength:.3f}, hook repetition {hook_repetition:.3f}, confidence {energy_confidence:.3f}"
+        f"peak energy occurs at {peak_position * 100.0:.0f}% of song duration; payoff {payoff_strength:.3f}, late payoff {late_payoff_strength:.3f}, hook {hook_strength:.3f}, early hook {early_hook_strength:.3f}, late hook {late_hook_strength:.3f}, hook repetition {hook_repetition:.3f}, hook spend {hook_spend:.3f}, confidence {energy_confidence:.3f}"
     )
     evidence.append(f"bar-energy step stability median {step_median:.3f}, p90 {step_p90:.3f}")
 
@@ -646,6 +828,8 @@ def _energy_arc_score(song: SongDNA) -> ListenSubscore:
         fixes.append("Rework the energy journey so the strongest material arrives later instead of peaking too early.")
     if payoff_score < 0.35:
         fixes.append("Strengthen recurring payoff windows; current energy rises without a convincing chorus/drop identity.")
+    if hook_spend > 0.35:
+        fixes.append("The fusion appears to spend its hook too early; hold back the strongest repeated material until later payoff sections or relaunch it with a stronger late payoff.")
     if step_p90 > 0.38:
         fixes.append("Concentrate bigger energy moves at phrase/section turns instead of constant bar-to-bar churn.")
     if energy_confidence < 0.35:
@@ -671,6 +855,10 @@ def _energy_arc_score(song: SongDNA) -> ListenSubscore:
             "payoff_strength": round(payoff_strength, 3),
             "hook_strength": round(hook_strength, 3),
             "hook_repetition": round(hook_repetition, 3),
+            "hook_spend": round(hook_spend, 3),
+            "early_hook_strength": round(early_hook_strength, 3),
+            "late_hook_strength": round(late_hook_strength, 3),
+            "late_payoff_strength": round(late_payoff_strength, 3),
             "energy_confidence": round(energy_confidence, 3),
         },
         "top_payoff_windows": (derived.get("payoff_windows") or [])[:3],
@@ -728,6 +916,43 @@ def _ownership_clutter_metrics(song: SongDNA) -> dict[str, float]:
         + 0.15 * _clamp01((mean_rms - 0.12) / 0.10)
     )
 
+    crowding_series_size = min(
+        size for size in (rms.size, centroid.size, onset.size, low_band.size, flatness.size) if size > 0
+    ) if all(arr.size > 0 for arr in (rms, centroid, onset, low_band, flatness)) else 0
+    crowding_peak_density = 0.0
+    crowding_sustained_ratio = 0.0
+    crowding_burst_count = 0
+    crowding_burst_risk = 0.0
+    if crowding_series_size >= 4:
+        rms_s = rms[:crowding_series_size]
+        centroid_s = centroid[:crowding_series_size]
+        onset_s = onset[:crowding_series_size]
+        low_band_s = low_band[:crowding_series_size]
+        flatness_s = flatness[:crowding_series_size]
+        frame_risk = np.clip(
+            0.30 * np.clip((rms_s - 0.13) / 0.08, 0.0, 1.0)
+            + 0.22 * np.clip((low_band_s - 0.44) / 0.16, 0.0, 1.0)
+            + 0.20 * np.clip((onset_s - 0.34) / 0.22, 0.0, 1.0)
+            + 0.16 * np.clip((centroid_s - 2400.0) / 1800.0, 0.0, 1.0)
+            + 0.12 * np.clip((flatness_s - 0.22) / 0.16, 0.0, 1.0),
+            0.0,
+            1.0,
+        )
+        crowding_peak_density = float(np.max(frame_risk))
+        crowded_frames = frame_risk >= 0.58
+        crowding_sustained_ratio = float(np.mean(crowded_frames)) if crowded_frames.size else 0.0
+        transitions = np.diff(np.concatenate(([0], crowded_frames.astype(int), [0])))
+        burst_starts = np.where(transitions == 1)[0]
+        burst_ends = np.where(transitions == -1)[0]
+        burst_lengths = burst_ends - burst_starts
+        crowding_burst_count = int(np.sum(burst_lengths >= 2))
+        longest_burst = float(np.max(burst_lengths)) / max(crowding_series_size, 1) if burst_lengths.size else 0.0
+        crowding_burst_risk = _clamp01(
+            0.45 * crowding_peak_density
+            + 0.35 * crowding_sustained_ratio
+            + 0.20 * _clamp01(longest_burst / 0.35)
+        )
+
     return {
         "mean_rms": round(mean_rms, 4),
         "rms_variation": round(rms_var, 4),
@@ -744,6 +969,10 @@ def _ownership_clutter_metrics(song: SongDNA) -> dict[str, float]:
         "overcrowded_overlap_risk": round(overcrowded_overlap, 3),
         "overcompressed_flatness_risk": round(overcompressed_flatness, 3),
         "vocal_competition_risk": round(vocal_competition, 3),
+        "crowding_peak_density": round(crowding_peak_density, 3),
+        "crowding_sustained_ratio": round(crowding_sustained_ratio, 3),
+        "crowding_burst_count": crowding_burst_count,
+        "crowding_burst_risk": round(crowding_burst_risk, 3),
     }
 
 
@@ -958,6 +1187,23 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
     manifest_details = _manifest_overlap_metrics(manifest_payload) if manifest_payload else None
     if manifest_details:
         manifest_metrics = manifest_details['aggregate_metrics']
+        primary_sequence = _manifest_primary_sequence(manifest_payload)
+        owner_switches = sum(1 for left, right in zip(primary_sequence, primary_sequence[1:]) if left != right)
+        owner_switch_ratio = owner_switches / max(len(primary_sequence) - 1, 1) if len(primary_sequence) >= 2 else 0.0
+        alternating_triplets = sum(1 for left, mid, right in zip(primary_sequence, primary_sequence[1:], primary_sequence[2:]) if left == right and left != mid)
+        alternating_triplet_ratio = alternating_triplets / max(len(primary_sequence) - 2, 1) if len(primary_sequence) >= 3 else 0.0
+        swap_sections = sum(
+            1
+            for section in (manifest_payload or {}).get('sections') or []
+            if (section.get('transition_in') in {'swap'} or section.get('transition_out') in {'swap'})
+        )
+        swap_density = swap_sections / max(len((manifest_payload or {}).get('sections') or []), 1)
+        switch_detector_risk = _clamp01(
+            0.55 * _clamp01((owner_switch_ratio - 0.34) / 0.46)
+            + 0.30 * _clamp01((alternating_triplet_ratio - 0.12) / 0.38)
+            + 0.15 * _clamp01((swap_density - 0.25) / 0.45)
+        )
+
         aggregate_metrics['manifest_overlap_section_ratio'] = manifest_metrics['overlap_section_ratio']
         aggregate_metrics['manifest_avg_overlap_beats'] = manifest_metrics['avg_overlap_beats']
         aggregate_metrics['manifest_multi_owner_conflict_ratio'] = manifest_metrics['multi_owner_conflict_ratio']
@@ -965,13 +1211,23 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
         aggregate_metrics['manifest_crowding_ratio'] = manifest_metrics['crowding_ratio']
         aggregate_metrics['manifest_seam_risk_ratio'] = manifest_metrics['seam_risk_ratio']
         aggregate_metrics['manifest_collapse_ratio'] = manifest_metrics['collapse_ratio']
+        aggregate_metrics['manifest_owner_switch_ratio'] = round(owner_switch_ratio, 3)
+        aggregate_metrics['manifest_owner_switch_count'] = owner_switches
+        aggregate_metrics['manifest_low_end_owner_switch_ratio'] = manifest_metrics['low_end_owner_switch_ratio']
+        aggregate_metrics['manifest_low_end_overlap_switch_ratio'] = manifest_metrics['low_end_overlap_switch_ratio']
+        aggregate_metrics['manifest_low_end_owner_stability_risk'] = manifest_metrics['low_end_owner_stability_risk']
+        aggregate_metrics['manifest_alternating_triplet_ratio'] = round(alternating_triplet_ratio, 3)
+        aggregate_metrics['manifest_swap_density'] = round(swap_density, 3)
+        aggregate_metrics['manifest_switch_detector_risk'] = round(switch_detector_risk, 3)
         manifest_penalty = (
-            0.28 * manifest_metrics['multi_owner_conflict_ratio']
-            + 0.18 * manifest_metrics['lead_conflict_ratio']
-            + 0.16 * manifest_metrics['crowding_ratio']
-            + 0.18 * manifest_metrics['seam_risk_ratio']
-            + 0.12 * manifest_metrics['avg_overlap_beats'] / 8.0
-            + 0.08 * manifest_metrics['long_overlap_ratio']
+            0.24 * manifest_metrics['multi_owner_conflict_ratio']
+            + 0.16 * manifest_metrics['lead_conflict_ratio']
+            + 0.14 * manifest_metrics['crowding_ratio']
+            + 0.16 * manifest_metrics['seam_risk_ratio']
+            + 0.10 * manifest_metrics['avg_overlap_beats'] / 8.0
+            + 0.06 * manifest_metrics['long_overlap_ratio']
+            + 0.08 * manifest_metrics['low_end_owner_stability_risk']
+            + 0.14 * switch_detector_risk
         )
         score = round(max(0.0, score - 22.0 * manifest_penalty), 1)
         evidence.append(
@@ -981,7 +1237,15 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
             f"owner conflicts {manifest_metrics['multi_owner_conflict_ratio']:.2f}, "
             f"lead conflicts {manifest_metrics['lead_conflict_ratio']:.2f}, "
             f"crowding {manifest_metrics['crowding_ratio']:.2f}, "
+            f"low-end owner stability risk {manifest_metrics['low_end_owner_stability_risk']:.2f}, "
             f"stretch/seam risk {manifest_metrics['seam_risk_ratio']:.2f}"
+        )
+        evidence.append(
+            "manifest switch detector — "
+            f"owner switch ratio {owner_switch_ratio:.2f}, "
+            f"alternating-triplet ratio {alternating_triplet_ratio:.2f}, "
+            f"swap density {swap_density:.2f}, "
+            f"switch risk {switch_detector_risk:.2f}"
         )
         if manifest_metrics['multi_owner_conflict_ratio'] > 0.0:
             fixes.append("Resolved manifest still contains explicit multi-owner conflicts; collapse those seams to one low-end owner and one foreground owner.")
@@ -991,6 +1255,10 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
             fixes.append("Reduce manifest overlap windows and donor density; the explicit plan is already too crowded before audio rendering artifacts enter the picture.")
         if manifest_metrics['seam_risk_ratio'] > 0.34:
             fixes.append("High-stretch or transition-heavy sections in the manifest are likely seam risks; prefer phrase-safer windows or shorter swaps.")
+        if switch_detector_risk > 0.45:
+            fixes.append("Manifest ownership is flipping often enough to read like track switching; keep a steadier parent backbone and reserve swaps for major structural turns.")
+        if manifest_metrics['low_end_owner_stability_risk'] > 0.45:
+            fixes.append("Low-end ownership is not staying anchored through adjacent sections; keep one kick/sub owner across the seam unless the swap is structurally unavoidable.")
 
     evidence.append(
         "avg seam-local boundary deltas — "
@@ -1140,11 +1408,13 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
     clutter = _ownership_clutter_metrics(song)
     manifest_details = _manifest_overlap_metrics(_load_neighbor_manifest(song)) if _load_neighbor_manifest(song) else None
     ownership_penalty = (
-        0.24 * clutter["overcrowded_overlap_risk"]
-        + 0.22 * clutter["low_end_conflict_risk"]
-        + 0.20 * clutter["foreground_overload_risk"]
-        + 0.18 * clutter["overcompressed_flatness_risk"]
-        + 0.16 * clutter["vocal_competition_risk"]
+        0.20 * clutter["overcrowded_overlap_risk"]
+        + 0.18 * clutter["low_end_conflict_risk"]
+        + 0.16 * clutter["foreground_overload_risk"]
+        + 0.15 * clutter["overcompressed_flatness_risk"]
+        + 0.13 * clutter["vocal_competition_risk"]
+        + 0.10 * clutter.get("crowding_burst_risk", 0.0)
+        + 0.08 * clutter.get("crowding_sustained_ratio", 0.0)
     )
     if manifest_details:
         manifest_metrics = manifest_details['aggregate_metrics']
@@ -1154,6 +1424,7 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
             + 0.14 * manifest_metrics['crowding_ratio']
             + 0.12 * manifest_metrics['avg_overlap_beats'] / 8.0
             + 0.10 * manifest_metrics['seam_risk_ratio']
+            + 0.10 * manifest_metrics['low_end_owner_stability_risk']
         )
     base_score = 0.32 * centroid_score + 0.28 * rms_score + 0.18 * variance_score
     ownership_score = _clamp01(1.0 - ownership_penalty)
@@ -1167,7 +1438,9 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
         f"low-end {clutter['low_end_conflict_risk']:.2f}, "
         f"foreground {clutter['foreground_overload_risk']:.2f}, "
         f"flatness {clutter['overcompressed_flatness_risk']:.2f}, "
-        f"vocals {clutter['vocal_competition_risk']:.2f}"
+        f"vocals {clutter['vocal_competition_risk']:.2f}, "
+        f"crowding burst {clutter.get('crowding_burst_risk', 0.0):.2f}, "
+        f"sustained crowding {clutter.get('crowding_sustained_ratio', 0.0):.2f}"
     )
     if manifest_details:
         manifest_metrics = manifest_details['aggregate_metrics']
@@ -1177,6 +1450,8 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
             f"lead conflicts {manifest_metrics['lead_conflict_ratio']:.2f}, "
             f"crowding {manifest_metrics['crowding_ratio']:.2f}, "
             f"avg overlap beats {manifest_metrics['avg_overlap_beats']:.2f}, "
+            f"low-end owner switch ratio {manifest_metrics['low_end_owner_switch_ratio']:.2f}, "
+            f"low-end stability risk {manifest_metrics['low_end_owner_stability_risk']:.2f}, "
             f"collapse ratio {manifest_metrics['collapse_ratio']:.2f}"
         )
         if manifest_metrics['multi_owner_conflict_ratio'] > 0.0:
@@ -1185,6 +1460,8 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
             fixes.append("Lead-vocal ownership is still ambiguous in the manifest; avoid explicit dual-lead sections.")
         if manifest_metrics['crowding_ratio'] > 0.34 or manifest_metrics['avg_overlap_beats'] > 3.0:
             fixes.append("The manifest itself is crowding the arrangement with long or dense overlaps; shorten the donor window before worrying about mastering.")
+        if manifest_metrics['low_end_owner_stability_risk'] > 0.45:
+            fixes.append("Low-end ownership is flipping too often across adjacent sections, especially through overlaps; keep the kick/sub anchor on one parent longer.")
 
     if rms_mean > 0.20:
         fixes.append("Watch overcompression or excessive density; leave more headroom and contrast.")
@@ -1202,6 +1479,10 @@ def _mix_sanity_score(song: SongDNA) -> ListenSubscore:
         fixes.append("Back off flat, constant density; the render needs more dynamic contour and less wall-of-sound compression feel.")
     if clutter["vocal_competition_risk"] > 0.50:
         fixes.append("Resolve lead-vocal ownership more clearly; the current texture suggests competing lead material.")
+    if clutter.get("crowding_burst_risk", 0.0) > 0.45:
+        fixes.append("Dense mix crowding is spiking in short bursts; trim overlap entries/exits so sections stop bunching up at handoffs.")
+    if clutter.get("crowding_sustained_ratio", 0.0) > 0.30:
+        fixes.append("Crowding stays active for too much of the render; reduce sustained simultaneous full-spectrum occupancy instead of only EQing the master.")
     summary = "Mix sanity looks broadly usable." if score >= 70 else "Mix sanity indicators suggest congestion, ownership conflicts, or flatness."
     details = {"ownership_clutter_metrics": clutter}
     if manifest_details:
@@ -1221,6 +1502,7 @@ def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
             "audio_boundary_clarity": 0.0,
             "section_contrast": 0.0,
             "narrative_flow": 0.0,
+            "direction_flip_ratio": 0.0,
             "label_support_ratio": 0.0,
         }
 
@@ -1235,40 +1517,108 @@ def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
     bar_flat = _energy_series(song, "spectral_flatness")
     bar_t = _series_times(bar_rms, duration)
 
+    def _section_mask(start: float, end: float) -> np.ndarray:
+        if bar_rms.size == 0:
+            return np.asarray([], dtype=bool)
+        if bar_t.size != bar_rms.size:
+            return np.ones(bar_rms.size, dtype=bool)
+        mask = (bar_t >= start) & (bar_t < end)
+        if np.any(mask):
+            return mask
+        mid = (start + end) * 0.5
+        idx = int(np.argmin(np.abs(bar_t - mid)))
+        mask = np.zeros(bar_rms.size, dtype=bool)
+        mask[idx] = True
+        return mask
+
+    def _masked_mean(values: np.ndarray, mask: np.ndarray, default: float = 0.0) -> float:
+        if values.size == 0 or mask.size == 0:
+            return default
+        usable = values[mask[: values.size]] if mask.size != values.size else values[mask]
+        if usable.size == 0:
+            return default
+        return float(np.mean(usable))
+
     def _section_energy(start: float, end: float) -> float:
         if bar_rms.size == 0:
             return 0.0
-        if bar_t.size == 0:
-            return float(np.mean(bar_rms))
-        mask = (bar_t >= start) & (bar_t < end)
-        if not np.any(mask):
-            mid = (start + end) * 0.5
-            idx = int(np.argmin(np.abs(bar_t - mid)))
-            return float(bar_rms[idx])
-        onset_mean = float(np.mean(bar_onset[mask])) if bar_onset.size == bar_rms.size else 0.0
-        low_mean = float(np.mean(bar_low[mask])) if bar_low.size == bar_rms.size else 0.0
-        flat_mean = float(np.mean(bar_flat[mask])) if bar_flat.size == bar_rms.size else 0.0
+        mask = _section_mask(start, end)
+        onset_mean = _masked_mean(bar_onset, mask)
+        low_mean = _masked_mean(bar_low, mask)
+        flat_mean = _masked_mean(bar_flat, mask)
+        rms_mean = _masked_mean(bar_rms, mask)
         return float(
-            0.55 * np.mean(bar_rms[mask])
+            0.55 * rms_mean
             + 0.20 * onset_mean
             + 0.15 * low_mean
             + 0.10 * max(0.0, 1.0 - flat_mean)
         )
 
-    section_energies = [
-        _section_energy(float(section.get("start", 0.0) or 0.0), float(section.get("end", 0.0) or 0.0))
-        for section in sections
-    ]
+    section_profiles: list[dict[str, float]] = []
+    section_energies: list[float] = []
+    for section in sections:
+        start = float(section.get("start", 0.0) or 0.0)
+        end = float(section.get("end", start) or start)
+        mask = _section_mask(start, end)
+        rms_mean = _masked_mean(bar_rms, mask)
+        onset_mean = _masked_mean(bar_onset, mask)
+        low_mean = _masked_mean(bar_low, mask)
+        flat_mean = _masked_mean(bar_flat, mask)
+        energy_value = float(
+            0.55 * rms_mean
+            + 0.20 * onset_mean
+            + 0.15 * low_mean
+            + 0.10 * max(0.0, 1.0 - flat_mean)
+        )
+        section_energies.append(energy_value)
+
+        rms_vals = bar_rms[mask] if bar_rms.size and mask.size == bar_rms.size else np.asarray([rms_mean], dtype=float)
+        if rms_vals.size == 0:
+            rms_vals = np.asarray([rms_mean], dtype=float)
+        thirds = np.array_split(rms_vals, min(3, max(1, int(rms_vals.size))))
+        start_mean = float(np.mean(thirds[0])) if thirds else rms_mean
+        end_mean = float(np.mean(thirds[-1])) if thirds else rms_mean
+        peak_mean = float(np.max(rms_vals)) if rms_vals.size else rms_mean
+        valley_mean = float(np.min(rms_vals)) if rms_vals.size else rms_mean
+        rise = end_mean - start_mean
+        headroom = max(peak_mean - rms_mean, 0.0)
+        sustain = max(min(end_mean, peak_mean) - max(valley_mean, start_mean), 0.0)
+        end_focus = end_mean / max(peak_mean, 1e-6)
+        section_profiles.append({
+            "energy": energy_value,
+            "rms_mean": rms_mean,
+            "onset_mean": onset_mean,
+            "low_mean": low_mean,
+            "flat_mean": flat_mean,
+            "start_mean": start_mean,
+            "end_mean": end_mean,
+            "peak_mean": peak_mean,
+            "valley_mean": valley_mean,
+            "rise": rise,
+            "headroom": headroom,
+            "sustain": sustain,
+            "end_focus": end_focus,
+        })
+
     energy_low = min(section_energies) if section_energies else 0.0
     energy_high = max(section_energies) if section_energies else 0.0
     energy_span = max(energy_high - energy_low, 1e-6)
+
+    rise_values = [profile["rise"] for profile in section_profiles]
+    headroom_values = [profile["headroom"] for profile in section_profiles]
+    sustain_values = [profile["sustain"] for profile in section_profiles]
+    rise_span = max((max(rise_values) - min(rise_values)), 1e-6) if rise_values else 1e-6
+    headroom_span = max((max(headroom_values) - min(headroom_values)), 1e-6) if headroom_values else 1e-6
+    sustain_span = max((max(sustain_values) - min(sustain_values)), 1e-6) if sustain_values else 1e-6
 
     readable_sections = 0
     boundary_hits = 0
     role_scores: list[float] = []
     climax_scores: list[float] = []
+    climax_relative_centers: list[float] = []
     boundary_clarity_scores: list[float] = []
     narrative_flow_scores: list[float] = []
+    section_direction_changes: list[float] = []
     label_hits = 0
     known_tokens = {"intro", "verse", "build", "pre", "payoff", "chorus", "drop", "bridge", "outro"}
 
@@ -1280,7 +1630,19 @@ def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
         span = end - start
         center = (start + end) * 0.5
         rel_center = center / duration
+        profile = section_profiles[idx] if idx < len(section_profiles) else {
+            "rise": 0.0,
+            "headroom": 0.0,
+            "sustain": 0.0,
+            "end_focus": 0.0,
+            "onset_mean": 0.0,
+            "low_mean": 0.0,
+            "flat_mean": 0.0,
+        }
         energy_norm = _clamp01((section_energies[idx] - energy_low) / energy_span) if section_energies else 0.0
+        rise_norm = _clamp01((profile["rise"] - min(rise_values)) / rise_span) if rise_values else 0.0
+        headroom_norm = _clamp01((profile["headroom"] - min(headroom_values)) / headroom_span) if headroom_values else 0.0
+        sustain_norm = _clamp01((profile["sustain"] - min(sustain_values)) / sustain_span) if sustain_values else 0.0
 
         start_gap = min((abs(start - boundary) for boundary in candidate_boundaries), default=duration)
         end_gap = min((abs(end - boundary) for boundary in candidate_boundaries), default=duration)
@@ -1317,24 +1679,87 @@ def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
             transition_bonus += 0.15 * energy_norm
         if transition_out in {"lift", "drop"}:
             transition_bonus += 0.10 * energy_norm
+        shape_fit = 0.5
+        if rel_center < 0.20:
+            shape_fit = _clamp01(
+                0.50 * (1.0 - energy_norm)
+                + 0.20 * (1.0 - rise_norm)
+                + 0.15 * (1.0 - sustain_norm)
+                + 0.15 * (1.0 - min(profile["onset_mean"] / 0.45, 1.0))
+            )
+        elif rel_center < 0.52:
+            shape_fit = _clamp01(
+                0.40 * (1.0 - abs(energy_norm - 0.42) / 0.42)
+                + 0.25 * (1.0 - abs(rise_norm - 0.45) / 0.45)
+                + 0.20 * (1.0 - sustain_norm)
+                + 0.15 * (1.0 - min(profile["flat_mean"] / 0.35, 1.0))
+            )
+        elif rel_center < 0.80:
+            shape_fit = _clamp01(
+                0.32 * (1.0 - abs(energy_norm - 0.66) / 0.34)
+                + 0.26 * rise_norm
+                + 0.16 * headroom_norm
+                + 0.16 * profile["end_focus"]
+                + 0.10 * (1.0 - sustain_norm)
+            )
+        else:
+            shape_fit = _clamp01(
+                0.36 * energy_norm
+                + 0.24 * sustain_norm
+                + 0.20 * profile["end_focus"]
+                + 0.12 * (1.0 - headroom_norm)
+                + 0.08 * (1.0 - max(rise_norm - 0.55, 0.0))
+            )
+
         if has_known_label:
             role_hint = 0.0
             if any(token in label for token in {"intro", "outro"}):
-                role_hint = 1.0 - energy_norm
+                role_hint = _clamp01(
+                    0.45 * (1.0 - energy_norm)
+                    + 0.20 * (1.0 - rise_norm)
+                    + 0.20 * (1.0 - sustain_norm)
+                    + 0.15 * (1.0 - min(profile["onset_mean"] / 0.45, 1.0))
+                )
             elif any(token in label for token in {"verse", "bridge"}):
-                role_hint = 1.0 - abs(energy_norm - 0.45) / 0.45
+                role_hint = _clamp01(
+                    0.42 * (1.0 - abs(energy_norm - 0.45) / 0.45)
+                    + 0.23 * (1.0 - abs(rise_norm - 0.40) / 0.40)
+                    + 0.20 * (1.0 - sustain_norm)
+                    + 0.15 * (1.0 - min(profile["flat_mean"] / 0.35, 1.0))
+                )
             elif any(token in label for token in {"build", "pre"}):
-                role_hint = 1.0 - abs(energy_norm - 0.68) / 0.32
+                rise_commit = _clamp01(profile["end_focus"] * rise_norm)
+                role_hint = _clamp01(
+                    0.22 * (1.0 - abs(energy_norm - 0.68) / 0.32)
+                    + 0.28 * rise_commit
+                    + 0.18 * headroom_norm
+                    + 0.12 * profile["end_focus"]
+                    + 0.10 * (1.0 - sustain_norm)
+                )
+                if profile["rise"] <= 0.0:
+                    role_hint = _clamp01(role_hint - 0.22)
             elif any(token in label for token in {"payoff", "chorus", "drop"}):
-                role_hint = energy_norm
-            position_energy_fit = 0.65 * position_energy_fit + 0.35 * _clamp01(role_hint)
+                role_hint = _clamp01(
+                    0.30 * energy_norm
+                    + 0.26 * sustain_norm
+                    + 0.22 * profile["end_focus"]
+                    + 0.12 * (1.0 - headroom_norm)
+                    + 0.10 * (1.0 - max(rise_norm - 0.55, 0.0))
+                )
+                if profile["end_focus"] < 0.72:
+                    role_hint = _clamp01(role_hint - 0.18)
+            position_energy_fit = 0.45 * position_energy_fit + 0.30 * shape_fit + 0.25 * _clamp01(role_hint)
+        else:
+            position_energy_fit = 0.62 * position_energy_fit + 0.38 * shape_fit
 
         prev_energy_norm = _clamp01((section_energies[idx - 1] - energy_low) / energy_span) if idx > 0 and section_energies else energy_norm
         next_energy_norm = _clamp01((section_energies[idx + 1] - energy_low) / energy_span) if idx + 1 < len(section_energies) else energy_norm
         local_contrast = max(abs(energy_norm - prev_energy_norm), abs(next_energy_norm - energy_norm)) if len(section_energies) > 1 else 0.0
         contrast_score = _clamp01((local_contrast - 0.08) / 0.28)
 
-        role_score = _clamp01(0.58 * position_energy_fit + 0.27 * boundary_support + 0.15 * contrast_score + transition_bonus)
+        role_score = _clamp01(0.50 * position_energy_fit + 0.25 * boundary_support + 0.15 * contrast_score + transition_bonus)
+        if has_known_label:
+            role_score = _clamp01(0.60 * role_score + 0.40 * _clamp01(role_hint))
         role_scores.append(role_score)
 
         readability = _clamp01(0.45 * boundary_support + 0.35 * position_energy_fit + 0.20 * contrast_score)
@@ -1355,6 +1780,7 @@ def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
         if transition_in == "drop":
             local_climax = _clamp01(local_climax + 0.15)
         climax_scores.append(local_climax)
+        climax_relative_centers.append(rel_center)
 
         if idx > 0:
             expected_direction = 0.0
@@ -1364,17 +1790,31 @@ def _section_readability_metrics(song: SongDNA) -> dict[str, float]:
                 expected_direction = -0.4
             actual_direction = energy_norm - prev_energy_norm
             direction_fit = 1.0 - min(abs(actual_direction - expected_direction), 1.0)
+            if idx > 1:
+                previous_direction = prev_energy_norm - _clamp01((section_energies[idx - 2] - energy_low) / energy_span)
+                if abs(actual_direction) >= 0.12 and abs(previous_direction) >= 0.12:
+                    section_direction_changes.append(1.0 if np.sign(actual_direction) != np.sign(previous_direction) else 0.0)
             narrative_flow_scores.append(_clamp01(0.65 * direction_fit + 0.35 * contrast_score))
 
+    direction_flip_ratio = float(np.mean(section_direction_changes)) if section_direction_changes else 0.0
+    narrative_flow = _clamp01(
+        (float(np.mean(narrative_flow_scores)) if narrative_flow_scores else 0.0)
+        - 0.45 * direction_flip_ratio
+    )
+    climax_position = 0.0
+    if climax_scores and climax_relative_centers and len(climax_scores) == len(climax_relative_centers):
+        climax_position = float(climax_relative_centers[int(np.argmax(np.asarray(climax_scores, dtype=float)))])
     internal_boundary_count = max((len(sections) - 1) * 2, 1)
     return {
         "readable_section_ratio": round(readable_sections / max(len(sections), 1), 3),
         "boundary_recovery": round(boundary_hits / internal_boundary_count, 3),
         "role_plausibility": round(float(np.mean(role_scores)) if role_scores else 0.0, 3),
         "climax_conviction": round(max(climax_scores) if climax_scores else 0.0, 3),
+        "climax_position": round(climax_position, 3),
         "audio_boundary_clarity": round(float(np.mean(boundary_clarity_scores)) if boundary_clarity_scores else 0.0, 3),
         "section_contrast": round(float(np.mean([abs(section_energies[idx] - section_energies[idx - 1]) for idx in range(1, len(section_energies))])) / max(energy_span, 1e-6) if len(section_energies) > 1 else 0.0, 3),
-        "narrative_flow": round(float(np.mean(narrative_flow_scores)) if narrative_flow_scores else 0.0, 3),
+        "narrative_flow": round(narrative_flow, 3),
+        "direction_flip_ratio": round(direction_flip_ratio, 3),
         "label_support_ratio": round(label_hits / max(len(sections), 1), 3),
     }
 
@@ -1401,13 +1841,15 @@ def _song_likeness_score(
     audio_boundary_clarity = float(readability["audio_boundary_clarity"])
     section_contrast = float(readability["section_contrast"])
     narrative_flow = float(readability["narrative_flow"])
+    direction_flip_ratio = float(readability["direction_flip_ratio"])
     label_support_ratio = float(readability["label_support_ratio"])
     recognizable_ratio = _clamp01(
-        0.42 * readable_section_ratio
-        + 0.24 * boundary_recovery
+        0.30 * readable_section_ratio
+        + 0.22 * boundary_recovery
         + 0.18 * role_plausibility
-        + 0.10 * audio_boundary_clarity
-        + 0.06 * min(label_support_ratio, 0.5)
+        + 0.12 * audio_boundary_clarity
+        + 0.12 * narrative_flow
+        + 0.06 * planner_climax_conviction
     )
 
     manifest_details = _manifest_overlap_metrics(_load_neighbor_manifest(song)) if _load_neighbor_manifest(song) else None
@@ -1434,7 +1876,8 @@ def _song_likeness_score(
         + 0.10 * boundary_recovery
         + 0.10 * audio_boundary_clarity
         + 0.08 * narrative_flow
-        + 0.10 * (1.0 - _clamp01((owner_switch_ratio - 0.42) / 0.45))
+        + 0.06 * (1.0 - direction_flip_ratio)
+        + 0.08 * (1.0 - _clamp01((owner_switch_ratio - 0.42) / 0.45))
     )
 
     donor_clutter_rejection = _clamp01(
@@ -1469,6 +1912,20 @@ def _song_likeness_score(
             + 0.16 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
         )
 
+    composite_song_risk = _clamp01(
+        0.24 * (1.0 - backbone_continuity)
+        + 0.16 * (1.0 - recognizable_ratio)
+        + 0.11 * (1.0 - boundary_recovery)
+        + 0.10 * (1.0 - role_plausibility)
+        + 0.10 * (1.0 - narrative_flow)
+        + 0.08 * (1.0 - planner_climax_conviction)
+        + 0.08 * (1.0 - audio_boundary_clarity)
+        + 0.11 * _clamp01((owner_switch_ratio - 0.38) / 0.34)
+        + 0.10 * float(manifest_metrics.get("background_only_identity_gap", 0.0))
+        + 0.06 * float(manifest_metrics.get("crowding_ratio", 0.0))
+        + 0.06 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
+    )
+
     raw_norm = _clamp01(
         0.42 * backbone_continuity
         + 0.33 * donor_clutter_rejection
@@ -1481,7 +1938,7 @@ def _song_likeness_score(
         f"backbone continuity {backbone_continuity:.3f}; donor-clutter rejection {donor_clutter_rejection:.3f}; climax conviction {climax_conviction:.3f}; readable section ratio {recognizable_ratio:.3f}"
     )
     evidence.append(
-        f"section readability: readable sections {readable_section_ratio:.3f}, boundary recovery {boundary_recovery:.3f}, audio boundary clarity {audio_boundary_clarity:.3f}, role plausibility {role_plausibility:.3f}, narrative flow {narrative_flow:.3f}, section contrast {section_contrast:.3f}, planner/audio climax {planner_climax_conviction:.3f}, label support {label_support_ratio:.3f}"
+        f"section readability: readable sections {readable_section_ratio:.3f}, boundary recovery {boundary_recovery:.3f}, audio boundary clarity {audio_boundary_clarity:.3f}, role plausibility {role_plausibility:.3f}, narrative flow {narrative_flow:.3f}, direction flips {direction_flip_ratio:.3f}, section contrast {section_contrast:.3f}, planner/audio climax {planner_climax_conviction:.3f}, label support {label_support_ratio:.3f}, composite-song risk {composite_song_risk:.3f}"
     )
     if manifest_details:
         evidence.append(
@@ -1503,12 +1960,16 @@ def _song_likeness_score(
         fixes.append("Make section roles more plausible in timing and energy shape; the current program does not read like stable setup/build/payoff behavior.")
     if recognizable_ratio < 0.45:
         fixes.append("Use a more believable section program with readable section turns instead of generic undifferentiated blocks.")
+    if direction_flip_ratio > 0.45:
+        fixes.append("Reduce section-to-section energy ping-pong; repeated rise/fall reversals are making the render feel stitched instead of like one song.")
     if manifest_details and owner_switch_ratio > 0.65:
         fixes.append("Too many section-owner flips are weakening continuity; keep a steadier backbone and reserve parent swaps for real structural turns.")
     if manifest_details and float(manifest_metrics.get("background_only_identity_gap", 0.0)) > 0.20:
         fixes.append("Do not count background-only donor presence as fusion identity; promote real section ownership or reject the render as fake two-parent glue.")
     if manifest_details and float(manifest_metrics.get("avg_overlap_beats", 0.0)) > 3.0:
         fixes.append("Reduce donor linger across section seams; current overlap length is high enough to blur the child-song backbone.")
+    if composite_song_risk > 0.50:
+        fixes.append("Hard reject stitched-composite arrangements that still read like multiple pasted songs instead of one continuous child record.")
 
     if score >= 75:
         summary = "Song-likeness is strong enough that the render reads like one coherent child song more than a stitched mashup."
@@ -1527,14 +1988,18 @@ def _song_likeness_score(
                 "backbone_continuity": round(backbone_continuity, 3),
                 "donor_clutter_rejection": round(donor_clutter_rejection, 3),
                 "climax_conviction": round(climax_conviction, 3),
+                "readable_section_ratio": round(readable_section_ratio, 3),
                 "recognizable_section_ratio": round(recognizable_ratio, 3),
                 "boundary_recovery": round(boundary_recovery, 3),
                 "audio_boundary_clarity": round(audio_boundary_clarity, 3),
                 "role_plausibility": round(role_plausibility, 3),
                 "narrative_flow": round(narrative_flow, 3),
+                "direction_flip_ratio": round(direction_flip_ratio, 3),
                 "section_contrast": round(section_contrast, 3),
                 "planner_audio_climax_conviction": round(planner_climax_conviction, 3),
+                "climax_section_relative_center": round(float(readability.get("climax_position", 0.0) or 0.0), 3),
                 "label_support_ratio": round(label_support_ratio, 3),
+                "composite_song_risk": round(composite_song_risk, 3),
                 "owner_switch_ratio": round(owner_switch_ratio, 3),
                 "owner_switch_count": owner_switches,
                 "max_parent_share": round(max_parent_share, 3),
@@ -1556,17 +2021,34 @@ def _build_gating(
     hard_fail_reasons: list[str] = []
     soft_fail_reasons: list[str] = []
 
+    transition_metrics = transition.details.get("aggregate_metrics", {}) if isinstance(transition.details, dict) else {}
+    song_metrics = song_likeness.details.get("aggregate_metrics", {}) if isinstance(song_likeness.details, dict) else {}
+    manifest_switch_detector_risk = float(transition_metrics.get("manifest_switch_detector_risk", 0.0) or 0.0)
+    manifest_owner_switch_ratio = float(transition_metrics.get("manifest_owner_switch_ratio", 0.0) or 0.0)
+    manifest_alternating_triplet_ratio = float(transition_metrics.get("manifest_alternating_triplet_ratio", 0.0) or 0.0)
+    manifest_swap_density = float(transition_metrics.get("manifest_swap_density", 0.0) or 0.0)
+    composite_song_risk = float(song_metrics.get("composite_song_risk", 0.0) or 0.0)
+    groove_floor_triggered = groove.score < 55.0
+
     if song_likeness.score < 45.0:
         hard_fail_reasons.append("song-likeness is too weak")
     if coherence.score < 42.0:
         hard_fail_reasons.append("coherence is too weak")
-    if groove.score < 45.0:
+    if (
+        manifest_switch_detector_risk >= 0.72
+        and manifest_owner_switch_ratio >= 0.72
+        and (manifest_alternating_triplet_ratio >= 0.34 or manifest_swap_density >= 0.60)
+    ):
+        hard_fail_reasons.append("obvious track-switch seams detected")
+    if composite_song_risk > 0.50:
+        hard_fail_reasons.append("composite detector says the render still sounds like multiple pasted songs")
+    if groove_floor_triggered:
         soft_fail_reasons.append("groove grid is not stable enough")
     if transition.score < 45.0:
         soft_fail_reasons.append("transition seams are still too exposed")
     if mix_sanity.score < 45.0:
         soft_fail_reasons.append("mix/ownership clutter is still too high")
-    if song_likeness.details.get("aggregate_metrics", {}).get("background_only_identity_gap", 0.0) > 0.35:
+    if float(song_metrics.get("background_only_identity_gap", 0.0) or 0.0) > 0.35:
         soft_fail_reasons.append("minority-parent presence is mostly background-only")
 
     gated_overall = overall
@@ -1585,6 +2067,18 @@ def _build_gating(
         "soft_fail_reasons": soft_fail_reasons,
         "song_likeness_floor_triggered": bool(song_likeness.score < 45.0),
         "coherence_floor_triggered": bool(coherence.score < 42.0),
+        "groove_floor_triggered": bool(groove_floor_triggered),
+        "manifest_switch_detector_risk": round(manifest_switch_detector_risk, 3),
+        "manifest_owner_switch_ratio": round(manifest_owner_switch_ratio, 3),
+        "manifest_alternating_triplet_ratio": round(manifest_alternating_triplet_ratio, 3),
+        "manifest_swap_density": round(manifest_swap_density, 3),
+        "composite_song_risk": round(composite_song_risk, 3),
+        "composite_detector_triggered": bool(composite_song_risk > 0.50),
+        "track_switch_seam_hard_reject_triggered": bool(
+            manifest_switch_detector_risk >= 0.72
+            and manifest_owner_switch_ratio >= 0.72
+            and (manifest_alternating_triplet_ratio >= 0.34 or manifest_swap_density >= 0.60)
+        ),
     }
 
 

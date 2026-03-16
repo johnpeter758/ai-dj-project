@@ -274,6 +274,18 @@ def _latest_benchmark_listen_result() -> dict | None:
     leader_gap = None
     if len(ranking) >= 2:
         leader_gap = round(float((ranking[0] or {}).get("net_score_delta") or 0.0) - float((ranking[1] or {}).get("net_score_delta") or 0.0), 1)
+    ranking_preview = [
+        {
+            "rank": index + 1,
+            "label": row.get("label"),
+            "wins": row.get("wins"),
+            "losses": row.get("losses"),
+            "net_score_delta": row.get("net_score_delta"),
+            "overall_score": row.get("overall_score"),
+            "verdict": row.get("verdict"),
+        }
+        for index, row in enumerate(ranking[:3])
+    ]
     result = _artifact_entry(path)
     result.update({
         "winner": payload.get("winner"),
@@ -289,6 +301,7 @@ def _latest_benchmark_listen_result() -> dict | None:
             "overall_score": top_entry.get("overall_score"),
             "verdict": top_entry.get("verdict"),
         } if top_entry else None,
+        "ranking_preview": ranking_preview,
     })
     return result
 
@@ -393,6 +406,108 @@ def _latest_evaluator_result() -> dict | None:
     return _latest_listen_result()
 
 
+def _active_sprint_status() -> dict | None:
+    status_path = RUNS_DIR / "active_sprint_status.json"
+    payload = _load_json_file(status_path)
+    if not isinstance(payload, dict):
+        return None
+    active = bool(payload.get("active"))
+    status = "active" if active else "idle"
+    if payload.get("ended_at") and not active:
+        status = "completed"
+    return {
+        "active": active,
+        "status": status,
+        "task": payload.get("task"),
+        "started_at": payload.get("started_at"),
+        "last_heartbeat": payload.get("last_heartbeat"),
+        "ended_at": payload.get("ended_at"),
+        "path": str(status_path),
+        "relative_path": _relative_to_runs(status_path),
+    }
+
+
+def _build_workloop_visualization(*, latest_commit: dict, latest_manifest: dict | None, latest_eval: dict | None, latest_compare: dict | None, latest_benchmark: dict | None, latest_listener_agent: dict | None, latest_run: dict | None, active_sprint: dict | None) -> dict:
+    manifest_done = latest_manifest is not None
+    listen_done = latest_eval is not None
+    compare_done = latest_compare is not None
+    benchmark_done = latest_benchmark is not None
+    listener_done = latest_listener_agent is not None
+    run_done = latest_run is not None
+
+    stages = [
+        {
+            "key": "code",
+            "label": "Code checkpoint",
+            "state": "done" if latest_commit.get("hash") else "pending",
+            "detail": latest_commit.get("message") or "No git checkpoint yet.",
+        },
+        {
+            "key": "render",
+            "label": "Render manifest",
+            "state": "done" if manifest_done else "pending",
+            "detail": (latest_manifest or {}).get("relative_path") or "No render manifest yet.",
+        },
+        {
+            "key": "listen",
+            "label": "Listen eval",
+            "state": "done" if listen_done else "pending",
+            "detail": (
+                f"score {(latest_eval or {}).get('overall_score', '—')} · {(latest_eval or {}).get('verdict', 'unknown')}"
+                if listen_done else "No listen result yet."
+            ),
+        },
+        {
+            "key": "compare",
+            "label": "Compare",
+            "state": "done" if compare_done else "pending",
+            "detail": (
+                f"winner {(latest_compare or {}).get('overall_winner', 'tie')}"
+                if compare_done else "No compare-listen result yet."
+            ),
+        },
+        {
+            "key": "benchmark",
+            "label": "Benchmark",
+            "state": "done" if benchmark_done else "pending",
+            "detail": (
+                f"winner {(latest_benchmark or {}).get('winner', '—')}"
+                if benchmark_done else "No benchmark-listen result yet."
+            ),
+        },
+        {
+            "key": "gate",
+            "label": "Listener gate",
+            "state": "done" if listener_done else "pending",
+            "detail": (
+                f"survivors {(latest_listener_agent or {}).get('recommended_count', 0)} / rejected {(latest_listener_agent or {}).get('rejected_count', 0)}"
+                if listener_done else "No listener-agent checkpoint yet."
+            ),
+        },
+        {
+            "key": "artifact",
+            "label": "Run artifact",
+            "state": "done" if run_done else "pending",
+            "detail": (latest_run or {}).get("run_dir") or (latest_run or {}).get("relative_path") or "No run summary yet.",
+        },
+    ]
+
+    completed = sum(1 for stage in stages if stage["state"] == "done")
+    percent = round((completed / len(stages)) * 100) if stages else 0
+    current_stage = next((stage for stage in stages if stage["state"] != "done"), stages[-1] if stages else None)
+
+    return {
+        "headline": "Closed-loop status UI",
+        "status": (active_sprint or {}).get("status") or ("active" if completed and completed < len(stages) else "idle"),
+        "progress_percent": percent,
+        "completed_stage_count": completed,
+        "total_stage_count": len(stages),
+        "current_stage": current_stage,
+        "stages": stages,
+        "active_sprint": active_sprint,
+    }
+
+
 def _workloop_status() -> dict:
     task = _extract_current_task()
     latest_commit = _latest_commit()
@@ -403,7 +518,18 @@ def _workloop_status() -> dict:
     latest_artifact = _latest_artifact()
     latest_manifest = _latest_manifest_summary()
     latest_run = _latest_run_summary()
+    active_sprint = _active_sprint_status()
     changed = _changed_files()
+    workloop_viz = _build_workloop_visualization(
+        latest_commit=latest_commit,
+        latest_manifest=latest_manifest,
+        latest_eval=latest_eval,
+        latest_compare=latest_compare,
+        latest_benchmark=latest_benchmark,
+        latest_listener_agent=latest_listener_agent,
+        latest_run=latest_run,
+        active_sprint=active_sprint,
+    )
 
     return {
         "status": "ok",
@@ -421,11 +547,14 @@ def _workloop_status() -> dict:
         "latest_listener_agent_result": latest_listener_agent,
         "latest_manifest": latest_manifest,
         "latest_run_summary": latest_run,
+        "active_sprint": active_sprint,
+        "workloop_visualization": workloop_viz,
         "links": {
             "fuse_ui": "/",
             "debug_ui": "/debug",
             "status_ui": "/status",
             "listener_agent_api": "/api/listener-agent",
+            "closed_loop_api": "/api/closed-loop",
         },
     }
 
@@ -483,7 +612,10 @@ def api_updates():
 def api_listener_agent():
     data = request.get_json(silent=True) or {}
     raw_inputs = data.get("inputs") or []
-    shortlist = max(1, min(int(data.get("shortlist", 3) or 3), 10))
+    try:
+        shortlist = max(1, min(int(data.get("shortlist", 3) or 3), 10))
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "error": "listener-agent shortlist must be an integer between 1 and 10."}), 400
 
     if raw_inputs:
         inputs: list[str] = []
@@ -541,6 +673,129 @@ def api_listener_agent():
             "input_count": len(inputs),
             "shortlist": shortlist,
             "report_path": str(output_path),
+            "report": payload,
+            "stdout": proc.stdout,
+        }
+    )
+
+
+@app.route("/api/closed-loop", methods=["POST"])
+def api_closed_loop():
+    data = request.get_json(silent=True) or {}
+    raw_song_a = data.get("song_a")
+    raw_song_b = data.get("song_b")
+    raw_references = data.get("references") or []
+
+    if not raw_song_a or not raw_song_b:
+        return jsonify({"status": "error", "error": "closed-loop requires song_a and song_b paths."}), 400
+    if not isinstance(raw_references, list) or not raw_references:
+        return jsonify({"status": "error", "error": "closed-loop requires one or more reference paths."}), 400
+
+    def _resolve_audio_input(raw: str, *, label: str) -> Path | tuple[dict, int]:
+        path = Path(str(raw)).expanduser().resolve()
+        try:
+            path.relative_to(MUSIC_DIR.resolve())
+        except ValueError:
+            try:
+                path.relative_to(RUNS_DIR.resolve())
+            except ValueError:
+                return jsonify({"status": "error", "error": f"{label} must stay inside music/ or runs/"}), 403
+        if not path.exists():
+            return jsonify({"status": "error", "error": f"{label} not found: {path}"}), 404
+        return path
+
+    song_a_path = _resolve_audio_input(raw_song_a, label="song_a")
+    if isinstance(song_a_path, tuple):
+        return song_a_path
+    song_b_path = _resolve_audio_input(raw_song_b, label="song_b")
+    if isinstance(song_b_path, tuple):
+        return song_b_path
+
+    references: list[str] = []
+    for index, raw in enumerate(raw_references, start=1):
+        resolved = _resolve_audio_input(raw, label=f"reference[{index}]")
+        if isinstance(resolved, tuple):
+            return resolved
+        references.append(str(resolved))
+
+    max_iterations = max(1, min(int(data.get("max_iterations", 3) or 3), 10))
+    quality_gate = float(data.get("quality_gate", 85.0) or 85.0)
+    plateau_limit = max(1, min(int(data.get("plateau_limit", 2) or 2), 10))
+    min_improvement = float(data.get("min_improvement", 0.5) or 0.5)
+    target_score = float(data.get("target_score", 99.0) or 99.0)
+    change_command = data.get("change_command")
+    test_command = data.get("test_command")
+
+    report_root = RUNS_DIR / "closed_loop" / datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_root.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
+        str(BASE_DIR / "ai_dj.py"),
+        "closed-loop",
+        str(song_a_path),
+        str(song_b_path),
+        *references,
+        "--output",
+        str(report_root),
+        "--max-iterations",
+        str(max_iterations),
+        "--quality-gate",
+        str(quality_gate),
+        "--plateau-limit",
+        str(plateau_limit),
+        "--min-improvement",
+        str(min_improvement),
+        "--target-score",
+        str(target_score),
+    ]
+    if change_command:
+        cmd.extend(["--change-command", str(change_command)])
+    if test_command:
+        cmd.extend(["--test-command", str(test_command)])
+
+    try:
+        proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            "status": "error",
+            "error": "Closed loop timed out.",
+            "song_a": str(song_a_path),
+            "song_b": str(song_b_path),
+            "references": references,
+        }), 500
+
+    if proc.returncode != 0:
+        return jsonify(
+            {
+                "status": "error",
+                "error": "Closed loop failed.",
+                "song_a": str(song_a_path),
+                "song_b": str(song_b_path),
+                "references": references,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        ), 500
+
+    report_path = report_root / "closed_loop_report.json"
+    payload = _load_json_file(report_path) or {}
+    return jsonify(
+        {
+            "status": "success",
+            "song_a": str(song_a_path),
+            "song_b": str(song_b_path),
+            "references": references,
+            "config": {
+                "max_iterations": max_iterations,
+                "quality_gate": quality_gate,
+                "plateau_limit": plateau_limit,
+                "min_improvement": min_improvement,
+                "target_score": target_score,
+                "change_command": change_command,
+                "test_command": test_command,
+            },
+            "report_path": str(report_path),
             "report": payload,
             "stdout": proc.stdout,
         }

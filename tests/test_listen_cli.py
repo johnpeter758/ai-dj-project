@@ -70,6 +70,78 @@ def test_listen_command_writes_json(monkeypatch, tmp_path: Path):
     assert 'gating' in payload
 
 
+def test_groove_score_penalizes_bar_level_pocket_collapse_even_when_beat_grid_is_regular():
+    stable_song = DummySong('stable_pocket.wav')
+    collapse_song = DummySong('collapsed_pocket.wav')
+
+    stable_song.metadata['tempo']['beat_times'] = [x * 0.5 for x in range(240)]
+    collapse_song.metadata['tempo']['beat_times'] = [x * 0.5 for x in range(240)]
+
+    stable_song.energy['bar_onset_density'] = [0.22, 0.23, 0.24, 0.24, 0.26, 0.27, 0.29, 0.30, 0.31, 0.32, 0.33, 0.33, 0.34, 0.35, 0.35, 0.34]
+    stable_song.energy['bar_low_band_ratio'] = [0.30, 0.30, 0.31, 0.31, 0.32, 0.33, 0.33, 0.34, 0.35, 0.35, 0.36, 0.36, 0.37, 0.37, 0.37, 0.36]
+
+    collapse_song.energy['bar_onset_density'] = [0.24, 0.25, 0.26, 0.26, 0.28, 0.30, 0.31, 0.32, 0.10, 0.09, 0.08, 0.09, 0.30, 0.31, 0.32, 0.33]
+    collapse_song.energy['bar_low_band_ratio'] = [0.32, 0.32, 0.33, 0.33, 0.34, 0.35, 0.35, 0.36, 0.14, 0.13, 0.12, 0.13, 0.34, 0.35, 0.35, 0.36]
+
+    stable_report = evaluate_song(stable_song)
+    collapse_report = evaluate_song(collapse_song)
+
+    assert stable_report.groove.score > collapse_report.groove.score
+    assert stable_report.groove.details['collapse_severity'] < 0.2
+    assert collapse_report.groove.details['collapse_severity'] > 0.5
+    assert collapse_report.groove.details['pocket_stability'] < stable_report.groove.details['pocket_stability']
+    assert 'pocket collapses abruptly' in ' '.join(collapse_report.groove.fixes).lower()
+
+
+
+def test_groove_score_uses_beat_level_pulse_when_bar_means_hide_intra_bar_collapse():
+    stable_song = DummySong('stable_beat_pocket.wav')
+    collapse_song = DummySong('collapsed_beat_pocket.wav')
+
+    stable_song.metadata['tempo']['beat_times'] = [x * 0.5 for x in range(64)]
+    collapse_song.metadata['tempo']['beat_times'] = [x * 0.5 for x in range(64)]
+
+    shared_bar_onset = [0.25] * 16
+    shared_bar_low = [0.33] * 16
+    stable_song.energy['bar_onset_density'] = shared_bar_onset[:]
+    collapse_song.energy['bar_onset_density'] = shared_bar_onset[:]
+    stable_song.energy['bar_low_band_ratio'] = shared_bar_low[:]
+    collapse_song.energy['bar_low_band_ratio'] = shared_bar_low[:]
+
+    stable_song.energy['beat_onset_density'] = [0.25] * 32
+    stable_song.energy['beat_low_band_ratio'] = [0.33] * 32
+
+    collapse_song.energy['beat_onset_density'] = [0.25] * 16 + [0.08] * 8 + [0.25] * 8
+    collapse_song.energy['beat_low_band_ratio'] = [0.33] * 16 + [0.12] * 8 + [0.33] * 8
+
+    stable_report = evaluate_song(stable_song)
+    collapse_report = evaluate_song(collapse_song)
+
+    assert stable_report.groove.score > collapse_report.groove.score
+    assert stable_report.groove.details['bar_collapse_severity'] == collapse_report.groove.details['bar_collapse_severity']
+    assert collapse_report.groove.details['beat_collapse_severity'] > stable_report.groove.details['beat_collapse_severity']
+    assert collapse_report.groove.details['beat_pulse_stability'] < stable_report.groove.details['beat_pulse_stability']
+    assert any('beat-pocket stability' in line for line in collapse_report.groove.evidence)
+
+
+
+def test_groove_soft_gate_marks_borderline_pocket_collapse_for_review():
+    song = DummySong('borderline_groove_gate.wav')
+    song.energy['bar_onset_density'] = [0.24, 0.25, 0.26, 0.27, 0.27, 0.26, 0.25, 0.24, 0.17, 0.16, 0.17, 0.18, 0.23, 0.24, 0.25, 0.26]
+    song.energy['bar_low_band_ratio'] = [0.33, 0.34, 0.35, 0.35, 0.34, 0.34, 0.33, 0.32, 0.22, 0.21, 0.22, 0.23, 0.31, 0.32, 0.33, 0.33]
+    song.energy.pop('beat_onset_density', None)
+    song.energy.pop('beat_low_band_ratio', None)
+
+    report = evaluate_song(song)
+
+    assert report.groove.score < 55.0
+    assert report.gating['groove_floor_triggered'] is True
+    assert report.gating['status'] == 'review'
+    assert 'groove grid is not stable enough' in report.gating['soft_fail_reasons']
+    assert report.overall_score <= 59.0
+
+
+
 def test_energy_arc_prefers_late_sustained_payoff_over_flat_profile():
     strong_song = DummySong('strong.wav')
     flat_song = DummySong('flat.wav')
@@ -81,6 +153,10 @@ def test_energy_arc_prefers_late_sustained_payoff_over_flat_profile():
         'payoff_strength': 0.05,
         'hook_strength': 0.08,
         'hook_repetition': 0.10,
+        'hook_spend': 0.0,
+        'early_hook_strength': 0.0,
+        'late_hook_strength': 0.0,
+        'late_payoff_strength': 0.0,
         'energy_confidence': 0.85,
         'payoff_windows': [],
         'hook_windows': [],
@@ -95,6 +171,38 @@ def test_energy_arc_prefers_late_sustained_payoff_over_flat_profile():
     assert strong_report.energy_arc.details['aggregate_metrics']['late_lift'] > 0.08
     assert flat_report.energy_arc.details['aggregate_metrics']['contrast'] < 0.05
     assert any('macro-dynamic contrast' in fix.lower() for fix in flat_report.energy_arc.fixes)
+
+
+def test_energy_arc_flags_early_hook_spend_even_with_some_hook_repetition():
+    strong_song = DummySong('strong.wav')
+    early_spend_song = DummySong('early_spend.wav')
+    early_spend_song.energy['bar_rms'] = [0.38, 0.40, 0.39, 0.41, 0.36, 0.37, 0.36, 0.38, 0.20, 0.22, 0.21, 0.23, 0.27, 0.29, 0.28, 0.30]
+    early_spend_song.energy['bar_onset_density'] = [0.42, 0.43, 0.42, 0.44, 0.40, 0.41, 0.40, 0.42, 0.18, 0.19, 0.18, 0.20, 0.28, 0.30, 0.29, 0.31]
+    early_spend_song.energy['bar_low_band_ratio'] = [0.34, 0.35, 0.34, 0.35, 0.33, 0.34, 0.33, 0.34, 0.20, 0.21, 0.20, 0.21, 0.26, 0.27, 0.26, 0.27]
+    early_spend_song.energy['bar_spectral_flatness'] = [0.16, 0.16, 0.17, 0.16, 0.17, 0.17, 0.18, 0.17, 0.28, 0.29, 0.28, 0.29, 0.22, 0.22, 0.23, 0.22]
+    early_spend_song.energy['derived'] = {
+        'payoff_strength': 0.34,
+        'hook_strength': 0.82,
+        'hook_repetition': 0.78,
+        'hook_spend': 0.61,
+        'early_hook_strength': 0.82,
+        'late_hook_strength': 0.46,
+        'late_payoff_strength': 0.28,
+        'energy_confidence': 0.88,
+        'payoff_windows': [{'start_bar': 12, 'end_bar': 16, 'score': 0.28}],
+        'hook_windows': [
+            {'start_bar': 0, 'end_bar': 4, 'score': 0.82},
+            {'start_bar': 4, 'end_bar': 8, 'score': 0.79},
+            {'start_bar': 12, 'end_bar': 16, 'score': 0.46},
+        ],
+    }
+
+    strong_report = evaluate_song(strong_song)
+    early_spend_report = evaluate_song(early_spend_song)
+
+    assert strong_report.energy_arc.score > early_spend_report.energy_arc.score
+    assert early_spend_report.energy_arc.details['aggregate_metrics']['hook_spend'] > 0.5
+    assert any('spend its hook too early' in fix.lower() for fix in early_spend_report.energy_arc.fixes)
 
 
 def test_structure_score_rewards_section_span_quality_and_coverage():
@@ -302,7 +410,40 @@ def test_mix_sanity_emits_ownership_clutter_penalties(tmp_path: Path):
     assert clutter['foreground_overload_risk'] > 0.5
     assert clutter['overcompressed_flatness_risk'] > 0.5
     assert clutter['vocal_competition_risk'] > 0.5
-    assert any('low-end owner' in fix.lower() or 'foreground owner' in fix.lower() or 'lead-vocal ownership' in fix.lower() or 'competing lead' in fix.lower() for fix in report.mix_sanity.fixes)
+    assert clutter['crowding_burst_risk'] > 0.5
+    assert clutter['crowding_sustained_ratio'] > 0.5
+    assert any('low-end owner' in fix.lower() or 'foreground owner' in fix.lower() or 'lead-vocal ownership' in fix.lower() or 'competing lead' in fix.lower() or 'crowding' in fix.lower() for fix in report.mix_sanity.fixes)
+
+
+def test_mix_sanity_detects_time_local_crowding_bursts_even_when_global_means_stay_reasonable():
+    controlled_song = DummySong('controlled_mix.wav')
+    crowded_song = DummySong('bursty_mix.wav')
+
+    controlled_song.energy['rms'] = [0.08, 0.08, 0.09, 0.09, 0.10, 0.10, 0.09, 0.09, 0.08, 0.08, 0.09, 0.09]
+    controlled_song.energy['spectral_centroid'] = [1700, 1750, 1800, 1850, 1900, 1950, 1900, 1850, 1800, 1750, 1700, 1680]
+    controlled_song.energy['spectral_rolloff'] = [3200, 3300, 3350, 3400, 3500, 3550, 3500, 3450, 3380, 3320, 3280, 3250]
+    controlled_song.energy['onset_density'] = [0.18, 0.19, 0.20, 0.20, 0.22, 0.22, 0.21, 0.20, 0.19, 0.19, 0.20, 0.20]
+    controlled_song.energy['low_band_ratio'] = [0.28, 0.28, 0.29, 0.29, 0.30, 0.30, 0.29, 0.29, 0.28, 0.28, 0.29, 0.29]
+    controlled_song.energy['spectral_flatness'] = [0.14, 0.14, 0.15, 0.15, 0.16, 0.16, 0.15, 0.15, 0.14, 0.14, 0.15, 0.15]
+
+    crowded_song.energy['rms'] = [0.08, 0.08, 0.09, 0.18, 0.19, 0.18, 0.09, 0.09, 0.17, 0.18, 0.17, 0.09]
+    crowded_song.energy['spectral_centroid'] = [1700, 1750, 1800, 3350, 3450, 3380, 1850, 1800, 3300, 3400, 3320, 1780]
+    crowded_song.energy['spectral_rolloff'] = [3200, 3300, 3350, 7000, 7200, 7050, 3450, 3380, 6900, 7100, 6950, 3320]
+    crowded_song.energy['onset_density'] = [0.18, 0.19, 0.20, 0.55, 0.58, 0.56, 0.20, 0.19, 0.53, 0.56, 0.54, 0.20]
+    crowded_song.energy['low_band_ratio'] = [0.28, 0.28, 0.29, 0.62, 0.64, 0.63, 0.29, 0.28, 0.60, 0.62, 0.61, 0.29]
+    crowded_song.energy['spectral_flatness'] = [0.14, 0.14, 0.15, 0.34, 0.35, 0.34, 0.15, 0.14, 0.33, 0.34, 0.33, 0.15]
+
+    controlled_report = evaluate_song(controlled_song)
+    crowded_report = evaluate_song(crowded_song)
+
+    controlled_clutter = controlled_report.mix_sanity.details['ownership_clutter_metrics']
+    crowded_clutter = crowded_report.mix_sanity.details['ownership_clutter_metrics']
+
+    assert crowded_clutter['crowding_burst_count'] >= 2
+    assert crowded_clutter['crowding_burst_risk'] > controlled_clutter['crowding_burst_risk']
+    assert crowded_clutter['crowding_sustained_ratio'] > controlled_clutter['crowding_sustained_ratio']
+    assert crowded_report.mix_sanity.score < controlled_report.mix_sanity.score
+    assert any('crowding' in fix.lower() for fix in crowded_report.mix_sanity.fixes)
 
 
 def test_compare_listen_reports_writes_delta_json(tmp_path: Path):
@@ -410,6 +551,54 @@ def test_compare_listen_decision_preserves_tie_tradeoffs(tmp_path: Path):
     assert any('Largest tradeoff' in line for line in payload['decision']['why'])
 
 
+def test_compare_listen_disambiguates_duplicate_basenames_in_explanations(tmp_path: Path):
+    left_report = {
+        'source_path': 'left.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 82.0,
+        'structure': {'score': 85.0, 'summary': 'strong', 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': 81.0, 'summary': 'stable', 'evidence': [], 'fixes': [], 'details': {}},
+        'energy_arc': {'score': 80.0, 'summary': 'good rise', 'evidence': [], 'fixes': [], 'details': {}},
+        'transition': {'score': 79.0, 'summary': 'clean', 'evidence': [], 'fixes': [], 'details': {}},
+        'coherence': {'score': 80.0, 'summary': 'cohesive', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 80.0, 'summary': 'clear', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {'score': 81.0, 'summary': 'reads like one child song', 'evidence': [], 'fixes': [], 'details': {}},
+        'verdict': 'promising',
+        'top_reasons': [],
+        'top_fixes': [],
+        'gating': {'status': 'pass', 'raw_overall_score': 82.0},
+        'analysis_version': '0.5.0',
+    }
+    right_report = {
+        **left_report,
+        'source_path': 'right.wav',
+        'overall_score': 74.0,
+        'energy_arc': {'score': 69.0, 'summary': 'flat', 'evidence': [], 'fixes': ['build a later payoff'], 'details': {}},
+        'mix_sanity': {'score': 72.0, 'summary': 'crowded', 'evidence': [], 'fixes': ['thin overlaps'], 'details': {}},
+        'song_likeness': {'score': 70.0, 'summary': 'more stitched', 'evidence': [], 'fixes': ['stabilize the backbone'], 'details': {}},
+        'verdict': 'mixed',
+    }
+
+    left_dir = tmp_path / 'pass_a'
+    right_dir = tmp_path / 'pass_b'
+    left_dir.mkdir()
+    right_dir.mkdir()
+    left_path = left_dir / 'fusion_rerun.json'
+    right_path = right_dir / 'fusion_rerun.json'
+    left_path.write_text(json.dumps(left_report), encoding='utf-8')
+    right_path.write_text(json.dumps(right_report), encoding='utf-8')
+
+    comparison = ai_dj._build_listen_comparison(str(left_path), str(right_path))
+
+    assert comparison['left']['input_label'] == 'fusion_rerun.json'
+    assert comparison['right']['input_label'] == 'fusion_rerun.json'
+    assert comparison['left']['display_label'] == 'pass_a/fusion_rerun.json'
+    assert comparison['right']['display_label'] == 'pass_b/fusion_rerun.json'
+    assert comparison['decision']['winner_label'] == 'pass_a/fusion_rerun.json'
+    assert comparison['decision']['loser_label'] == 'pass_b/fusion_rerun.json'
+    assert any('pass_a/fusion_rerun.json wins overall by 8.0 listen points over pass_b/fusion_rerun.json.' == line for line in comparison['decision']['why'])
+
+
 def test_compare_listen_can_resolve_render_output_directories(monkeypatch, tmp_path: Path):
     left_dir = tmp_path / 'render_a'
     right_dir = tmp_path / 'render_b'
@@ -508,6 +697,30 @@ def test_manifest_identity_metrics_distinguish_true_two_parent_ownership_from_ba
 
 
 
+def test_manifest_metrics_do_not_count_redundant_same_owner_background_as_multi_owner_conflict(tmp_path: Path):
+    run_dir = tmp_path / 'redundant_owner_run'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    manifest = run_dir / 'render_manifest.json'
+    manifest.write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "A", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0}
+  ],
+  "work_orders": []
+}""" % audio.as_posix())
+
+    song = DummySong(str(audio))
+    report = evaluate_song(song)
+    metrics = report.mix_sanity.details['manifest_metrics']['aggregate_metrics']
+    identity = report.mix_sanity.details['manifest_metrics']['fusion_identity']
+
+    assert metrics['multi_owner_conflict_ratio'] == 0.0
+    assert identity['background_only_presence_counts'] == {'A': 0, 'B': 0}
+
+
+
 def test_song_likeness_gate_rejects_non_song_like_render(tmp_path: Path):
     run_dir = tmp_path / 'non_song_like'
     run_dir.mkdir()
@@ -545,7 +758,38 @@ def test_song_likeness_gate_rejects_non_song_like_render(tmp_path: Path):
     assert report.song_likeness.score < 45.0
     assert report.gating['status'] == 'reject'
     assert report.overall_score <= 49.0
+    assert report.song_likeness.details['aggregate_metrics']['composite_song_risk'] > 0.30
+    assert 'composite_song_risk' in report.gating
+    assert report.gating['track_switch_seam_hard_reject_triggered'] is True
+    assert 'obvious track-switch seams detected' in report.gating['hard_fail_reasons']
     assert any('backbone continuity' in fix.lower() or 'cluttered donor carryover' in fix.lower() for fix in report.top_fixes)
+
+
+
+def test_song_likeness_composite_detector_rejects_stitched_macro_arc_without_manifest_track_switch_trigger():
+    song = DummySong('stitched_macro_arc.wav')
+    song.structure['sections'] = [
+        {'label': 'section_0', 'start': 0.0, 'end': 24.0},
+        {'label': 'section_1', 'start': 24.0, 'end': 48.0},
+        {'label': 'section_2', 'start': 48.0, 'end': 72.0},
+        {'label': 'section_3', 'start': 72.0, 'end': 96.0},
+        {'label': 'section_4', 'start': 96.0, 'end': 120.0},
+    ]
+    song.structure['phrase_boundaries_seconds'] = [0, 30, 60, 90, 120]
+    song.structure['novelty_boundaries_seconds'] = [26, 54, 88]
+    song.energy['bar_rms'] = [0.32, 0.33, 0.12, 0.11, 0.34, 0.35, 0.13, 0.12, 0.36, 0.37, 0.14, 0.13, 0.35, 0.36, 0.15, 0.14]
+    song.energy['bar_onset_density'] = [0.34, 0.35, 0.12, 0.12, 0.35, 0.36, 0.13, 0.13, 0.36, 0.37, 0.14, 0.14, 0.35, 0.36, 0.15, 0.15]
+    song.energy['bar_low_band_ratio'] = [0.34, 0.34, 0.22, 0.22, 0.35, 0.35, 0.23, 0.23, 0.36, 0.36, 0.24, 0.24, 0.35, 0.35, 0.24, 0.24]
+    song.energy['bar_spectral_flatness'] = [0.16, 0.16, 0.19, 0.19, 0.15, 0.15, 0.19, 0.19, 0.15, 0.15, 0.20, 0.20, 0.15, 0.15, 0.20, 0.20]
+
+    report = evaluate_song(song)
+
+    assert report.song_likeness.score >= 45.0
+    assert report.song_likeness.details['aggregate_metrics']['composite_song_risk'] > 0.50
+    assert report.gating['composite_detector_triggered'] is True
+    assert report.gating['track_switch_seam_hard_reject_triggered'] is False
+    assert report.gating['status'] == 'reject'
+    assert 'composite detector says the render still sounds like multiple pasted songs' in report.gating['hard_fail_reasons']
 
 
 
@@ -626,6 +870,7 @@ def test_song_likeness_uses_boundary_and_audio_readability_even_with_generic_lab
     assert readable_metrics['boundary_recovery'] > weak_metrics['boundary_recovery']
     assert readable_metrics['role_plausibility'] > weak_metrics['role_plausibility']
     assert readable_metrics['planner_audio_climax_conviction'] > weak_metrics['planner_audio_climax_conviction']
+    assert readable_metrics['climax_conviction'] > weak_metrics['climax_conviction']
     assert readable_metrics['recognizable_section_ratio'] > weak_metrics['recognizable_section_ratio']
     assert readable_report.song_likeness.score > weak_report.song_likeness.score
 
@@ -677,6 +922,107 @@ def test_song_likeness_does_not_overreward_section_label_tokens_without_audio_su
 
 
 
+def test_song_likeness_prefers_true_build_and_payoff_shapes_from_audio_evidence():
+    readable_song = DummySong('readable_roles.wav')
+    weak_song = DummySong('weak_roles.wav')
+
+    for current in (readable_song, weak_song):
+        current.structure['sections'] = [
+            {'label': 'intro', 'start': 0.0, 'end': 24.0},
+            {'label': 'verse', 'start': 24.0, 'end': 48.0},
+            {'label': 'build', 'start': 48.0, 'end': 72.0, 'transition_in': 'lift'},
+            {'label': 'payoff', 'start': 72.0, 'end': 96.0, 'transition_in': 'drop'},
+            {'label': 'outro', 'start': 96.0, 'end': 120.0},
+        ]
+        current.structure['phrase_boundaries_seconds'] = [0, 24, 48, 72, 96, 120]
+        current.structure['novelty_boundaries_seconds'] = [24, 48, 72, 96]
+        current.energy['bar_onset_density'] = [0.12, 0.13, 0.14, 0.14, 0.18, 0.19, 0.20, 0.20, 0.22, 0.24, 0.28, 0.30, 0.34, 0.37, 0.40, 0.41]
+        current.energy['bar_low_band_ratio'] = [0.22, 0.22, 0.23, 0.23, 0.25, 0.26, 0.26, 0.27, 0.28, 0.29, 0.30, 0.31, 0.34, 0.35, 0.36, 0.35]
+        current.energy['bar_spectral_flatness'] = [0.24, 0.24, 0.23, 0.23, 0.21, 0.21, 0.20, 0.20, 0.18, 0.18, 0.17, 0.17, 0.14, 0.14, 0.14, 0.16]
+
+    readable_song.energy['bar_rms'] = [0.07, 0.08, 0.10, 0.11, 0.16, 0.17, 0.18, 0.18, 0.20, 0.23, 0.28, 0.33, 0.39, 0.41, 0.41, 0.34]
+    weak_song.energy['bar_rms'] = [0.07, 0.08, 0.10, 0.11, 0.16, 0.17, 0.18, 0.18, 0.33, 0.20, 0.21, 0.22, 0.42, 0.24, 0.23, 0.20]
+
+    readable_report = evaluate_song(readable_song)
+    weak_report = evaluate_song(weak_song)
+
+    readable_metrics = readable_report.song_likeness.details['aggregate_metrics']
+    weak_metrics = weak_report.song_likeness.details['aggregate_metrics']
+
+    assert readable_metrics['narrative_flow'] > weak_metrics['narrative_flow']
+    assert readable_metrics['recognizable_section_ratio'] > weak_metrics['recognizable_section_ratio']
+    assert readable_report.song_likeness.score > weak_report.song_likeness.score
+
+
+
+def test_song_likeness_penalizes_section_energy_ping_pong_even_with_clean_boundaries():
+    stable_song = DummySong('stable_arc.wav')
+    ping_pong_song = DummySong('ping_pong_arc.wav')
+
+    for current in (stable_song, ping_pong_song):
+        current.structure['sections'] = [
+            {'label': 'section_0', 'start': 0.0, 'end': 24.0},
+            {'label': 'section_1', 'start': 24.0, 'end': 48.0},
+            {'label': 'section_2', 'start': 48.0, 'end': 72.0, 'transition_in': 'lift'},
+            {'label': 'section_3', 'start': 72.0, 'end': 96.0, 'transition_in': 'drop'},
+            {'label': 'section_4', 'start': 96.0, 'end': 120.0},
+        ]
+        current.structure['phrase_boundaries_seconds'] = [0, 24, 48, 72, 96, 120]
+        current.structure['novelty_boundaries_seconds'] = [24, 48, 72, 96]
+        current.energy['bar_onset_density'] = [0.18, 0.18, 0.20, 0.20, 0.22, 0.22, 0.28, 0.28, 0.35, 0.35, 0.42, 0.42]
+        current.energy['bar_low_band_ratio'] = [0.24, 0.24, 0.26, 0.26, 0.28, 0.28, 0.31, 0.31, 0.35, 0.35, 0.33, 0.33]
+        current.energy['bar_spectral_flatness'] = [0.24, 0.24, 0.22, 0.22, 0.20, 0.20, 0.18, 0.18, 0.15, 0.15, 0.17, 0.17]
+
+    stable_song.energy['bar_rms'] = [0.08, 0.09, 0.15, 0.17, 0.22, 0.24, 0.31, 0.34, 0.42, 0.45, 0.28, 0.24]
+    ping_pong_song.energy['bar_rms'] = [0.08, 0.09, 0.34, 0.36, 0.10, 0.11, 0.38, 0.40, 0.12, 0.13, 0.35, 0.37]
+
+    stable_report = evaluate_song(stable_song)
+    ping_pong_report = evaluate_song(ping_pong_song)
+
+    stable_metrics = stable_report.song_likeness.details['aggregate_metrics']
+    ping_pong_metrics = ping_pong_report.song_likeness.details['aggregate_metrics']
+
+    assert stable_metrics['boundary_recovery'] == ping_pong_metrics['boundary_recovery']
+    assert ping_pong_metrics['direction_flip_ratio'] > stable_metrics['direction_flip_ratio']
+    assert ping_pong_metrics['narrative_flow'] < stable_metrics['narrative_flow']
+    assert ping_pong_report.song_likeness.score < stable_report.song_likeness.score
+    assert any('ping-pong' in fix.lower() for fix in ping_pong_report.song_likeness.fixes)
+
+
+
+def test_transition_score_detects_manifest_track_switching_patterns(tmp_path: Path):
+    run_dir = tmp_path / 'switch_run'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    manifest = run_dir / 'render_manifest.json'
+    manifest.write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "A", "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "transition_out": "swap"},
+    {"index": 1, "label": "verse", "source_parent": "B", "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "transition_in": "swap", "transition_out": "swap"},
+    {"index": 2, "label": "build", "source_parent": "A", "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "transition_in": "swap", "transition_out": "swap"},
+    {"index": 3, "label": "payoff", "source_parent": "B", "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "transition_in": "swap"}
+  ],
+  "work_orders": []
+}""" % audio.as_posix())
+
+    song = DummySong(str(audio))
+    report = evaluate_song(song)
+    metrics = report.transition.details['aggregate_metrics']
+
+    assert metrics['manifest_owner_switch_ratio'] >= 0.99
+    assert metrics['manifest_alternating_triplet_ratio'] >= 0.99
+    assert metrics['manifest_swap_density'] >= 0.99
+    assert metrics['manifest_switch_detector_risk'] > 0.7
+    assert report.gating['status'] == 'reject'
+    assert 'obvious track-switch seams detected' in report.gating['hard_fail_reasons']
+    assert report.gating['track_switch_seam_hard_reject_triggered'] is True
+    assert any('switch detector' in line.lower() for line in report.transition.evidence)
+    assert any('track switching' in fix.lower() for fix in report.transition.fixes)
+
+
+
 def test_manifest_aware_transition_and_mix_penalties(tmp_path: Path):
     run_dir = tmp_path / 'run'
     run_dir.mkdir()
@@ -708,10 +1054,92 @@ def test_manifest_aware_transition_and_mix_penalties(tmp_path: Path):
     assert transition_manifest['lead_conflict_ratio'] > 0.5
     assert transition_manifest['avg_overlap_beats'] >= 4.0
     assert transition_manifest['seam_risk_ratio'] > 0.0
+    assert transition_manifest['low_end_owner_stability_risk'] > 0.0
     assert mix_manifest['crowding_ratio'] > 0.5
     assert any('manifest' in line.lower() for line in report.transition.evidence)
     assert any('manifest' in line.lower() for line in report.mix_sanity.evidence)
     assert any('manifest' in fix.lower() or 'lead-vocal ownership' in fix.lower() or 'overlap' in fix.lower() for fix in report.top_fixes + report.transition.fixes + report.mix_sanity.fixes)
+
+
+def test_manifest_low_end_owner_stability_detector_penalizes_overlap_flips(tmp_path: Path):
+    run_dir = tmp_path / 'low_end_owner_flip_run'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    manifest = run_dir / 'render_manifest.json'
+    manifest.write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0, "transition_out": "blend"},
+    {"index": 1, "label": "verse", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0, "transition_in": "swap", "transition_out": "blend"},
+    {"index": 2, "label": "build", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0, "transition_in": "swap", "transition_out": "lift"},
+    {"index": 3, "label": "payoff", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0, "transition_in": "drop"}
+  ],
+  "work_orders": []
+}""" % audio.as_posix(), encoding='utf-8')
+
+    song = DummySong(str(audio))
+    report = evaluate_song(song)
+
+    transition_metrics = report.transition.details['aggregate_metrics']
+    mix_manifest = report.mix_sanity.details['manifest_metrics']['aggregate_metrics']
+
+    assert transition_metrics['manifest_low_end_owner_switch_ratio'] == 1.0
+    assert transition_metrics['manifest_low_end_overlap_switch_ratio'] == 1.0
+    assert transition_metrics['manifest_low_end_owner_stability_risk'] > 0.8
+    assert mix_manifest['low_end_owner_switch_ratio'] == 1.0
+    assert mix_manifest['low_end_overlap_switch_ratio'] == 1.0
+    assert mix_manifest['low_end_owner_stability_risk'] > 0.8
+    assert any('low-end ownership' in fix.lower() for fix in report.transition.fixes + report.mix_sanity.fixes)
+
+
+
+def test_manifest_low_end_owner_stability_detector_surfaces_ping_pong_intrusions_even_without_constant_flips(tmp_path: Path):
+    steady_dir = tmp_path / 'steady_low_end_run'
+    steady_dir.mkdir()
+    steady_audio = steady_dir / 'child_master.wav'
+    steady_audio.write_bytes(b'fake')
+    (steady_dir / 'render_manifest.json').write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 1, "label": "verse", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 2, "label": "build", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 3, "label": "payoff", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0},
+    {"index": 4, "label": "outro", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0}
+  ],
+  "work_orders": []
+}""" % steady_audio.as_posix(), encoding='utf-8')
+
+    ping_pong_dir = tmp_path / 'ping_pong_low_end_run'
+    ping_pong_dir.mkdir()
+    ping_pong_audio = ping_pong_dir / 'child_master.wav'
+    ping_pong_audio.write_bytes(b'fake')
+    (ping_pong_dir / 'render_manifest.json').write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "intro", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 1, "label": "verse", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 2, "label": "break", "source_parent": "B", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "B", "background_owner": "A", "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0},
+    {"index": 3, "label": "build", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 4, "label": "outro", "source_parent": "A", "allowed_overlap": true, "overlap_beats_max": 2.0, "foreground_owner": "A", "background_owner": "B", "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0}
+  ],
+  "work_orders": []
+}""" % ping_pong_audio.as_posix(), encoding='utf-8')
+
+    steady_report = evaluate_song(DummySong(str(steady_audio)))
+    ping_pong_report = evaluate_song(DummySong(str(ping_pong_audio)))
+
+    steady_manifest = steady_report.mix_sanity.details['manifest_metrics']['aggregate_metrics']
+    ping_pong_manifest = ping_pong_report.mix_sanity.details['manifest_metrics']['aggregate_metrics']
+
+    assert steady_manifest['low_end_ping_pong_ratio'] == 0.0
+    assert steady_manifest['low_end_longest_run_ratio'] >= 0.4
+    assert steady_manifest['low_end_owner_majority_ratio'] >= 0.6
+    assert ping_pong_manifest['low_end_ping_pong_ratio'] > 0.3
+    assert ping_pong_manifest['low_end_longest_run_ratio'] < steady_manifest['low_end_longest_run_ratio']
+    assert ping_pong_manifest['low_end_owner_stability_risk'] > steady_manifest['low_end_owner_stability_risk']
+
 
 
 def test_listener_agent_rejects_non_songs_and_only_recommends_survivors(tmp_path: Path):
@@ -763,12 +1191,87 @@ def test_listener_agent_rejects_non_songs_and_only_recommends_survivors(tmp_path
     assert payload['counts']['total'] == 2
     assert payload['counts']['survivors'] == 1
     assert payload['counts']['rejected'] == 1
+    assert payload['listener_agent']['acceptance_criteria']['survivor_minimums']['song_likeness'] == 60.0
+    assert payload['listener_agent']['acceptance_criteria']['hard_reject_component_floors']['transition'] == 45.0
     assert payload['recommended_for_human_review'][0]['label'] == 'strong.json'
     assert payload['recommended_for_human_review'][0]['decision'] == 'survivor'
+    assert payload['recommended_for_human_review'][0]['acceptance_checks']['survivor_minimums']['song_likeness']['passed'] is True
+    assert payload['recommended_for_human_review'][0]['acceptance_checks']['listen_gate']['passed'] is True
     assert payload['rejected'][0]['label'] == 'poor.json'
     assert payload['rejected'][0]['decision'] == 'reject'
+    assert payload['rejected'][0]['acceptance_checks']['hard_reject_component_floors']['song_likeness']['passed'] is False
+    assert payload['rejected'][0]['acceptance_checks']['listen_gate']['passed'] is False
     assert 'does not sound like one real song' in payload['rejected'][0]['hard_fail_reasons']
     assert payload['summary'][0].startswith('Listener agent kept 1 of 2')
+
+
+
+def test_listener_agent_survivor_ranking_penalizes_critical_bottlenecks(tmp_path: Path):
+    bottlenecked = {
+        'source_path': 'bottlenecked.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 86.0,
+        'structure': {'score': 84.0, 'summary': 'clear sections', 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': 90.0, 'summary': 'huge pocket', 'evidence': [], 'fixes': [], 'details': {}},
+        'energy_arc': {'score': 90.0, 'summary': 'strong payoff', 'evidence': [], 'fixes': [], 'details': {}},
+        'transition': {'score': 90.0, 'summary': 'smooth swaps', 'evidence': [], 'fixes': [], 'details': {}},
+        'coherence': {'score': 85.0, 'summary': 'cohesive', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 80.0, 'summary': 'clear enough', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {
+            'score': 60.0,
+            'summary': 'just enough to pass but still stitched',
+            'evidence': [],
+            'fixes': [],
+            'details': {'aggregate_metrics': {'backbone_continuity': 0.62, 'recognizable_section_ratio': 0.7, 'boundary_recovery': 0.65, 'role_plausibility': 0.66, 'background_only_identity_gap': 0.18, 'owner_switch_ratio': 0.35}},
+        },
+        'verdict': 'promising',
+        'top_reasons': ['Energetic and polished.'],
+        'top_fixes': ['Still make it feel more like one song.'],
+        'gating': {'status': 'pass', 'raw_overall_score': 86.0},
+        'analysis_version': '0.5.0',
+    }
+    balanced = {
+        'source_path': 'balanced.wav',
+        'duration_seconds': 60.0,
+        'overall_score': 82.0,
+        'structure': {'score': 82.0, 'summary': 'clear sections', 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': 78.0, 'summary': 'steady pocket', 'evidence': [], 'fixes': [], 'details': {}},
+        'energy_arc': {'score': 78.0, 'summary': 'good late lift', 'evidence': [], 'fixes': [], 'details': {}},
+        'transition': {'score': 78.0, 'summary': 'musical handoffs', 'evidence': [], 'fixes': [], 'details': {}},
+        'coherence': {'score': 78.0, 'summary': 'consistent', 'evidence': [], 'fixes': [], 'details': {}},
+        'mix_sanity': {'score': 78.0, 'summary': 'clear enough', 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {
+            'score': 78.0,
+            'summary': 'reads like one song',
+            'evidence': [],
+            'fixes': [],
+            'details': {'aggregate_metrics': {'backbone_continuity': 0.73, 'recognizable_section_ratio': 0.74, 'boundary_recovery': 0.71, 'role_plausibility': 0.7, 'background_only_identity_gap': 0.12, 'owner_switch_ratio': 0.28}},
+        },
+        'verdict': 'promising',
+        'top_reasons': ['Balanced and convincing.'],
+        'top_fixes': [],
+        'gating': {'status': 'pass', 'raw_overall_score': 82.0},
+        'analysis_version': '0.5.0',
+    }
+
+    bottlenecked_path = tmp_path / 'bottlenecked.json'
+    balanced_path = tmp_path / 'balanced.json'
+    out = tmp_path / 'listener_agent_ranked.json'
+    bottlenecked_path.write_text(json.dumps(bottlenecked), encoding='utf-8')
+    balanced_path.write_text(json.dumps(balanced), encoding='utf-8')
+
+    rc = ai_dj.listener_agent([str(bottlenecked_path), str(balanced_path)], str(out), shortlist=2)
+    assert rc == 0
+
+    payload = json.loads(out.read_text(encoding='utf-8'))
+    recommended = payload['recommended_for_human_review']
+    assert [row['label'] for row in recommended] == ['balanced.json', 'bottlenecked.json']
+    assert recommended[0]['rank_diagnostics']['critical_floor'] == 78.0
+    assert recommended[1]['rank_diagnostics']['weakest_critical_component'] == 'song_likeness'
+    assert recommended[1]['rank_diagnostics']['imbalance_penalty'] > 0.0
+    assert recommended[1]['rank_diagnostics']['weighted_rank'] > recommended[0]['rank_diagnostics']['weighted_rank']
+    assert recommended[1]['listener_rank'] < recommended[0]['listener_rank']
+    assert payload['listener_agent']['ranking_policy']['critical_rank_targets']['song_likeness'] == 70.0
 
 
 

@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import importlib
 import json
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -26,6 +27,30 @@ LISTENER_AGENT_COMPONENT_WEIGHTS = {
     "transition": 0.08,
     "coherence": 0.06,
     "mix_sanity": 0.04,
+}
+
+LISTENER_AGENT_CRITICAL_RANK_TARGETS = {
+    "song_likeness": 70.0,
+    "groove": 68.0,
+    "energy_arc": 68.0,
+    "transition": 68.0,
+}
+
+LISTENER_AGENT_RANK_PENALTY_SCALE = 0.35
+
+LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS = {
+    "overall_score": 55.0,
+    "song_likeness": 45.0,
+    "groove": 45.0,
+    "energy_arc": 45.0,
+    "transition": 45.0,
+}
+
+LISTENER_AGENT_SURVIVOR_MINIMUMS = {
+    "overall_score": 70.0,
+    "song_likeness": 60.0,
+    "groove": 55.0,
+    "energy_arc": 55.0,
 }
 
 
@@ -279,6 +304,59 @@ def _stable_case_id(path_str: str) -> str:
     return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:10]
 
 
+def _path_tail_label(path_str: str, depth: int) -> str:
+    path = Path(path_str).expanduser().resolve()
+    parts = list(path.parts)
+    if parts and parts[0] == path.anchor:
+        parts = parts[1:]
+    if not parts:
+        return path.name or str(path)
+    depth = max(1, min(int(depth), len(parts)))
+    return "/".join(parts[-depth:])
+
+
+def _assign_display_labels(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    labeled = [dict(item) for item in items]
+    if not labeled:
+        return labeled
+
+    depths = [1] * len(labeled)
+    max_depths = []
+    for item in labeled:
+        path = Path(str(item.get("input_path") or "")).expanduser().resolve()
+        parts = list(path.parts)
+        if parts and parts[0] == path.anchor:
+            parts = parts[1:]
+        max_depths.append(max(1, len(parts)))
+
+    labels = [str(item.get("input_label") or item.get("input_path") or f"case_{index}") for index, item in enumerate(labeled)]
+    while True:
+        labels = [_path_tail_label(str(item.get("input_path") or ""), depth) for item, depth in zip(labeled, depths)]
+        collisions: dict[str, list[int]] = {}
+        for index, label in enumerate(labels):
+            collisions.setdefault(label, []).append(index)
+        duplicate_groups = [indexes for indexes in collisions.values() if len(indexes) > 1]
+        if not duplicate_groups:
+            break
+
+        advanced = False
+        for indexes in duplicate_groups:
+            for index in indexes:
+                if depths[index] < max_depths[index]:
+                    depths[index] += 1
+                    advanced = True
+        if not advanced:
+            labels = [
+                f"{label}#{str(item.get('case_id') or '')[:6]}" if len(collisions.get(label, [])) > 1 else label
+                for item, label in zip(labeled, labels)
+            ]
+            break
+
+    for item, label in zip(labeled, labels):
+        item["display_label"] = label
+    return labeled
+
+
 def _report_component_snapshot(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     snapshot: dict[str, dict[str, Any]] = {}
     for key in LISTEN_COMPONENT_KEYS:
@@ -332,6 +410,59 @@ def _resolve_output_path(output: Optional[str], default_path: Optional[Path] = N
 
 def _metric_label(key: str) -> str:
     return key.replace("_", " ")
+
+
+def _flatten_numeric_details(payload: dict[str, Any], prefix: str = "") -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for key, value in payload.items():
+        metric_key = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            metrics.update(_flatten_numeric_details(value, metric_key))
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+            metrics[metric_key] = float(value)
+    return metrics
+
+
+def _component_numeric_details(component: dict[str, Any]) -> dict[str, float]:
+    details = component.get("details") or {}
+    return _flatten_numeric_details(details)
+
+
+def _component_profile_match(left_component: dict[str, Any], right_component: dict[str, Any]) -> dict[str, Any]:
+    left_metrics = _component_numeric_details(left_component)
+    right_metrics = _component_numeric_details(right_component)
+    shared = sorted(set(left_metrics) & set(right_metrics))
+    if not shared:
+        return {
+            "similarity": None,
+            "shared_metric_count": 0,
+            "largest_gaps": [],
+        }
+
+    gaps = []
+    for key in shared:
+        left_value = float(left_metrics[key])
+        right_value = float(right_metrics[key])
+        scale = max(abs(left_value), abs(right_value), 1.0)
+        normalized_gap = min(1.0, abs(left_value - right_value) / scale)
+        gaps.append({
+            "metric": key,
+            "left": round(left_value, 4),
+            "right": round(right_value, 4),
+            "delta": round(left_value - right_value, 4),
+            "normalized_gap": round(normalized_gap, 4),
+        })
+
+    mean_gap = sum(float(item["normalized_gap"]) for item in gaps) / len(gaps)
+    ranked_gaps = sorted(gaps, key=lambda item: (-float(item["normalized_gap"]), item["metric"]))
+    return {
+        "similarity": round(max(0.0, 1.0 - mean_gap), 4),
+        "shared_metric_count": len(shared),
+        "largest_gaps": ranked_gaps[:5],
+    }
 
 
 def _decision_confidence(overall_delta: float, decisive_component_count: int) -> str:
@@ -532,9 +663,7 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
     }
 
 
-def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any]:
-    left = _resolve_compare_input(left_input)
-    right = _resolve_compare_input(right_input)
+def _build_listen_comparison_from_resolved(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     left_report = left["report"]
     right_report = right["report"]
 
@@ -556,8 +685,8 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
         for key, delta in component_deltas.items()
     }
 
-    left_label = left.get("input_label") or "left"
-    right_label = right.get("input_label") or "right"
+    left_label = left.get("display_label") or left.get("input_label") or "left"
+    right_label = right.get("display_label") or right.get("input_label") or "right"
     ranked_component_swings = [
         {
             "component": key,
@@ -591,14 +720,24 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
         ),
         "diagnostics": {
             "ranked_component_swings": ranked_component_swings,
+            "groove_profile_match": _component_profile_match(
+                left_report.get("groove") or {},
+                right_report.get("groove") or {},
+            ),
+            "energy_profile_match": _component_profile_match(
+                left_report.get("energy_arc") or {},
+                right_report.get("energy_arc") or {},
+            ),
             "left_profile": {
                 "case_id": left.get("case_id"),
+                "display_label": left_label,
                 "strengths": _report_strengths_and_weaknesses(left_report)[0],
                 "weaknesses": _report_strengths_and_weaknesses(left_report)[1],
                 "components": _report_component_snapshot(left_report),
             },
             "right_profile": {
                 "case_id": right.get("case_id"),
+                "display_label": right_label,
                 "strengths": _report_strengths_and_weaknesses(right_report)[0],
                 "weaknesses": _report_strengths_and_weaknesses(right_report)[1],
                 "components": _report_component_snapshot(right_report),
@@ -616,6 +755,14 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
         ),
     }
     return comparison
+
+
+def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any]:
+    left, right = _assign_display_labels([
+        _resolve_compare_input(left_input),
+        _resolve_compare_input(right_input),
+    ])
+    return _build_listen_comparison_from_resolved(left, right)
 
 
 def listen(track: str, output: Optional[str]) -> int:
@@ -655,8 +802,8 @@ def compare_listen(left: str, right: str, output: Optional[str]) -> int:
     if output is None:
         print(json.dumps(comparison, indent=2, sort_keys=True))
 
-    left_label = comparison['left'].get('input_label', 'left')
-    right_label = comparison['right'].get('input_label', 'right')
+    left_label = comparison['left'].get('display_label') or comparison['left'].get('input_label', 'left')
+    right_label = comparison['right'].get('display_label') or comparison['right'].get('input_label', 'right')
     print(f"Compare: {left_label} vs {right_label}")
     print(f"Overall winner: {comparison['winner']['overall']}")
     print(f"Overall score delta ({left_label} - {right_label}): {comparison['deltas']['overall_score_delta']:+.1f}")
@@ -679,10 +826,10 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
     if len(inputs) < 2:
         raise CliError("listen benchmark requires at least two inputs")
 
-    resolved = [_resolve_compare_input(path) for path in inputs]
+    resolved = _assign_display_labels([_resolve_compare_input(path) for path in inputs])
     scoreboard = {
-        item['input_label']: {
-            'label': item['input_label'],
+        str(item.get('display_label') or item['input_label']): {
+            'label': str(item.get('display_label') or item['input_label']),
             'case_id': item['case_id'],
             'input_path': item['input_path'],
             'report_origin': item['report_origin'],
@@ -702,9 +849,9 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
 
     for index, left in enumerate(resolved):
         for right in resolved[index + 1:]:
-            comparison = _build_listen_comparison(left['input_path'], right['input_path'])
-            left_label = comparison['left']['input_label']
-            right_label = comparison['right']['input_label']
+            comparison = _build_listen_comparison_from_resolved(left, right)
+            left_label = str(comparison['left'].get('display_label') or comparison['left']['input_label'])
+            right_label = str(comparison['right'].get('display_label') or comparison['right']['input_label'])
             delta = float(comparison['deltas']['overall_score_delta'])
             winner = comparison['winner']['overall']
 
@@ -761,7 +908,8 @@ def _build_listen_benchmark(inputs: list[str]) -> dict[str, Any]:
         'inputs': [item['input_path'] for item in resolved],
         'case_index': [
             {
-                'label': item['input_label'],
+                'label': str(item.get('display_label') or item['input_label']),
+                'input_label': item['input_label'],
                 'case_id': item['case_id'],
                 'input_path': item['input_path'],
                 'report_origin': item['report_origin'],
@@ -800,10 +948,132 @@ def _stable_listener_agent_output_path(inputs: list[str]) -> Path:
     return (Path("runs") / "listener_agent" / f"listener_agent__{digest}.json").resolve()
 
 
+def _stable_closed_loop_output_root(song_a: str, song_b: str, references: list[str]) -> Path:
+    resolved = [
+        str(Path(song_a).expanduser().resolve()),
+        str(Path(song_b).expanduser().resolve()),
+        *sorted(str(Path(item).expanduser().resolve()) for item in references),
+    ]
+    digest = hashlib.sha1("||".join(resolved).encode("utf-8")).hexdigest()[:10]
+    song_a_slug = ''.join(ch if ch.isalnum() else '_' for ch in Path(song_a).expanduser().stem.lower()).strip('_') or 'song_a'
+    song_b_slug = ''.join(ch if ch.isalnum() else '_' for ch in Path(song_b).expanduser().stem.lower()).strip('_') or 'song_b'
+    return (Path("runs") / "closed_loop" / f"{song_a_slug}__{song_b_slug}__{digest}").resolve()
+
+
 def _listener_component_score(report: dict[str, Any], key: str) -> float:
     if key == "overall_score":
         return float(report.get("overall_score") or 0.0)
     return float((report.get(key) or {}).get("score") or 0.0)
+
+
+def _listener_song_likeness_metrics(report: dict[str, Any]) -> dict[str, Optional[float]]:
+    metrics = ((report.get("song_likeness") or {}).get("details") or {}).get("aggregate_metrics") or {}
+
+    def _metric(name: str) -> Optional[float]:
+        value = metrics.get(name)
+        if value is None:
+            return None
+        return float(value)
+
+    return {
+        "backbone_continuity": _metric("backbone_continuity"),
+        "recognizable_section_ratio": _metric("recognizable_section_ratio"),
+        "boundary_recovery": _metric("boundary_recovery"),
+        "role_plausibility": _metric("role_plausibility"),
+        "planner_audio_climax_conviction": _metric("planner_audio_climax_conviction"),
+        "composite_song_risk": _metric("composite_song_risk"),
+        "background_only_identity_gap": _metric("background_only_identity_gap"),
+        "owner_switch_ratio": _metric("owner_switch_ratio"),
+    }
+
+
+def _append_unique_reason(reasons: list[str], reason: str) -> None:
+    if reason not in reasons:
+        reasons.append(reason)
+
+
+def _listener_rank_diagnostics(report: dict[str, Any]) -> dict[str, Any]:
+    weighted_components = {
+        key: round(LISTENER_AGENT_COMPONENT_WEIGHTS[key] * _listener_component_score(report, key), 2)
+        for key in LISTENER_AGENT_COMPONENT_WEIGHTS
+    }
+    weighted_rank = sum(weighted_components.values())
+
+    bottlenecks: list[dict[str, Any]] = []
+    imbalance_penalty = 0.0
+    for key, target in LISTENER_AGENT_CRITICAL_RANK_TARGETS.items():
+        score = _listener_component_score(report, key)
+        gap = max(target - score, 0.0)
+        penalty = round(gap * LISTENER_AGENT_RANK_PENALTY_SCALE, 2)
+        if penalty > 0.0:
+            bottlenecks.append(
+                {
+                    "component": key,
+                    "score": round(score, 1),
+                    "target": round(target, 1),
+                    "gap": round(gap, 1),
+                    "penalty": penalty,
+                }
+            )
+            imbalance_penalty += penalty
+
+    weakest_critical = min(
+        (
+            {
+                "component": key,
+                "score": round(_listener_component_score(report, key), 1),
+            }
+            for key in LISTENER_AGENT_CRITICAL_RANK_TARGETS
+        ),
+        key=lambda item: (item["score"], item["component"]),
+    )
+
+    return {
+        "weighted_rank": round(weighted_rank, 1),
+        "imbalance_penalty": round(imbalance_penalty, 1),
+        "critical_floor": weakest_critical["score"],
+        "weakest_critical_component": weakest_critical["component"],
+        "bottlenecks": sorted(bottlenecks, key=lambda item: (-item["penalty"], item["component"])),
+        "final_rank": round(max(weighted_rank - imbalance_penalty, 0.0), 1),
+        "weighted_components": weighted_components,
+    }
+
+
+def _listener_acceptance_checks(report: dict[str, Any]) -> dict[str, Any]:
+    component_floors = {}
+    for key, minimum in LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS.items():
+        actual = _listener_component_score(report, key)
+        component_floors[key] = {
+            "minimum": round(minimum, 1),
+            "actual": round(actual, 1),
+            "passed": actual >= minimum,
+        }
+
+    survivor_minimums = {}
+    for key, minimum in LISTENER_AGENT_SURVIVOR_MINIMUMS.items():
+        actual = _listener_component_score(report, key)
+        survivor_minimums[key] = {
+            "minimum": round(minimum, 1),
+            "actual": round(actual, 1),
+            "passed": actual >= minimum,
+        }
+
+    verdict = str(report.get("verdict") or "unknown")
+    gate_status = str((report.get("gating") or {}).get("status") or "unknown")
+    return {
+        "hard_reject_component_floors": component_floors,
+        "survivor_minimums": survivor_minimums,
+        "verdict_gate": {
+            "allowed_values": ["promising"],
+            "actual": verdict,
+            "passed": verdict not in {"mixed", "weak", "poor"},
+        },
+        "listen_gate": {
+            "required_status": "pass",
+            "actual": gate_status,
+            "passed": gate_status == "pass",
+        },
+    }
 
 
 def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
@@ -817,34 +1087,74 @@ def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
     coherence = _listener_component_score(report, "coherence")
     mix_sanity = _listener_component_score(report, "mix_sanity")
     verdict = str(report.get("verdict") or "unknown")
+    song_likeness_metrics = _listener_song_likeness_metrics(report)
 
     hard_fail_reasons: list[str] = []
     if gate_status == "reject":
-        hard_fail_reasons.append("hard listen gate rejected the track")
+        _append_unique_reason(hard_fail_reasons, "hard listen gate rejected the track")
     if verdict in {"weak", "poor"}:
-        hard_fail_reasons.append("listener verdict says the output is weak or poor")
-    if overall < 55.0:
-        hard_fail_reasons.append("overall musical quality is still too low")
-    if song_likeness < 45.0:
-        hard_fail_reasons.append("does not sound like one real song")
-    if groove < 45.0:
-        hard_fail_reasons.append("groove is too unstable to trust")
-    if energy_arc < 45.0:
-        hard_fail_reasons.append("section arc / payoff shape is too weak")
-    if transition < 45.0:
-        hard_fail_reasons.append("transitions still read like track switching")
+        _append_unique_reason(hard_fail_reasons, "listener verdict says the output is weak or poor")
+    if overall < LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS["overall_score"]:
+        _append_unique_reason(hard_fail_reasons, "overall musical quality is still too low")
+    if song_likeness < LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS["song_likeness"]:
+        _append_unique_reason(hard_fail_reasons, "does not sound like one real song")
+    if groove < LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS["groove"]:
+        _append_unique_reason(hard_fail_reasons, "groove is too unstable to trust")
+    if energy_arc < LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS["energy_arc"]:
+        _append_unique_reason(hard_fail_reasons, "section arc / payoff shape is too weak")
+    if transition < LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS["transition"]:
+        _append_unique_reason(hard_fail_reasons, "transitions still read like track switching")
+
+    backbone_continuity = song_likeness_metrics["backbone_continuity"]
+    recognizable_section_ratio = song_likeness_metrics["recognizable_section_ratio"]
+    boundary_recovery = song_likeness_metrics["boundary_recovery"]
+    role_plausibility = song_likeness_metrics["role_plausibility"]
+    composite_song_risk = song_likeness_metrics["composite_song_risk"]
+    background_only_identity_gap = song_likeness_metrics["background_only_identity_gap"]
+    owner_switch_ratio = song_likeness_metrics["owner_switch_ratio"]
+
+    if song_likeness >= 45.0 and backbone_continuity is not None and backbone_continuity < 0.42:
+        _append_unique_reason(hard_fail_reasons, "whole-song backbone continuity is too weak")
+    if (
+        song_likeness >= 45.0
+        and recognizable_section_ratio is not None
+        and boundary_recovery is not None
+        and recognizable_section_ratio < 0.40
+        and boundary_recovery < 0.38
+    ):
+        _append_unique_reason(hard_fail_reasons, "section readability is too weak to trust as one arrangement")
+    if (
+        song_likeness >= 45.0
+        and role_plausibility is not None
+        and boundary_recovery is not None
+        and role_plausibility < 0.40
+        and boundary_recovery < 0.42
+    ):
+        _append_unique_reason(hard_fail_reasons, "section roles are not plausible enough to read as one song")
+    if composite_song_risk is not None and composite_song_risk > 0.50:
+        _append_unique_reason(hard_fail_reasons, "composite detector says the arrangement still reads like multiple pasted songs")
+    if background_only_identity_gap is not None and background_only_identity_gap > 0.45:
+        _append_unique_reason(hard_fail_reasons, "fusion identity is mostly background-only glue")
+    if transition < 55.0 and owner_switch_ratio is not None and owner_switch_ratio > 0.78:
+        _append_unique_reason(hard_fail_reasons, "too many section-owner flips still read like track switching")
+
+    acceptance_checks = _listener_acceptance_checks(report)
 
     if hard_fail_reasons:
         decision = "reject"
-    elif verdict in {"mixed"} or overall < 70.0 or song_likeness < 60.0 or groove < 55.0 or energy_arc < 55.0:
+    elif (
+        verdict in {"mixed"}
+        or overall < LISTENER_AGENT_SURVIVOR_MINIMUMS["overall_score"]
+        or song_likeness < LISTENER_AGENT_SURVIVOR_MINIMUMS["song_likeness"]
+        or groove < LISTENER_AGENT_SURVIVOR_MINIMUMS["groove"]
+        or energy_arc < LISTENER_AGENT_SURVIVOR_MINIMUMS["energy_arc"]
+    ):
         decision = "borderline"
     else:
         decision = "survivor"
 
-    listener_rank = round(sum(
-        LISTENER_AGENT_COMPONENT_WEIGHTS[key] * _listener_component_score(report, key)
-        for key in LISTENER_AGENT_COMPONENT_WEIGHTS
-    ), 1)
+    rank_diagnostics = _listener_rank_diagnostics(report)
+    listener_rank = rank_diagnostics["final_rank"]
 
     strengths, weaknesses = _report_strengths_and_weaknesses(report, limit=3)
     return {
@@ -859,11 +1169,18 @@ def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
         "gate_status": gate_status,
         "decision": decision,
         "listener_rank": listener_rank,
+        "acceptance_checks": acceptance_checks,
         "hard_fail_reasons": hard_fail_reasons,
         "top_reasons": list((report.get("top_reasons") or [])[:4]),
         "top_fixes": list((report.get("top_fixes") or [])[:4]),
         "strengths": strengths,
         "weaknesses": weaknesses,
+        "rank_diagnostics": rank_diagnostics,
+        "hard_reject_signals": {
+            key: round(value, 3)
+            for key, value in song_likeness_metrics.items()
+            if value is not None
+        },
         "component_scores": {
             key: round(_listener_component_score(report, key), 1)
             for key in LISTENER_AGENT_COMPONENT_WEIGHTS
@@ -931,12 +1248,28 @@ def _build_listener_agent_report(inputs: list[str], shortlist: int = 3) -> dict[
         "schema_version": "0.1.0",
         "listener_agent": {
             "purpose": "Reject non-song outputs and only recommend promising survivors for human listening.",
+            "ranking_policy": {
+                "weighted_components": dict(LISTENER_AGENT_COMPONENT_WEIGHTS),
+                "critical_rank_targets": dict(LISTENER_AGENT_CRITICAL_RANK_TARGETS),
+                "imbalance_penalty_scale": LISTENER_AGENT_RANK_PENALTY_SCALE,
+            },
+            "acceptance_criteria": {
+                "hard_reject_component_floors": dict(LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS),
+                "survivor_minimums": dict(LISTENER_AGENT_SURVIVOR_MINIMUMS),
+                "required_listener_verdict_for_survivor": ["promising"],
+                "required_listen_gate_status_for_survivor": "pass",
+            },
             "hard_reject_rules": [
                 "hard listen gate rejected the track",
                 "does not sound like one real song",
+                "whole-song backbone continuity is too weak",
+                "section readability is too weak to trust as one arrangement",
+                "section roles are not plausible enough to read as one song",
+                "fusion identity is mostly background-only glue",
                 "groove is too unstable to trust",
                 "section arc / payoff shape is too weak",
                 "transitions still read like track switching",
+                "too many section-owner flips still read like track switching",
             ],
         },
         "inputs": inputs,
@@ -977,6 +1310,66 @@ def listener_agent(inputs: list[str], output: Optional[str], shortlist: int = 3)
     for row in report["rejected"][:5]:
         reason = "; ".join(row["hard_fail_reasons"][:2]) or "listener rejected the output"
         print(f"- REJECT {row['label']}: {reason}")
+    return 0
+
+
+def closed_loop(
+    song_a: str,
+    song_b: str,
+    references: list[str],
+    output_root: Optional[str],
+    max_iterations: int = 3,
+    quality_gate: float = 85.0,
+    plateau_limit: int = 2,
+    min_improvement: float = 0.5,
+    change_command: Optional[str] = None,
+    test_command: Optional[str] = None,
+    target_score: float = 99.0,
+) -> int:
+    song_a_path = _resolve_existing_audio_path(song_a, "song_a")
+    song_b_path = _resolve_existing_audio_path(song_b, "song_b")
+    if not references:
+        raise CliError("closed-loop requires at least one reference input")
+
+    try:
+        from scripts.closed_loop_listener_runner import LoopError, run_closed_loop
+    except ModuleNotFoundError as exc:
+        raise CliError(f"Unable to import closed-loop runner: {exc}") from exc
+
+    resolved_output_root = _resolve_output_path(
+        output_root,
+        default_path=_stable_closed_loop_output_root(song_a_path, song_b_path, references),
+        default_filename="closed_loop_report.json",
+    )
+    assert resolved_output_root is not None
+    output_root_dir = resolved_output_root.parent if resolved_output_root.suffix.lower() == ".json" else resolved_output_root
+
+    try:
+        report = run_closed_loop(
+            song_a=song_a_path,
+            song_b=song_b_path,
+            references=references,
+            output_root=str(output_root_dir),
+            max_iterations=max_iterations,
+            quality_gate=quality_gate,
+            plateau_limit=plateau_limit,
+            min_improvement=min_improvement,
+            change_command=change_command,
+            test_command=test_command,
+            target_score=target_score,
+        )
+    except LoopError as exc:
+        raise CliError(str(exc)) from exc
+
+    report_path = output_root_dir / "closed_loop_report.json"
+    print(f"Wrote closed-loop report: {report_path}")
+    if report.get("best_iteration"):
+        best = report["best_iteration"]
+        print(
+            f"Best iteration {best['iteration']} scored {float(best['candidate_overall_score']):.1f} ({best['candidate_verdict']})."
+        )
+    if report.get("stop_reason"):
+        print(f"Closed loop stopped: {report['stop_reason']}")
     return 0
 
 
@@ -1034,6 +1427,7 @@ Suggested first checkpoint:
   python3 ai_dj.py compare-listen left.json right.json --output runs/checkpoint/listen_compare.json
   python3 ai_dj.py benchmark-listen runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listen_benchmark.json
   python3 ai_dj.py listener-agent runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listener_agent.json
+  python3 ai_dj.py closed-loop song_a.wav song_b.wav ref_a.wav ref_b.wav --output runs/closed_loop/demo --max-iterations 2
   python3 ai_dj.py prototype song_a.wav song_b.wav --output-dir runs/prototype-001
   python3 ai_dj.py fusion song_a.wav song_b.wav --output runs/render-prototype
 ''',
@@ -1069,6 +1463,19 @@ Suggested first checkpoint:
     listener_agent_parser.add_argument("inputs", nargs="+", help="One or more inputs: listen JSON, audio file, render manifest JSON, or render output directory")
     listener_agent_parser.add_argument("--shortlist", type=int, default=3, help="Maximum number of survivors to recommend for human review")
     listener_agent_parser.add_argument("--output", "-o", help="Path to output listener-agent JSON")
+
+    closed_loop_parser = subparsers.add_parser("closed-loop", help="Run a bounded listener-driven improvement loop for one fusion pair")
+    closed_loop_parser.add_argument("song_a", help="Path to parent song A")
+    closed_loop_parser.add_argument("song_b", help="Path to parent song B")
+    closed_loop_parser.add_argument("references", nargs="+", help="One or more good reference inputs")
+    closed_loop_parser.add_argument("--output", "-o", help="Directory (or JSON path inside a directory) for closed-loop artifacts/report")
+    closed_loop_parser.add_argument("--max-iterations", type=int, default=3, help="Maximum number of loop iterations")
+    closed_loop_parser.add_argument("--quality-gate", type=float, default=85.0, help="Stop once the candidate clears this overall score")
+    closed_loop_parser.add_argument("--plateau-limit", type=int, default=2, help="Stop after this many non-improving iterations")
+    closed_loop_parser.add_argument("--min-improvement", type=float, default=0.5, help="Minimum score gain required to reset plateau detection")
+    closed_loop_parser.add_argument("--target-score", type=float, default=99.0, help="Long-term aspirational target score for the feedback brief")
+    closed_loop_parser.add_argument("--change-command", help="Optional direct command template used to change code between iterations")
+    closed_loop_parser.add_argument("--test-command", help="Optional direct command template used to validate changes between iterations")
 
     fus_parser = subparsers.add_parser("fusion", help="Render a first-pass fused audio prototype")
     fus_parser.add_argument("track1", help="Path to first track")
@@ -1110,6 +1517,20 @@ Suggested first checkpoint:
             return benchmark_listen(args.inputs, args.output)
         if args.command == "listener-agent":
             return listener_agent(args.inputs, args.output, args.shortlist)
+        if args.command == "closed-loop":
+            return closed_loop(
+                args.song_a,
+                args.song_b,
+                args.references,
+                args.output,
+                args.max_iterations,
+                args.quality_gate,
+                args.plateau_limit,
+                args.min_improvement,
+                args.change_command,
+                args.test_command,
+                args.target_score,
+            )
         if args.command == "doctor":
             return doctor(args.output)
     except CliError as exc:

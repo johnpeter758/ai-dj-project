@@ -16,12 +16,17 @@ class BenchmarkCase:
 
 
 def _listen_report(case: BenchmarkCase) -> dict:
+    groove_details = {
+        'beat_stability': round(case.component_scores['groove'] / 100.0, 3),
+        'pocket_stability': round(max(case.component_scores['groove'] - 6.0, 0.0) / 100.0, 3),
+        'collapse_severity': round(max(100.0 - case.component_scores['groove'], 0.0) / 100.0, 3),
+    }
     return {
         'source_path': f'{case.name}.wav',
         'duration_seconds': 60.0,
         'overall_score': case.overall_score,
         'structure': {'score': case.component_scores['structure'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
-        'groove': {'score': case.component_scores['groove'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
+        'groove': {'score': case.component_scores['groove'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': groove_details},
         'energy_arc': {'score': case.component_scores['energy_arc'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
         'transition': {'score': case.component_scores['transition'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
         'coherence': {'score': case.component_scores['coherence'], 'summary': case.name, 'evidence': [], 'fixes': [], 'details': {}},
@@ -150,6 +155,93 @@ def test_compare_listen_round_robin_benchmark_ranks_stronger_reports_higher(tmp_
     assert ranking[3]['net_score_delta'] == -41.0
 
 
+def test_compare_listen_profile_match_exposes_groove_similarity_diagnostics(tmp_path: Path):
+    left = BenchmarkCase(
+        name='left_groove',
+        overall_score=82.0,
+        component_scores={
+            'structure': 80.0,
+            'groove': 84.0,
+            'energy_arc': 81.0,
+            'transition': 79.0,
+            'coherence': 80.0,
+            'mix_sanity': 78.0,
+        },
+        verdict='promising',
+    )
+    right = BenchmarkCase(
+        name='right_groove',
+        overall_score=79.0,
+        component_scores={
+            'structure': 79.0,
+            'groove': 72.0,
+            'energy_arc': 78.0,
+            'transition': 77.0,
+            'coherence': 79.0,
+            'mix_sanity': 77.0,
+        },
+        verdict='mixed',
+    )
+
+    comparison = ai_dj._build_listen_comparison(str(_write_case(tmp_path, left)), str(_write_case(tmp_path, right)))
+
+    groove_match = comparison['diagnostics']['groove_profile_match']
+    assert groove_match['shared_metric_count'] == 3
+    assert groove_match['similarity'] is not None
+    assert groove_match['largest_gaps'][0]['metric'] in {'beat_stability', 'pocket_stability', 'collapse_severity'}
+    assert groove_match['largest_gaps'][0]['normalized_gap'] > 0.0
+
+
+def test_compare_listen_profile_match_exposes_energy_similarity_diagnostics_for_nested_metrics(tmp_path: Path):
+    left_payload = _listen_report(BenchmarkCase(
+        name='left_energy',
+        overall_score=83.0,
+        component_scores={
+            'structure': 80.0,
+            'groove': 82.0,
+            'energy_arc': 86.0,
+            'transition': 80.0,
+            'coherence': 81.0,
+            'mix_sanity': 79.0,
+        },
+        verdict='promising',
+    ))
+    right_payload = _listen_report(BenchmarkCase(
+        name='right_energy',
+        overall_score=77.0,
+        component_scores={
+            'structure': 78.0,
+            'groove': 79.0,
+            'energy_arc': 68.0,
+            'transition': 76.0,
+            'coherence': 78.0,
+            'mix_sanity': 77.0,
+        },
+        verdict='mixed',
+    ))
+    left_payload['energy_arc']['details'] = {
+        'macro_profile': {'late_peak_ratio': 0.84, 'payoff_contrast': 0.77},
+        'dynamic_range_rms': 0.42,
+    }
+    right_payload['energy_arc']['details'] = {
+        'macro_profile': {'late_peak_ratio': 0.41, 'payoff_contrast': 0.39},
+        'dynamic_range_rms': 0.18,
+    }
+
+    left_path = tmp_path / 'left_energy.json'
+    right_path = tmp_path / 'right_energy.json'
+    left_path.write_text(json.dumps(left_payload), encoding='utf-8')
+    right_path.write_text(json.dumps(right_payload), encoding='utf-8')
+
+    comparison = ai_dj._build_listen_comparison(str(left_path), str(right_path))
+
+    energy_match = comparison['diagnostics']['energy_profile_match']
+    assert energy_match['shared_metric_count'] == 3
+    assert energy_match['similarity'] is not None
+    assert energy_match['largest_gaps'][0]['metric'] in {'macro_profile.late_peak_ratio', 'macro_profile.payoff_contrast', 'dynamic_range_rms'}
+    assert energy_match['largest_gaps'][0]['normalized_gap'] > 0.0
+
+
 def test_compare_listen_benchmark_exposes_component_reason_for_a_win(tmp_path: Path):
     strong_arc = BenchmarkCase(
         name='strong_arc',
@@ -187,6 +279,52 @@ def test_compare_listen_benchmark_exposes_component_reason_for_a_win(tmp_path: P
     assert comparison['winner']['components']['energy_arc'] == 'left'
     assert comparison['deltas']['component_score_deltas']['energy_arc'] == 25.0
     assert any('energy arc' in line.lower() for line in comparison['summary'])
+
+
+def test_build_listen_benchmark_handles_duplicate_basenames_without_label_collisions(tmp_path: Path):
+    stronger = BenchmarkCase(
+        name='fusion_rerun',
+        overall_score=84.0,
+        component_scores={
+            'structure': 85.0,
+            'groove': 84.0,
+            'energy_arc': 86.0,
+            'transition': 82.0,
+            'coherence': 83.0,
+            'mix_sanity': 82.0,
+        },
+        verdict='promising',
+    )
+    weaker = BenchmarkCase(
+        name='fusion_rerun',
+        overall_score=71.0,
+        component_scores={
+            'structure': 72.0,
+            'groove': 71.0,
+            'energy_arc': 68.0,
+            'transition': 70.0,
+            'coherence': 72.0,
+            'mix_sanity': 73.0,
+        },
+        verdict='mixed',
+    )
+
+    pass_a = tmp_path / 'pass_a'
+    pass_b = tmp_path / 'pass_b'
+    pass_a.mkdir()
+    pass_b.mkdir()
+    left_path = pass_a / 'fusion_rerun.json'
+    right_path = pass_b / 'fusion_rerun.json'
+    left_path.write_text(json.dumps(_listen_report(stronger)), encoding='utf-8')
+    right_path.write_text(json.dumps(_listen_report(weaker)), encoding='utf-8')
+
+    benchmark = ai_dj._build_listen_benchmark([str(left_path), str(right_path)])
+
+    assert benchmark['winner'] == 'pass_a/fusion_rerun.json'
+    assert [row['label'] for row in benchmark['ranking']] == ['pass_a/fusion_rerun.json', 'pass_b/fusion_rerun.json']
+    assert benchmark['comparisons'][0]['left'] == 'pass_a/fusion_rerun.json'
+    assert benchmark['comparisons'][0]['right'] == 'pass_b/fusion_rerun.json'
+    assert benchmark['case_index'][0]['input_label'] == 'fusion_rerun.json'
 
 
 def test_build_listen_benchmark_returns_ranked_scoreboard(tmp_path: Path):

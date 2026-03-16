@@ -172,12 +172,27 @@ def _apply_transition_mode_constraints(
         return overlap_beats, False, None
     if transition_mode is None:
         return overlap_beats, True, "cross-parent overlap defaulted to backbone-only ownership; donor support now requires explicit transition_mode=crossfade_support"
-    if transition_mode == "arrival_handoff" and overlap_beats > 1.0:
-        return 1.0, True, f"transition_mode=arrival_handoff capped overlap from {overlap_beats:.1f} to 1.0 beat and disabled donor background ownership"
-    if transition_mode == "single_owner_handoff" and overlap_beats > 2.0:
-        return 2.0, True, f"transition_mode=single_owner_handoff capped overlap from {overlap_beats:.1f} to 2.0 beats and disabled donor background ownership"
+
+    curr = (current_label or "").strip().lower()
+    if transition_mode == "arrival_handoff":
+        cap = 1.0
+        if curr in {"build", "payoff"}:
+            cap = 0.5
+        if overlap_beats > cap:
+            beat_label = "beat" if math.isclose(cap, 1.0, rel_tol=0.0, abs_tol=1e-9) else "beats"
+            return cap, True, f"transition_mode=arrival_handoff capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} and disabled donor background ownership"
+        return overlap_beats, True, None
+    if transition_mode == "single_owner_handoff":
+        cap = 2.0
+        if curr in {"bridge", "outro"}:
+            cap = 1.0
+        elif curr in {"build", "payoff"}:
+            cap = 0.5
+        if overlap_beats > cap:
+            beat_label = "beat" if math.isclose(cap, 1.0, rel_tol=0.0, abs_tol=1e-9) else "beats"
+            return cap, True, f"transition_mode=single_owner_handoff capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} and disabled donor background ownership"
+        return overlap_beats, True, None
     if transition_mode == "crossfade_support":
-        curr = (current_label or "").strip().lower()
         cap = 2.0
         if curr in {"payoff", "outro"}:
             cap = 1.0
@@ -617,9 +632,14 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             background_owner = previous_section.source_parent
         owner_mode = "backbone_only"
         arrival_focus = "backbone_led"
+        low_end_owner = parent_id
         if background_owner is not None:
             owner_mode = "backbone_plus_donor_support"
             arrival_focus = "donor_led" if overlap_beats >= 2.0 else "backbone_led"
+            # Donor-support arrivals are explicitly cleaned up with an aggressive
+            # intro high-pass in the renderer, so the outgoing parent remains the
+            # effective kick/sub anchor until the overlap clears.
+            low_end_owner = background_owner
         resolved = ResolvedSection(
             index=idx,
             label=sec.label,
@@ -635,7 +655,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             ),
             foreground_owner=parent_id,
             background_owner=background_owner,
-            low_end_owner=parent_id,
+            low_end_owner=low_end_owner,
             backbone_owner=parent_id,
             donor_owner=background_owner,
             owner_mode=owner_mode,

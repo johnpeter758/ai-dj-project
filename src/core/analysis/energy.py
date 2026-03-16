@@ -67,11 +67,107 @@ def _phrase_window_payload(
     return payload
 
 
+def _merged_late_phrase_windows(
+    phrase_features: list[dict[str, float]],
+    *,
+    bars_per_phrase: int,
+    bar_count: int,
+    bar_times: np.ndarray,
+    feature_key: str,
+    threshold: float,
+    min_length: int = 2,
+) -> list[dict[str, float | int]]:
+    windows: list[dict[str, float | int]] = []
+    if not phrase_features:
+        return windows
+
+    start_idx: int | None = None
+    for idx, features in enumerate(phrase_features):
+        qualifies = features[feature_key] >= threshold and features["late_bias"] > 0.0
+        if qualifies and start_idx is None:
+            start_idx = idx
+            continue
+        if qualifies:
+            continue
+        if start_idx is not None:
+            end_idx = idx
+            if (end_idx - start_idx) >= min_length:
+                chunk = phrase_features[start_idx:end_idx]
+                mean_strength = float(np.mean([item[feature_key] for item in chunk]))
+                mean_tail = float(np.mean([item["tail_energy"] for item in chunk]))
+                mean_plateau = float(np.mean([item["plateau_strength"] for item in chunk]))
+                mean_end_focus = float(np.mean([item["end_focus"] for item in chunk]))
+                mean_late_bias = float(np.mean([item["late_bias"] for item in chunk]))
+                span_bonus = float(np.clip(((end_idx - start_idx) - 1) / 2.0, 0.0, 0.25))
+                merged_score = float(np.clip(
+                    (0.42 * mean_strength)
+                    + (0.20 * mean_tail)
+                    + (0.16 * mean_plateau)
+                    + (0.12 * mean_end_focus)
+                    + (0.10 * mean_late_bias)
+                    + span_bonus,
+                    0.0,
+                    1.0,
+                ))
+                start_bar = start_idx * bars_per_phrase
+                end_bar = min(end_idx * bars_per_phrase, bar_count)
+                start_sec, end_sec = _window_seconds(bar_times, start_bar, end_bar)
+                windows.append({
+                    "start_bar": int(start_bar),
+                    "end_bar": int(end_bar),
+                    "start": round(start_sec, 3),
+                    "end": round(end_sec, 3),
+                    "score": round(merged_score, 3),
+                    "span_phrases": int(end_idx - start_idx),
+                    "late_bias": round(mean_late_bias, 3),
+                    "tail_energy": round(mean_tail, 3),
+                    "plateau": round(mean_plateau, 3),
+                })
+            start_idx = None
+    if start_idx is not None:
+        end_idx = len(phrase_features)
+        if (end_idx - start_idx) >= min_length:
+            chunk = phrase_features[start_idx:end_idx]
+            mean_strength = float(np.mean([item[feature_key] for item in chunk]))
+            mean_tail = float(np.mean([item["tail_energy"] for item in chunk]))
+            mean_plateau = float(np.mean([item["plateau_strength"] for item in chunk]))
+            mean_end_focus = float(np.mean([item["end_focus"] for item in chunk]))
+            mean_late_bias = float(np.mean([item["late_bias"] for item in chunk]))
+            span_bonus = float(np.clip(((end_idx - start_idx) - 1) / 2.0, 0.0, 0.25))
+            merged_score = float(np.clip(
+                (0.42 * mean_strength)
+                + (0.20 * mean_tail)
+                + (0.16 * mean_plateau)
+                + (0.12 * mean_end_focus)
+                + (0.10 * mean_late_bias)
+                + span_bonus,
+                0.0,
+                1.0,
+            ))
+            start_bar = start_idx * bars_per_phrase
+            end_bar = min(end_idx * bars_per_phrase, bar_count)
+            start_sec, end_sec = _window_seconds(bar_times, start_bar, end_bar)
+            windows.append({
+                "start_bar": int(start_bar),
+                "end_bar": int(end_bar),
+                "start": round(start_sec, 3),
+                "end": round(end_sec, 3),
+                "score": round(merged_score, 3),
+                "span_phrases": int(end_idx - start_idx),
+                "late_bias": round(mean_late_bias, 3),
+                "tail_energy": round(mean_tail, 3),
+                "plateau": round(mean_plateau, 3),
+            })
+    return windows
+
+
 def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: np.ndarray, bar_flatness: np.ndarray, bar_times: np.ndarray) -> dict:
     if bar_rms.size == 0:
         return {
             "hook_strength": 0.0,
             "hook_repetition": 0.0,
+            "build_strength": 0.0,
+            "ramp_consistency": 0.0,
             "payoff_strength": 0.0,
             "energy_confidence": 0.0,
             "late_lift": 0.0,
@@ -79,6 +175,7 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
             "plateau_strength": 0.0,
             "hook_spend": 0.0,
             "hook_windows": [],
+            "build_windows": [],
             "payoff_windows": [],
             "climax_windows": [],
             "plateau_windows": [],
@@ -130,12 +227,44 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
         anti_flat = 1.0 - phrase_flat
         headroom = float(np.clip(1.0 - head_energy, 0.0, 1.0))
         lift = float(max(0.0, tail_energy - head_energy))
+        head_onset = float(np.mean(onset_slice[:max(1, len(onset_slice) // 2)])) if onset_slice.size else 0.0
+        tail_onset = float(np.mean(onset_slice[-max(1, len(onset_slice) // 2):])) if onset_slice.size else head_onset
+        onset_lift = float(max(0.0, tail_onset - head_onset))
+        energy_steps = np.diff(energy_slice)
+        energy_span = max(float(np.max(energy_slice) - np.min(energy_slice)) if energy_slice.size else 0.0, 1e-6)
+        if energy_steps.size:
+            positive_ratio = float(np.mean(energy_steps >= -1e-6))
+            largest_drop = float(np.max(np.maximum(0.0, -energy_steps)))
+            ramp_consistency = float(np.clip(
+                (0.65 * positive_ratio)
+                + (0.35 * (1.0 - min(1.0, largest_drop / energy_span))),
+                0.0,
+                1.0,
+            ))
+        else:
+            ramp_consistency = 0.5
 
         plateau_strength = float(np.clip(
             0.48 * tail_energy
             + 0.26 * plateau_stability
             + 0.16 * phrase_low
             + 0.10 * anti_flat,
+            0.0,
+            1.0,
+        ))
+        build_motion = float(np.clip(
+            0.45 * lift
+            + 0.25 * local_rise
+            + 0.20 * onset_lift
+            + 0.10 * headroom,
+            0.0,
+            1.0,
+        ))
+        build_strength = float(np.clip(
+            ((0.55 * ramp_consistency) + (0.45 * build_motion)) * (0.35 + (0.65 * build_motion))
+            + 0.08 * late_bias
+            + 0.04 * anti_flat
+            - 0.22 * plateau_strength * end_focus,
             0.0,
             1.0,
         ))
@@ -179,6 +308,9 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
             "end_focus": end_focus,
             "headroom": headroom,
             "lift": lift,
+            "onset_lift": onset_lift,
+            "ramp_consistency": ramp_consistency,
+            "build_strength": build_strength,
             "late_bias": late_bias,
             "payoff_strength": payoff_strength,
             "climax_strength": climax_strength,
@@ -186,6 +318,7 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
 
     repetition_scores: list[float] = []
     hook_windows: list[dict[str, float | int]] = []
+    build_windows: list[dict[str, float | int]] = []
     climax_windows: list[dict[str, float | int]] = []
     plateau_windows: list[dict[str, float | int]] = []
     payoff_windows: list[dict[str, float | int]] = []
@@ -218,6 +351,18 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
                 hook_score,
                 repetition=repetition,
                 energy=features["energy"],
+            ))
+
+        if features["build_strength"] >= (0.42 if features["late_bias"] >= 0.10 else 0.52):
+            build_windows.append(_phrase_window_payload(
+                idx,
+                bars_per_phrase,
+                bar_rms.size,
+                bar_times,
+                features["build_strength"],
+                ramp=features["ramp_consistency"],
+                lift=features["lift"],
+                headroom=features["headroom"],
             ))
 
         if features["plateau_strength"] >= 0.56:
@@ -257,6 +402,34 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
                 plateau=features["plateau_strength"],
             ))
 
+    payoff_windows.extend(_merged_late_phrase_windows(
+        phrase_features,
+        bars_per_phrase=bars_per_phrase,
+        bar_count=bar_rms.size,
+        bar_times=bar_times,
+        feature_key="payoff_strength",
+        threshold=0.56,
+        min_length=2,
+    ))
+    climax_windows.extend(_merged_late_phrase_windows(
+        phrase_features,
+        bars_per_phrase=bars_per_phrase,
+        bar_count=bar_rms.size,
+        bar_times=bar_times,
+        feature_key="climax_strength",
+        threshold=0.58,
+        min_length=2,
+    ))
+    plateau_windows.extend(_merged_late_phrase_windows(
+        phrase_features,
+        bars_per_phrase=bars_per_phrase,
+        bar_count=bar_rms.size,
+        bar_times=bar_times,
+        feature_key="plateau_strength",
+        threshold=0.56,
+        min_length=2,
+    ))
+
     quartile = max(1, int(np.ceil(bar_rms.size / 4)))
     early_mean = float(np.mean(norm_rms[:quartile])) if norm_rms.size else 0.0
     late_mean = float(np.mean(norm_rms[-quartile:])) if norm_rms.size else 0.0
@@ -267,11 +440,33 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
         (features["payoff_strength"] for idx, features in enumerate(phrase_features) if idx / max(phrase_count - 1, 1) >= 0.60),
         default=0.0,
     )
-    early_hook_strength = max(
-        (float(item["score"]) for item in top_hook_windows if (float(item["start_bar"]) / max(bar_rms.size, 1)) < 0.50),
+    late_hook_strength = max(
+        (float(item["score"]) for item in top_hook_windows if (float(item["start_bar"]) / max(bar_rms.size, 1)) >= 0.60),
         default=0.0,
     )
-    hook_spend = float(np.clip(early_hook_strength - late_payoff_strength, 0.0, 1.0))
+    early_hook_windows = [
+        item for item in top_hook_windows
+        if (float(item["start_bar"]) / max(bar_rms.size, 1)) < 0.50
+    ]
+    early_hook_strength = max((float(item["score"]) for item in early_hook_windows), default=0.0)
+    early_hook_density = float(np.clip(len(early_hook_windows) / max(phrase_count, 1), 0.0, 1.0))
+    earliest_hook_position = min(
+        ((float(item["start_bar"]) / max(bar_rms.size, 1)) for item in early_hook_windows),
+        default=1.0,
+    )
+    earliest_hook_bonus = float(np.clip((0.35 - earliest_hook_position) / 0.35, 0.0, 1.0))
+    hook_payoff_gap = float(np.clip(early_hook_strength - late_payoff_strength, 0.0, 1.0))
+    hook_repeat_gap = float(np.clip(early_hook_strength - late_hook_strength, 0.0, 1.0))
+    late_payoff_absence = float(np.clip(0.62 - late_payoff_strength, 0.0, 0.62) / 0.62)
+    hook_spend = float(np.clip(
+        0.52 * hook_payoff_gap
+        + 0.20 * hook_repeat_gap
+        + 0.16 * early_hook_density
+        + 0.12 * earliest_hook_bonus * float(early_hook_strength >= 0.58)
+        + 0.10 * late_payoff_absence * float(early_hook_strength >= 0.62),
+        0.0,
+        1.0,
+    ))
 
     bar_deltas = np.abs(np.diff(norm_rms)) if norm_rms.size >= 2 else np.asarray([], dtype=float)
     confidence = float(np.clip(
@@ -289,13 +484,21 @@ def _derive_phrase_signals(bar_rms: np.ndarray, bar_onset: np.ndarray, bar_low: 
     return {
         "hook_strength": round(max((float(w["score"]) for w in hook_windows), default=0.0), 3),
         "hook_repetition": round(max(repetition_scores, default=0.0), 3),
+        "build_strength": round(max((features["build_strength"] for features in phrase_features), default=0.0), 3),
+        "ramp_consistency": round(max((features["ramp_consistency"] for features in phrase_features), default=0.0), 3),
         "payoff_strength": round(max((features["payoff_strength"] for features in phrase_features), default=0.0), 3),
         "energy_confidence": round(confidence, 3),
         "late_lift": round(late_lift, 3),
         "climax_strength": round(max((float(w["score"]) for w in climax_windows), default=0.0), 3),
         "plateau_strength": round(max((float(w["score"]) for w in plateau_windows), default=0.0), 3),
         "hook_spend": round(hook_spend, 3),
+        "early_hook_strength": round(early_hook_strength, 3),
+        "late_hook_strength": round(late_hook_strength, 3),
+        "late_payoff_strength": round(late_payoff_strength, 3),
+        "early_hook_density": round(early_hook_density, 3),
+        "earliest_hook_position": round(earliest_hook_position, 3) if earliest_hook_position < 1.0 else 1.0,
         "hook_windows": top_hook_windows[:6],
+        "build_windows": sorted(build_windows, key=lambda item: float(item["score"]), reverse=True)[:6],
         "payoff_windows": sorted(payoff_windows, key=lambda item: float(item["score"]), reverse=True)[:6],
         "climax_windows": sorted(climax_windows, key=lambda item: float(item["score"]), reverse=True)[:6],
         "plateau_windows": sorted(plateau_windows, key=lambda item: float(item["score"]), reverse=True)[:6],
@@ -371,6 +574,8 @@ def compute_energy_profile(audio: np.ndarray, sample_rate: int, hop_length: int 
             "max_bar_rms": float(np.max(bar_rms)) if len(bar_rms) else 0.0,
             "bar_dynamic_range_rms": float(np.max(bar_rms) - np.min(bar_rms)) if len(bar_rms) else 0.0,
             "hook_strength": derived["hook_strength"],
+            "build_strength": derived["build_strength"],
+            "ramp_consistency": derived["ramp_consistency"],
             "payoff_strength": derived["payoff_strength"],
             "energy_confidence": derived["energy_confidence"],
             "late_lift": derived["late_lift"],

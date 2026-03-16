@@ -1,5 +1,13 @@
 # Python
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
 *.pyc
 *.pyo
 *.pyd
@@ -7,6 +15,11 @@ __pycache__/
 venv/
 env/
 .venv/
+
+# Packaging
+build/
+dist/
+*.egg-info/
 
 # Audio
 *.mp3
@@ -21,11 +34,25 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+*.stdout.log
+*.stderr.log
 
 # Exports
 exports/
 fusions/
 runs/
+artifacts/
+
+# Local runtime state
+/data/**/*.db
+/data/**/*.sqlite
+/data/**/*.sqlite3
+/data/**/*.duckdb
+/data/cache/
+/data/local/
+/data/tmp/
+/data/mixes/
 
 # Large files
 *.pth

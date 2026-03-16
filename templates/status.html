@@ -18,6 +18,14 @@
     .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
     .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#1f2937; color:#cbd5e1; font-size:12px; margin-right:8px; }
     .two-col { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    .loop-progress { width:100%; height:12px; background:#0b1220; border:1px solid #334155; border-radius:999px; overflow:hidden; margin:14px 0 18px; }
+    .loop-progress-bar { height:100%; background:linear-gradient(90deg,#7c3aed,#a78bfa); }
+    .loop-stage-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; }
+    .loop-stage { background:#111827; border:1px solid #273244; border-radius:12px; padding:12px; }
+    .loop-stage.done { border-color:#14532d; background:#0e1a15; }
+    .loop-stage-label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
+    .loop-stage-state { font-weight:700; margin-bottom:6px; }
+    .loop-stage.done .loop-stage-state { color:#34d399; }
     button { padding:10px 14px; border-radius:10px; border:none; background:#7c3aed; color:#fff; font-weight:700; cursor:pointer; }
     button:disabled { opacity:.6; cursor:not-allowed; }
     @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
@@ -46,6 +54,13 @@
     </div>
 
     <div class="card"><h2>Currently working on</h2><div id="workingOn" class="mono">Loading…</div></div>
+
+    <div class="card">
+      <h2>Loop visualization</h2>
+      <div id="loopSummary" class="mono">Loading…</div>
+      <div class="loop-progress"><div id="loopProgressBar" class="loop-progress-bar" style="width:0%"></div></div>
+      <div id="loopStages" class="loop-stage-grid"></div>
+    </div>
 
     <div class="card two-col">
       <div>
@@ -84,7 +99,17 @@
     function renderBenchmark(bench) {
       if (!bench) return 'No benchmark-listen result yet.';
       const top = bench.top_entry || {};
-      return `${artifactLink(bench)}<br><span class="pill">winner ${esc(bench.winner || '—')}</span><span class="pill">entries ${esc(bench.entry_count ?? 0)}</span><span class="pill">pairs ${esc(bench.comparison_count ?? 0)}</span>${bench.leader_gap !== null && bench.leader_gap !== undefined ? `<br>Leader gap vs runner-up: ${esc(bench.leader_gap)}` : ''}${top.label ? `<br><br><strong>Top run</strong><br>${esc(top.label)} · wins ${esc(top.wins ?? 0)} / losses ${esc(top.losses ?? 0)} · net ${esc(top.net_score_delta ?? '—')} · overall ${esc(top.overall_score ?? '—')}${top.verdict ? ` · ${esc(top.verdict)}` : ''}` : ''}`;
+      const preview = (bench.ranking_preview || []).map(row => {
+        const rank = row.rank ?? '—';
+        const label = row.label || 'unknown';
+        const wins = row.wins ?? 0;
+        const losses = row.losses ?? 0;
+        const net = row.net_score_delta ?? '—';
+        const overall = row.overall_score ?? '—';
+        const verdict = row.verdict ? ` · ${esc(row.verdict)}` : '';
+        return `<li>#${esc(rank)} ${esc(label)} · wins ${esc(wins)} / losses ${esc(losses)} · net ${esc(net)} · overall ${esc(overall)}${verdict}</li>`;
+      }).join('');
+      return `${artifactLink(bench)}<br><span class="pill">winner ${esc(bench.winner || '—')}</span><span class="pill">entries ${esc(bench.entry_count ?? 0)}</span><span class="pill">pairs ${esc(bench.comparison_count ?? 0)}</span>${bench.leader_gap !== null && bench.leader_gap !== undefined ? `<br>Leader gap vs runner-up: ${esc(bench.leader_gap)}` : ''}${top.label ? `<br><br><strong>Top run</strong><br>${esc(top.label)} · wins ${esc(top.wins ?? 0)} / losses ${esc(top.losses ?? 0)} · net ${esc(top.net_score_delta ?? '—')} · overall ${esc(top.overall_score ?? '—')}${top.verdict ? ` · ${esc(top.verdict)}` : ''}` : ''}${preview ? `<br><br><strong>Podium</strong><ul>${preview}</ul>` : ''}`;
     }
     function renderListenerAgent(agent) {
       if (!agent) return 'No listener-agent result yet.';
@@ -106,6 +131,25 @@
       const artifacts = (run.artifacts || []).map(item => `<li>${artifactLink(item)} <span class="muted">${esc(item.modified || '')}</span></li>`).join('');
       return `<div class="mono">${esc(run.run_dir || run.path || '—')}</div><div class="muted">${esc(run.artifact_count ?? 0)} files indexed in run dir</div>${artifacts ? `<ul>${artifacts}</ul>` : ''}`;
     }
+    function renderLoopVisualization(viz) {
+      if (!viz) return { summary: 'No loop visualization yet.', stages: '' };
+      const sprint = viz.active_sprint || {};
+      const current = viz.current_stage || {};
+      const summary = [
+        `${esc(viz.completed_stage_count ?? 0)} / ${esc(viz.total_stage_count ?? 0)} checkpoints complete · ${esc(viz.progress_percent ?? 0)}%`,
+        current.label ? `Current focus: ${esc(current.label)} — ${esc(current.detail || '')}` : '',
+        sprint.task ? `Sprint task: ${esc(sprint.task)}` : '',
+        sprint.last_heartbeat ? `Last heartbeat: ${esc(sprint.last_heartbeat)}` : '',
+      ].filter(Boolean).join('<br>');
+      const stages = (viz.stages || []).map(stage => `
+        <div class="loop-stage ${stage.state === 'done' ? 'done' : ''}">
+          <div class="loop-stage-label">${esc(stage.label)}</div>
+          <div class="loop-stage-state">${esc(stage.state || 'pending')}</div>
+          <div class="muted small">${esc(stage.detail || '')}</div>
+        </div>
+      `).join('');
+      return { summary, stages };
+    }
     async function loadStatus() {
       const res = await fetch('/api/status');
       const data = await res.json();
@@ -126,6 +170,10 @@
       document.getElementById('latestListenerAgent').innerHTML = renderListenerAgent(data.latest_listener_agent_result);
       document.getElementById('latestManifest').innerHTML = renderManifest(data.latest_manifest);
       document.getElementById('latestRun').innerHTML = renderRun(data.latest_run_summary);
+      const loopViz = renderLoopVisualization(data.workloop_visualization);
+      document.getElementById('loopSummary').innerHTML = loopViz.summary;
+      document.getElementById('loopStages').innerHTML = loopViz.stages;
+      document.getElementById('loopProgressBar').style.width = `${data.workloop_visualization?.progress_percent || 0}%`;
     }
     async function runListenerAgent() {
       const btn = document.getElementById('runListenerAgentBtn');

@@ -9,7 +9,17 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'listen_gate_benchmark.py'
 
 
-def _listen_report(case_name: str, overall: float, verdict: str, gating: str, *, energy_arc: float, groove: float, song_likeness: float) -> dict:
+def _listen_report(
+    case_name: str,
+    overall: float,
+    verdict: str,
+    gating: str,
+    *,
+    energy_arc: float,
+    groove: float,
+    song_likeness: float,
+    aggregate_metrics: dict | None = None,
+) -> dict:
     return {
         'source_path': f'{case_name}.wav',
         'duration_seconds': 60.0,
@@ -20,7 +30,13 @@ def _listen_report(case_name: str, overall: float, verdict: str, gating: str, *,
         'transition': {'score': overall - 1.0, 'summary': case_name, 'evidence': [], 'fixes': [], 'details': {}},
         'coherence': {'score': overall, 'summary': case_name, 'evidence': [], 'fixes': [], 'details': {}},
         'mix_sanity': {'score': overall, 'summary': case_name, 'evidence': [], 'fixes': [], 'details': {}},
-        'song_likeness': {'score': song_likeness, 'summary': case_name, 'evidence': [], 'fixes': [], 'details': {}},
+        'song_likeness': {
+            'score': song_likeness,
+            'summary': case_name,
+            'evidence': [],
+            'fixes': [],
+            'details': {'aggregate_metrics': dict(aggregate_metrics or {})},
+        },
         'verdict': verdict,
         'top_reasons': [],
         'top_fixes': [],
@@ -96,6 +112,58 @@ def test_listen_gate_benchmark_passes_and_exposes_pairwise_deltas(tmp_path: Path
     assert 'Harness: PASS' in result.stdout
 
 
+def test_listen_gate_benchmark_fails_when_pairwise_delta_exceeds_maximum(tmp_path: Path):
+    left = _write_json(
+        tmp_path / 'left.json',
+        _listen_report('left', 80.0, 'promising', 'pass', energy_arc=82.0, groove=75.0, song_likeness=81.0),
+    )
+    right = _write_json(
+        tmp_path / 'right.json',
+        _listen_report('right', 73.0, 'mixed', 'review', energy_arc=76.0, groove=70.0, song_likeness=74.0),
+    )
+    spec = {
+        'expected_order': ['left_case', 'right_case'],
+        'cases': [
+            {
+                'label': 'left_case',
+                'input': str(left),
+                'expect': {
+                    'better_than': [
+                        {
+                            'other': 'right_case',
+                            'overall_score_delta_at_least': 5.0,
+                            'overall_score_delta_at_most': 6.0,
+                            'component_score_delta_at_least': {'energy_arc': 5.0},
+                            'component_score_delta_at_most': {'groove': 4.0},
+                        }
+                    ],
+                },
+            },
+            {
+                'label': 'right_case',
+                'input': str(right),
+            },
+        ],
+    }
+    spec_path = _write_json(tmp_path / 'delta_band_spec.json', spec)
+    output = tmp_path / 'delta_band_harness.json'
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(spec_path), '--output', str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(output.read_text(encoding='utf-8'))
+    assert payload['passed'] is False
+    reasons = [row['reason'] for row in payload['failures']['pairwise_failures']]
+    assert any('overall score delta <=' in reason for reason in reasons)
+    assert any('groove delta <=' in reason for reason in reasons)
+    assert 'FAIL left_case vs right_case' in result.stdout
+
+
 def test_listen_gate_benchmark_fails_when_expected_human_order_regresses(tmp_path: Path):
     supposed_good = _write_json(
         tmp_path / 'supposed_good.json',
@@ -143,3 +211,77 @@ def test_listen_gate_benchmark_fails_when_expected_human_order_regresses(tmp_pat
     assert payload['failures']['case_failures']['supposed_good_case'][0].startswith('gating_status')
     assert payload['failures']['case_failures']['supposed_bad_case'][0].startswith('overall_score')
     assert 'FAIL supposed_good_case vs supposed_bad_case' in result.stdout
+
+
+def test_listen_gate_benchmark_checks_nested_payoff_conviction_metrics(tmp_path: Path):
+    strong = _write_json(
+        tmp_path / 'strong.json',
+        _listen_report(
+            'strong',
+            84.0,
+            'promising',
+            'pass',
+            energy_arc=86.0,
+            groove=79.0,
+            song_likeness=82.0,
+            aggregate_metrics={
+                'planner_audio_climax_conviction': 0.78,
+                'climax_conviction': 0.81,
+            },
+        ),
+    )
+    weak = _write_json(
+        tmp_path / 'weak.json',
+        _listen_report(
+            'weak',
+            72.0,
+            'mixed',
+            'review',
+            energy_arc=62.0,
+            groove=70.0,
+            song_likeness=69.0,
+            aggregate_metrics={
+                'planner_audio_climax_conviction': 0.41,
+                'climax_conviction': 0.39,
+            },
+        ),
+    )
+    spec = {
+        'expected_order': ['strong_case', 'weak_case'],
+        'cases': [
+            {
+                'label': 'strong_case',
+                'input': str(strong),
+                'expect': {
+                    'metric_at_least': {
+                        'song_likeness.details.aggregate_metrics.planner_audio_climax_conviction': 0.75,
+                        'song_likeness.details.aggregate_metrics.climax_conviction': 0.80,
+                    },
+                },
+            },
+            {
+                'label': 'weak_case',
+                'input': str(weak),
+                'expect': {
+                    'metric_at_most': {
+                        'song_likeness.details.aggregate_metrics.planner_audio_climax_conviction': 0.45,
+                        'song_likeness.details.aggregate_metrics.climax_conviction': 0.45,
+                    },
+                },
+            },
+        ],
+    }
+    spec_path = _write_json(tmp_path / 'metric_spec.json', spec)
+    output = tmp_path / 'metric_harness.json'
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(spec_path), '--output', str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output.read_text(encoding='utf-8'))
+    assert payload['passed'] is True
+    assert payload['failures']['case_failures'] == {}

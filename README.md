@@ -52,6 +52,8 @@ It is **not** producer-grade yet. The main gap is still musical intelligence: st
 
 ## Quick start
 
+GitHub Actions now runs the regression suite on Python 3.11, 3.12, and 3.13 with pip caching plus `libsndfile` / `ffmpeg` installed, so local test failures should generally reproduce in CI.
+
 Use the project venv if you already have it:
 
 ```bash
@@ -140,17 +142,30 @@ python3 scripts/closed_loop_listener_runner.py song_a.mp3 song_b.mp3 runs/refere
   --output-root runs/closed_loop/demo \
   --max-iterations 3 \
   --quality-gate 85 \
-  --change-command "python scripts/your_patch_step.py --brief {feedback_json}" \
-  --test-command "./.venv/bin/python -m pytest -q"
+  --change-command "python scripts/your_patch_step.py --context {change_context_json}" \
+  --test-command "./.venv/bin/python -m pytest -q tests/test_closed_loop_listener_runner.py"
 ```
 
 Purpose:
 - render a candidate
 - compare it against known-good references
 - write a code-targeted improvement brief
+- write a structured change packet for external patch steps
 - optionally call an external patch step
 - rerun tests
 - stop on plateau or quality-gate success while tracking the best iteration
+
+Useful loop artifacts per iteration:
+- `listen_feedback_brief.json` — ranked gaps vs references plus planner/render feedback routes
+- `change_command_context.json` — structured fields for automation-friendly patch steps
+- `change_request.md` — concise human-readable implementation brief for the same iteration
+- `render/` — fusion output directory for that iteration
+
+To inspect the available `{placeholder}` fields for `--change-command` and `--test-command`:
+
+```bash
+python3 scripts/closed_loop_listener_runner.py --print-template-fields
+```
 
 ## Current checkpoint highlights
 
@@ -181,7 +196,9 @@ ai-dj-project/
 
 ## Notes
 
-- `runs/` is for local artifacts and is gitignored.
+- `runs/`, `artifacts/`, `logs/`, and local server/process stdout/stderr captures are local-only outputs and are gitignored.
+- `data/analyses/` can hold small checked-in fixture/reference JSON when it is useful for tests or reproducible examples.
+- Local runtime state should not be committed: project DB files (`*.db`, `*.sqlite*`, `*.duckdb`) plus generated `data/mixes/`, `data/cache/`, `data/local/`, and `data/tmp/` content are treated as machine-local state.
 - `docs/` is organized into `render/`, `research/`, and `notes/`.
 - This repo still contains older exploratory modules under `src/`; the current canonical path is `src/core/`.
 

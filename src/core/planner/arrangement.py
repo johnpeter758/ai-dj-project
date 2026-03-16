@@ -55,6 +55,7 @@ class _RoleFeatures:
     hook_strength: float
     payoff_strength: float
     energy_confidence: float
+    source_section_prior: float
 
 
 @dataclass(frozen=True)
@@ -244,15 +245,25 @@ def _song_payoff_family_metrics(song: SongDNA) -> dict[str, float]:
     }
 
 
+def _extended_payoff_family_support(metrics: dict[str, float]) -> float:
+    relaunch_advantage = _clamp01((metrics['final_advantage'] - 0.5) * 2.0)
+    return _clamp01(
+        0.38 * metrics['reset_depth']
+        + 0.34 * metrics['relaunch_strength']
+        + 0.28 * relaunch_advantage
+    )
+
+
 def _song_extended_program_support(song: SongDNA) -> float:
     metrics = _song_payoff_family_metrics(song)
     feedback = _planner_listen_feedback(song)
     return _clamp01(
-        0.35 * metrics['reset_depth']
-        + 0.35 * metrics['relaunch_strength']
-        + 0.10 * metrics['final_advantage']
-        + 0.10 * feedback.payoff_readiness
+        0.30 * metrics['reset_depth']
+        + 0.28 * metrics['relaunch_strength']
+        + 0.08 * metrics['final_advantage']
+        + 0.14 * feedback.payoff_readiness
         + 0.10 * feedback.energy_arc_strength
+        + 0.10 * _extended_payoff_family_support(metrics)
     )
 
 
@@ -288,20 +299,32 @@ def _build_section_program(song_a: SongDNA, song_b: SongDNA) -> list[_SectionSpe
         family_b = _song_payoff_family_metrics(song_b)
         extended_support = max(support_a, support_b)
         shared_support = 0.5 * (support_a + support_b)
-        strongest_payoff_gain = max(
-            family_a['final_payoff'] - family_a['first_payoff'],
-            family_b['final_payoff'] - family_b['first_payoff'],
-        )
-        shared_payoff_gain = 0.5 * (
-            (family_a['final_payoff'] - family_a['first_payoff'])
-            + (family_b['final_payoff'] - family_b['first_payoff'])
-        )
-        if (
+        family_support_a = _extended_payoff_family_support(family_a)
+        family_support_b = _extended_payoff_family_support(family_b)
+        strongest_family_support = max(family_support_a, family_support_b)
+        shared_family_support = 0.5 * (family_support_a + family_support_b)
+        payoff_gain_a = family_a['final_payoff'] - family_a['first_payoff']
+        payoff_gain_b = family_b['final_payoff'] - family_b['first_payoff']
+        strongest_payoff_gain = max(payoff_gain_a, payoff_gain_b)
+        weakest_payoff_gain = min(payoff_gain_a, payoff_gain_b)
+        shared_payoff_gain = 0.5 * (payoff_gain_a + payoff_gain_b)
+        shared_extended_support = (
             extended_support >= 0.42
             and shared_support >= 0.36
+            and strongest_family_support >= 0.44
+            and shared_family_support >= 0.36
             and strongest_payoff_gain >= 0.03
             and shared_payoff_gain >= 0.015
-        ):
+        )
+        asymmetric_delayed_climax_support = (
+            extended_support >= 0.58
+            and min(support_a, support_b) >= 0.28
+            and strongest_family_support >= 0.60
+            and min(family_support_a, family_support_b) >= 0.24
+            and strongest_payoff_gain >= 0.10
+            and weakest_payoff_gain >= 0.0
+        )
+        if shared_extended_support or asymmetric_delayed_climax_support:
             return extended
         return standard
     if capacity >= 5:
@@ -558,6 +581,51 @@ def _phrase_window_candidates(song: SongDNA, bar_count: int) -> list[_SectionCan
     return candidates
 
 
+def _opening_lane_candidates(song: SongDNA, bar_count: int, role: str | None) -> list[_SectionCandidate]:
+    canonical_role = ROLE_ALIAS.get(role or '', role or '')
+    if canonical_role not in {'intro', 'verse'}:
+        return []
+
+    target_duration = _target_section_duration_seconds(song, bar_count)
+    min_duration = target_duration * (0.72 if canonical_role == 'intro' else 0.78)
+    max_duration = target_duration * 1.12
+    duration = float(song.duration_seconds)
+
+    raw_boundaries = sorted({
+        0.0,
+        duration,
+        *(_safe_float_list(song.structure.get('section_boundaries_seconds', [])) or []),
+        *(_safe_float_list(song.structure.get('phrase_boundaries_seconds', [])) or []),
+    })
+    boundaries = [value for value in raw_boundaries if 0.0 <= value <= duration]
+    if len(boundaries) < 2:
+        return []
+
+    opening_horizon = duration * (0.48 if canonical_role == 'intro' else 0.60)
+    max_start_idx = 1 if canonical_role == 'intro' else 3
+    max_end_idx = len(boundaries) - 1
+
+    candidates: list[_SectionCandidate] = []
+    for start_idx in range(min(max_start_idx + 1, len(boundaries) - 1)):
+        start = float(boundaries[start_idx])
+        if start >= opening_horizon:
+            continue
+        for end_idx in range(start_idx + 1, max_end_idx + 1):
+            end = float(boundaries[end_idx])
+            window_duration = end - start
+            if window_duration <= 0.0:
+                continue
+            if window_duration < min_duration:
+                continue
+            if window_duration > max_duration:
+                break
+            if end > opening_horizon and canonical_role == 'intro':
+                break
+            label = f'opening_{canonical_role}_{start_idx}_{end_idx}'
+            _append_candidate(candidates, song, label, start, end, 'opening_lane')
+    return candidates
+
+
 def _score_position_low(position: float) -> float:
     return max(0.0, 1.0 - position)
 
@@ -641,7 +709,74 @@ def _signal_overlap_strength(song: SongDNA, candidate: _SectionCandidate, signal
     return best
 
 
-def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate], candidate: _SectionCandidate) -> _RoleFeatures:
+def _is_generic_source_section_label(label: str | None) -> bool:
+    if not label:
+        return True
+    normalized = label.strip().lower()
+    return normalized.startswith(('section_', 'part_', 'segment_'))
+
+
+
+def _source_section_role_prior(song: SongDNA, candidate: _SectionCandidate, role: str | None) -> float:
+    if not role:
+        return 0.0
+
+    canonical_role = ROLE_ALIAS.get(role, role)
+    role_aliases = {
+        'intro': {'intro', 'opening'},
+        'verse': {'verse'},
+        'pre': {'pre', 'build', 'prechorus', 'pre_chorus', 'rise'},
+        'chorus_payoff': {'chorus', 'hook', 'drop', 'payoff', 'refrain'},
+        'bridge': {'bridge', 'break', 'breakdown', 'middle8', 'middle_8'},
+        'outro': {'outro', 'ending', 'end'},
+    }
+    hint_map = {
+        'intro_like': {'intro': 1.0, 'verse': 0.18},
+        'verse_like': {'verse': 1.0, 'pre': 0.22},
+        'chorus_like': {'chorus_payoff': 1.0, 'pre': 0.18},
+        'outro_like': {'outro': 1.0, 'bridge': 0.16},
+        'section_like': {},
+    }
+
+    priors: list[float] = []
+    for idx, section in enumerate(song.structure.get('sections', []) or []):
+        if not isinstance(section, dict):
+            continue
+        try:
+            start = float(section.get('start', 0.0))
+            end = float(section.get('end', song.duration_seconds))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        overlap = max(0.0, min(candidate.end, end) - max(candidate.start, start))
+        if overlap <= 0.0:
+            continue
+
+        overlap_ratio = overlap / max(min(candidate.duration, end - start), 1e-6)
+        confidence = float(section.get('boundary_confidence', 1.0) or 1.0)
+        section_prior = 0.0
+
+        role_hint = str(section.get('role_hint') or '').strip().lower()
+        if role_hint:
+            section_prior = max(section_prior, hint_map.get(role_hint, {}).get(canonical_role, 0.0))
+
+        raw_label = str(section.get('label') or f'section_{idx}').strip().lower()
+        if not _is_generic_source_section_label(raw_label):
+            compact_label = raw_label.replace('-', '_').replace(' ', '_')
+            tokens = {token for token in compact_label.split('_') if token}
+            aliases = role_aliases.get(canonical_role, set())
+            if aliases & tokens or any(alias in compact_label for alias in aliases):
+                section_prior = max(section_prior, 1.0)
+
+        if section_prior > 0.0:
+            priors.append(section_prior * overlap_ratio * max(0.4, min(confidence, 1.0)))
+
+    return max(priors, default=0.0)
+
+
+
+def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate], candidate: _SectionCandidate, role: str | None = None) -> _RoleFeatures:
     phrase_lengths = []
     profiles = {}
     onset_profiles = {}
@@ -745,6 +880,7 @@ def _candidate_role_features(song: SongDNA, candidates: list[_SectionCandidate],
         hook_strength=_signal_overlap_strength(song, candidate, 'hook_windows'),
         payoff_strength=_signal_overlap_strength(song, candidate, 'payoff_windows'),
         energy_confidence=float((song.energy.get('derived', {}) or {}).get('energy_confidence', 0.0)),
+        source_section_prior=_source_section_role_prior(song, candidate, role),
     )
 
 
@@ -804,25 +940,79 @@ def _role_prior_score(role: str, features: _RoleFeatures) -> float:
         score -= 0.22 * features.payoff_strength * signal_confidence
         score -= 0.12 * features.end_focus
 
+    score += 0.95 * features.source_section_prior
     return score
 
 
+def _structure_boundary_evidence(song: SongDNA) -> list[dict[str, float]]:
+    evidence: list[dict[str, float]] = []
+    for item in song.structure.get('boundary_confidences_seconds', []) or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            evidence.append({
+                'time': float(item.get('time', 0.0)),
+                'confidence': _clamp01(float(item.get('confidence', 0.0))),
+            })
+        except (TypeError, ValueError):
+            continue
+    evidence.sort(key=lambda item: item['time'])
+    return evidence
+
+
+def _boundary_support(evidence: list[dict[str, float]], target_time: float, tolerance: float) -> float:
+    best = 0.0
+    for item in evidence:
+        delta = abs(float(item['time']) - float(target_time))
+        if delta > tolerance:
+            continue
+        proximity = 1.0 - (delta / max(tolerance, 1e-6))
+        best = max(best, float(item['confidence']) * (0.60 + (0.40 * proximity)))
+    return _clamp01(best)
+
+
+def _section_candidate_boundary_confidence(song: SongDNA, candidate: _SectionCandidate, tolerance: float) -> float:
+    sections = song.structure.get('sections', []) or []
+    for idx, section in enumerate(sections):
+        label = str(section.get('label') or f'section_{idx}')
+        start = float(section.get('start', 0.0))
+        end = float(section.get('end', song.duration_seconds))
+        if label == candidate.label or (abs(start - candidate.start) <= tolerance and abs(end - candidate.end) <= tolerance):
+            return _clamp01(float(section.get('boundary_confidence', 0.0)))
+    return 0.0
+
+
 def _boundary_confidence(song: SongDNA, candidate: _SectionCandidate) -> float:
+    duration = float(song.duration_seconds)
+    tolerance = max(duration * 0.02, 0.25)
+    evidence = _structure_boundary_evidence(song)
+    start_support = _boundary_support(evidence, candidate.start, tolerance)
+    end_support = _boundary_support(evidence, candidate.end, tolerance)
+    beat_grid_confidence = _clamp01(
+        float(song.structure.get('beat_grid_confidence', song.metadata.get('tempo', {}).get('confidence', 0.0)))
+    )
+    phrase_boundary_method = str(song.structure.get('phrase_boundary_method', 'beat_phrase_grid'))
+
     phrase_boundaries = sorted(set(_safe_float_list(song.structure.get('phrase_boundaries_seconds', []))))
     if candidate.origin not in {'phrase_window', 'phrase_trim'} or not phrase_boundaries:
-        return 0.35 if candidate.origin == 'section' else 0.20
+        section_confidence = _section_candidate_boundary_confidence(song, candidate, tolerance)
+        return min(
+            1.0,
+            0.18
+            + (0.42 * section_confidence)
+            + (0.22 * ((start_support + end_support) * 0.5))
+            + (0.18 * beat_grid_confidence),
+        )
 
     boundaries = list(phrase_boundaries)
     if boundaries[0] > 0.0:
         boundaries = [0.0, *boundaries]
-    duration = float(song.duration_seconds)
     if boundaries[-1] < duration:
         boundaries.append(duration)
 
     def nearest_delta(value: float) -> float:
         return min(abs(value - boundary) for boundary in boundaries)
 
-    tolerance = max(duration * 0.02, 0.25)
     start_score = max(0.0, 1.0 - (nearest_delta(candidate.start) / tolerance))
     end_score = max(0.0, 1.0 - (nearest_delta(candidate.end) / tolerance))
 
@@ -830,7 +1020,17 @@ def _boundary_confidence(song: SongDNA, candidate: _SectionCandidate) -> float:
     section_hits = sum(1 for boundary in section_boundaries if candidate.start <= boundary <= candidate.end)
     boundary_density = min(1.0, section_hits / max((candidate.end - candidate.start) / 8.0, 1.0))
 
-    return min(1.0, 0.55 + (0.30 * ((start_score + end_score) * 0.5)) + (0.15 * boundary_density))
+    confidence = min(
+        1.0,
+        0.14
+        + (0.20 * beat_grid_confidence)
+        + (0.24 * ((start_score + end_score) * 0.5))
+        + (0.26 * ((start_support + end_support) * 0.5))
+        + (0.16 * boundary_density),
+    )
+    if phrase_boundary_method != 'beat_phrase_grid':
+        confidence *= 0.82
+    return _clamp01(confidence)
 
 
 def _normalize_scores(values: dict[str, float]) -> dict[str, float]:
@@ -930,6 +1130,19 @@ def _normalized_delta(pre: float, post: float, floor: float = 1e-6) -> float:
     return abs(post - pre) / scale
 
 
+def _vocal_presence_proxy(energy: float, centroid: float, onset: float, flatness: float) -> float:
+    centroid_presence = _clamp01((max(centroid, 0.0) - 1400.0) / 1800.0)
+    tonal_presence = _clamp01((0.24 - max(flatness, 0.0)) / 0.16)
+    energy_presence = _clamp01((max(energy, 0.0) - 0.10) / 0.14)
+    onset_presence = _clamp01((max(onset, 0.0) - 0.16) / 0.22)
+    return _clamp01(
+        0.35 * centroid_presence
+        + 0.30 * tonal_presence
+        + 0.20 * energy_presence
+        + 0.15 * onset_presence
+    )
+
+
 def _planner_seam_risk(previous: _WindowSelection | None, current_song: SongDNA, current_candidate: _SectionCandidate) -> tuple[float, dict[str, float]]:
     if previous is None:
         return 0.10, {
@@ -980,10 +1193,17 @@ def _planner_seam_risk(previous: _WindowSelection | None, current_song: SongDNA,
         + 0.35 * min(pre_onset, post_onset) / max(max(pre_onset, post_onset), 0.05)
         + 0.20 * min(pre_centroid, post_centroid) / max(max(pre_centroid, post_centroid), 100.0)
     )
+    pre_vocal_presence = _vocal_presence_proxy(pre_energy, pre_centroid, pre_onset, pre_flat)
+    post_vocal_presence = _vocal_presence_proxy(post_energy, post_centroid, post_onset, post_flat)
+    shared_vocal_presence = min(pre_vocal_presence, post_vocal_presence)
+    centroid_similarity = 1.0 - min(1.0, abs(pre_centroid - post_centroid) / max(max(pre_centroid, post_centroid), 100.0))
+    onset_similarity = min(max(pre_onset, 0.0), max(post_onset, 0.0)) / max(max(pre_onset, post_onset, 0.0), 0.05)
+    energy_similarity = min(max(pre_energy, 0.0), max(post_energy, 0.0)) / max(max(pre_energy, post_energy, 0.0), 0.01)
     vocal_competition_risk = _clamp01(
-        0.50 * min(max(pre_centroid, 0.0), max(post_centroid, 0.0)) / max(max(pre_centroid, post_centroid, 0.0), 100.0)
-        + 0.30 * min(max(pre_onset, 0.0), max(post_onset, 0.0)) / max(max(pre_onset, post_onset, 0.0), 0.05)
-        + 0.20 * (1.0 - min(1.0, abs(pre_centroid - post_centroid) / max(max(pre_centroid, post_centroid), 100.0)))
+        0.45 * shared_vocal_presence
+        + 0.30 * centroid_similarity
+        + 0.15 * onset_similarity
+        + 0.10 * energy_similarity
     )
     seam_risk = _clamp01(
         0.22 * min(energy_jump, 1.5)
@@ -1149,10 +1369,21 @@ def _stretch_profile(song: SongDNA, candidate: _SectionCandidate, bar_count: int
 
 def _collect_parent_candidates(song: SongDNA, target_position: str, bar_count: int, target_energy: float, role: str | None) -> tuple[list[_SectionCandidate], dict[str, _RoleFeatures], dict[str, float]]:
     phrase_candidates = _phrase_window_candidates(song, bar_count)
+    opening_candidates = _opening_lane_candidates(song, bar_count, role or target_position)
     section_candidates = _section_candidates(song)
-    candidates = phrase_candidates or section_candidates
+    candidates = [*phrase_candidates]
+    for candidate in opening_candidates:
+        _append_candidate(candidates, song, candidate.label, candidate.start, candidate.end, candidate.origin)
 
-    if len(section_candidates) == 1 and not phrase_candidates:
+    allow_generic_section_candidates = not (phrase_candidates or opening_candidates)
+    for candidate in section_candidates:
+        if not allow_generic_section_candidates and _is_generic_source_section_label(candidate.label):
+            continue
+        _append_candidate(candidates, song, candidate.label, candidate.start, candidate.end, candidate.origin)
+    if not candidates:
+        candidates = section_candidates
+
+    if len(section_candidates) == 1 and not phrase_candidates and not opening_candidates:
         synthetic = section_candidates[0]
         if target_position == 'late':
             synthetic = _SectionCandidate(
@@ -1164,10 +1395,10 @@ def _collect_parent_candidates(song: SongDNA, target_position: str, bar_count: i
                 energy=synthetic.energy,
                 origin='synthetic_missing_section',
             )
-        return [synthetic], {synthetic.label: _candidate_role_features(song, [synthetic], synthetic)}, {synthetic.label: 1.0}
+        return [synthetic], {synthetic.label: _candidate_role_features(song, [synthetic], synthetic, role)}, {synthetic.label: 1.0}
 
     role_name = role or target_position
-    features_map = {candidate.label: _candidate_role_features(song, candidates, candidate) for candidate in candidates}
+    features_map = {candidate.label: _candidate_role_features(song, candidates, candidate, role_name) for candidate in candidates}
     raw_scores = {candidate.label: _role_prior_score(role_name, features_map[candidate.label]) for candidate in candidates}
     return candidates, features_map, _normalize_scores(raw_scores)
 
@@ -1736,6 +1967,7 @@ def _section_identity_metrics(spec: _SectionSpec, features: _RoleFeatures) -> di
             + (0.12 * max(0.0, 1.0 - features.end_focus))
             + (0.10 * max(0.0, 1.0 - features.hook_strength))
             + (0.08 * _score_slope_down(features.energy_slope))
+            + (0.06 * features.source_section_prior)
         )
         fake_intro_risk = _clamp01(
             (0.32 * _score_position_mid(features.position, center=0.45, width=0.32))
@@ -1745,6 +1977,7 @@ def _section_identity_metrics(spec: _SectionSpec, features: _RoleFeatures) -> di
             + (0.10 * features.hook_strength)
             + (0.10 * features.end_focus)
             + (0.08 * features.payoff_strength)
+            - (0.06 * features.source_section_prior)
         )
         return {
             'intro_identity': intro_identity,
@@ -1753,13 +1986,14 @@ def _section_identity_metrics(spec: _SectionSpec, features: _RoleFeatures) -> di
         }
     if spec.label == 'verse':
         verse_identity = _clamp01(
-            (0.24 * _score_position_mid(features.position, center=0.34, width=0.30))
+            (0.22 * _score_position_mid(features.position, center=0.34, width=0.30))
             + (0.18 * _score_energy_mid(features.normalized_energy))
             + (0.16 * _score_slope_flat(features.energy_slope))
             + (0.16 * features.groove_stability)
             + (0.12 * features.groove_drive)
             + (0.08 * features.repetition)
             + (0.06 * features.hook_strength)
+            + (0.10 * features.source_section_prior)
         )
         intro_like_risk = _clamp01(
             (0.30 * _score_position_low(features.position))
@@ -1767,6 +2001,7 @@ def _section_identity_metrics(spec: _SectionSpec, features: _RoleFeatures) -> di
             + (0.18 * features.headroom)
             + (0.16 * max(0.0, 1.0 - features.groove_drive))
             + (0.16 * max(0.0, 1.0 - features.groove_stability))
+            - (0.12 * features.source_section_prior)
         )
         return {
             'intro_identity': 0.0,
@@ -1788,6 +2023,214 @@ def _is_hard_fake_intro_candidate(spec: _SectionSpec, metrics: dict[str, float])
     )
 
 
+def _hard_backbone_intro_source_pool(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidates: list[_SectionCandidate],
+    identity_map: dict[str, dict[str, float]],
+    intro_followthrough_metrics_map: dict[str, dict[str, float]],
+    features_map: dict[str, _RoleFeatures],
+    backbone_parent: str | None,
+) -> set[str]:
+    if spec.label != 'intro' or parent_id != backbone_parent:
+        return set()
+
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if identity_map[candidate.label]['intro_identity'] >= 0.52
+        and identity_map[candidate.label]['fake_intro_risk'] <= 0.60
+        and (
+            (
+                intro_followthrough_metrics_map[candidate.label]['opening_followthrough_gap'] <= 0.42
+                and intro_followthrough_metrics_map[candidate.label]['opening_followthrough_identity_gap'] <= 0.34
+                and intro_followthrough_metrics_map[candidate.label]['opening_followthrough_lane_gap'] <= 0.30
+            )
+            or (
+                candidate.origin == 'opening_lane'
+                and features_map[candidate.label].position <= 0.26
+            )
+        )
+    ]
+    if len(viable_labels) < 2:
+        return set()
+
+    best_position = min(features_map[label].position for label in viable_labels)
+    best_start = min(candidate.start for candidate in candidates if candidate.label in viable_labels)
+    start_tolerance = max(8.0, 0.16 * max(candidate.end for candidate in candidates))
+    position_tolerance = 0.14
+
+    return {
+        candidate.label
+        for candidate in candidates
+        if (
+            candidate.label in viable_labels
+            or (
+                candidate.origin == 'opening_lane'
+                and identity_map[candidate.label]['intro_identity'] >= 0.46
+                and identity_map[candidate.label]['fake_intro_risk'] <= 0.66
+            )
+        )
+        and features_map[candidate.label].position <= (best_position + position_tolerance)
+        and candidate.start <= (best_start + start_tolerance)
+    }
+
+
+
+def _intro_followthrough_metrics(
+    spec: _SectionSpec,
+    parent_id: str,
+    song: SongDNA,
+    candidate: _SectionCandidate,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> dict[str, float]:
+    if spec.label != 'intro' or parent_id != backbone_parent:
+        return {
+            'opening_followthrough_gap': 0.0,
+            'opening_followthrough_identity_gap': 0.0,
+            'opening_followthrough_lane_gap': 0.0,
+        }
+
+    synthetic_intro = _WindowSelection(
+        parent_id=parent_id,
+        song=song,
+        candidate=candidate,
+        blended_error=0.0,
+        score_breakdown={},
+        section_label='intro',
+    )
+    verse_spec = _SectionSpec(
+        label='verse',
+        start_bar=spec.start_bar + spec.bar_count,
+        bar_count=spec.bar_count,
+        target_energy=max(spec.target_energy + 0.16, 0.38),
+        source_parent_preference=parent_id,
+        transition_in='blend',
+        transition_out='lift',
+    )
+    verse_candidates, features_map, _ = _collect_parent_candidates(
+        song,
+        SECTION_TARGET_POSITION['verse'],
+        verse_spec.bar_count,
+        verse_spec.target_energy,
+        verse_spec.label,
+    )
+    if not verse_candidates:
+        return {
+            'opening_followthrough_gap': 1.0,
+            'opening_followthrough_identity_gap': 1.0,
+            'opening_followthrough_lane_gap': 1.0,
+        }
+
+    viable_pairs: list[tuple[float, float]] = []
+    synthetic_prior = [*prior_selections, synthetic_intro]
+    for verse_candidate in verse_candidates:
+        continuity = _opening_continuity_metrics(
+            verse_spec,
+            parent_id,
+            verse_candidate,
+            synthetic_prior,
+            backbone_parent,
+        )
+        lane_gap = _clamp01(
+            (0.55 * continuity['opening_phrase_jump_gap'])
+            + (0.30 * continuity['opening_time_jump_gap'])
+            + (0.15 * continuity['opening_rewind_gap'])
+        )
+        if (
+            continuity['opening_rewind_gap'] > 0.0
+            or continuity['opening_phrase_jump_gap'] > 0.65
+            or continuity['opening_time_jump_gap'] > 0.75
+        ):
+            continue
+        verse_features = features_map[verse_candidate.label]
+        pair_metrics = _opening_lane_pair_metrics(
+            verse_spec,
+            parent_id,
+            verse_candidate,
+            verse_features,
+            synthetic_prior,
+            backbone_parent,
+        )
+        viable_pairs.append((pair_metrics['opening_joint_identity_gap'], lane_gap))
+
+    if not viable_pairs:
+        return {
+            'opening_followthrough_gap': 1.0,
+            'opening_followthrough_identity_gap': 1.0,
+            'opening_followthrough_lane_gap': 1.0,
+        }
+
+    best_identity_gap, best_lane_gap = min(viable_pairs, key=lambda item: (item[0] + (1.15 * item[1]), item[1], item[0]))
+    return {
+        'opening_followthrough_gap': _clamp01((0.95 * best_identity_gap) + (1.10 * best_lane_gap)),
+        'opening_followthrough_identity_gap': best_identity_gap,
+        'opening_followthrough_lane_gap': best_lane_gap,
+    }
+
+
+def _early_verse_readability_metrics(
+    spec: _SectionSpec,
+    parent_id: str,
+    features: _RoleFeatures,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> dict[str, float]:
+    if spec.label != 'verse' or parent_id != backbone_parent or not prior_selections:
+        return {
+            'early_verse_readability_gap': 0.0,
+            'early_verse_position_gap': 0.0,
+            'early_verse_clarity_gap': 0.0,
+            'early_verse_payoff_risk': 0.0,
+        }
+
+    prior_intro = next(
+        (
+            selection for selection in reversed(prior_selections)
+            if selection.parent_id == parent_id and selection.section_label == 'intro'
+        ),
+        None,
+    )
+    if prior_intro is None or any(
+        selection.parent_id == parent_id and selection.section_label == 'verse'
+        for selection in prior_selections
+    ):
+        return {
+            'early_verse_readability_gap': 0.0,
+            'early_verse_position_gap': 0.0,
+            'early_verse_clarity_gap': 0.0,
+            'early_verse_payoff_risk': 0.0,
+        }
+
+    position_gap = max(0.0, features.position - 0.42) / 0.28
+    clarity_score = _clamp01(
+        (0.34 * features.source_section_prior)
+        + (0.22 * features.groove_stability)
+        + (0.16 * features.groove_drive)
+        + (0.14 * _score_energy_mid(features.normalized_energy))
+        + (0.14 * _score_slope_flat(features.energy_slope))
+    )
+    clarity_gap = max(0.0, 0.58 - clarity_score)
+    payoff_risk = _clamp01(
+        (0.48 * features.payoff_strength)
+        + (0.32 * features.end_focus)
+        + (0.20 * features.hook_strength)
+    )
+    readability_gap = _clamp01(
+        (0.48 * position_gap)
+        + (0.74 * clarity_gap)
+        + (0.34 * payoff_risk)
+    )
+    return {
+        'early_verse_readability_gap': readability_gap,
+        'early_verse_position_gap': _clamp01(position_gap),
+        'early_verse_clarity_gap': _clamp01(clarity_gap),
+        'early_verse_payoff_risk': payoff_risk,
+    }
+
+
+
 def _opening_lane_pair_metrics(
     spec: _SectionSpec,
     parent_id: str,
@@ -1800,6 +2243,10 @@ def _opening_lane_pair_metrics(
         return {
             'opening_joint_identity_gap': 0.0,
             'opening_joint_lane_gap': 0.0,
+            'early_verse_readability_gap': 0.0,
+            'early_verse_position_gap': 0.0,
+            'early_verse_clarity_gap': 0.0,
+            'early_verse_payoff_risk': 0.0,
         }
 
     prior_intro = next(
@@ -1813,13 +2260,30 @@ def _opening_lane_pair_metrics(
         return {
             'opening_joint_identity_gap': 0.0,
             'opening_joint_lane_gap': 0.0,
+            'early_verse_readability_gap': 0.0,
+            'early_verse_position_gap': 0.0,
+            'early_verse_clarity_gap': 0.0,
+            'early_verse_payoff_risk': 0.0,
         }
 
-    intro_features = _candidate_role_features(prior_intro.song, _phrase_window_candidates(prior_intro.song, spec.bar_count), prior_intro.candidate)
+    intro_candidates, _, _ = _collect_parent_candidates(prior_intro.song, 'early', spec.bar_count, 0.0, 'intro')
+    if all(item.label != prior_intro.candidate.label for item in intro_candidates):
+        intro_candidates = [*intro_candidates, prior_intro.candidate]
+    intro_features = _candidate_role_features(prior_intro.song, intro_candidates, prior_intro.candidate)
     intro_identity = _section_identity_metrics(_SectionSpec(label='intro', start_bar=0, bar_count=spec.bar_count, target_energy=0.0, source_parent_preference=parent_id), intro_features)['intro_identity']
     verse_identity = _section_identity_metrics(spec, features)['verse_identity']
     continuity = _opening_continuity_metrics(spec, parent_id, candidate, prior_selections, backbone_parent)
-    joint_identity_gap = max(0.0, 0.65 - ((0.48 * intro_identity) + (0.52 * verse_identity)))
+    readability_metrics = _early_verse_readability_metrics(
+        spec,
+        parent_id,
+        features,
+        prior_selections,
+        backbone_parent,
+    )
+    joint_identity_gap = _clamp01(
+        max(0.0, 0.65 - ((0.48 * intro_identity) + (0.52 * verse_identity)))
+        + (0.85 * readability_metrics['early_verse_readability_gap'])
+    )
     joint_lane_gap = _clamp01(
         (0.55 * continuity['opening_phrase_jump_gap'])
         + (0.30 * continuity['opening_time_jump_gap'])
@@ -1828,6 +2292,7 @@ def _opening_lane_pair_metrics(
     return {
         'opening_joint_identity_gap': joint_identity_gap,
         'opening_joint_lane_gap': joint_lane_gap,
+        **readability_metrics,
     }
 
 
@@ -1903,6 +2368,28 @@ def _is_hard_opening_continuity_candidate(
     )
 
 
+def _is_hard_opening_identity_candidate(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+) -> bool:
+    metrics = _opening_lane_pair_metrics(
+        spec,
+        parent_id,
+        candidate,
+        features,
+        prior_selections,
+        backbone_parent,
+    )
+    return (
+        metrics['opening_joint_identity_gap'] <= 0.28
+        and metrics['opening_joint_lane_gap'] <= 0.32
+    )
+
+
 def _selection_opening_continuity_penalty(
     spec: _SectionSpec,
     parent_id: str,
@@ -1931,6 +2418,7 @@ def _backbone_selection_guard_reason(
         return None
 
     structural_labels = {'verse', 'bridge', 'outro'}
+    donor_feature_labels = {'build', 'payoff'}
     if spec.label in structural_labels and parent_id != backbone_parent:
         return 'structural_backbone_only'
     if spec.label == 'build' and parent_id != donor_parent:
@@ -1946,7 +2434,136 @@ def _backbone_selection_guard_reason(
     last_donor_idx = max(idx for idx, prior_parent in enumerate(prior_parents) if prior_parent == donor_parent)
     if backbone_parent in prior_parents[last_donor_idx + 1:]:
         return 'donor_reentry_after_backbone'
+
+    if spec.label in donor_feature_labels:
+        trailing_donor_feature_cluster = 0
+        for selection in reversed(prior_selections):
+            if selection.parent_id != donor_parent or selection.section_label not in donor_feature_labels:
+                break
+            trailing_donor_feature_cluster += 1
+        if trailing_donor_feature_cluster >= 2:
+            return 'donor_feature_cluster_limit'
     return None
+
+
+
+def _is_hard_backbone_continuity_candidate(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidate: _SectionCandidate,
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+    donor_parent: str | None,
+) -> bool:
+    structural_labels = {'verse', 'bridge', 'outro'}
+    if spec.label not in structural_labels or backbone_parent is None or donor_parent is None:
+        return True
+    if parent_id != backbone_parent:
+        return True
+
+    _, metrics = _selection_backbone_continuity_penalty(
+        spec,
+        parent_id,
+        prior_selections,
+        backbone_parent,
+        donor_parent,
+        candidate=candidate,
+    )
+    return (
+        metrics['off_program_structural_handoff'] <= 0.0
+        and metrics['donor_reentry_after_backbone'] <= 0.0
+        and metrics['forward_backbone_rewind'] <= 0.0
+        and metrics['forward_backbone_jump'] <= 0.60
+    )
+
+
+
+def _hard_backbone_contiguous_lane_pool(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidates: list[_SectionCandidate],
+    prior_selections: list[_WindowSelection],
+    backbone_parent: str | None,
+    donor_parent: str | None,
+) -> set[str]:
+    structural_labels = {'verse', 'bridge', 'outro'}
+    if spec.label not in structural_labels or parent_id != backbone_parent:
+        return set()
+
+    continuity_metrics_map = {
+        candidate.label: _selection_backbone_continuity_penalty(
+            spec,
+            parent_id,
+            prior_selections,
+            backbone_parent,
+            donor_parent,
+            candidate=candidate,
+        )[1]
+        for candidate in candidates
+    }
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if continuity_metrics_map[candidate.label]['off_program_structural_handoff'] <= 0.0
+        and continuity_metrics_map[candidate.label]['donor_reentry_after_backbone'] <= 0.0
+        and continuity_metrics_map[candidate.label]['forward_backbone_rewind'] <= 0.0
+        and continuity_metrics_map[candidate.label]['forward_backbone_jump'] <= 0.35
+    ]
+    if not viable_labels:
+        return set()
+
+    best_jump_gap = min(continuity_metrics_map[label]['forward_backbone_jump'] for label in viable_labels)
+    return {
+        label
+        for label in viable_labels
+        if continuity_metrics_map[label]['forward_backbone_jump'] <= (best_jump_gap + 0.08)
+    }
+
+
+
+def _donor_support_budget_metrics(
+    spec: _SectionSpec,
+    parent_id: str,
+    prior_selections: list[_WindowSelection],
+    donor_parent: str | None,
+) -> tuple[float, float]:
+    if donor_parent is None or parent_id != donor_parent:
+        return 0.0, 0.0
+
+    support_cost_by_label = {
+        'intro': 0.35,
+        'verse': 0.60,
+        'build': 0.75,
+        'payoff': 1.00,
+        'bridge': 0.80,
+        'outro': 0.50,
+    }
+    current_cost = support_cost_by_label.get(spec.label, 0.60)
+    spent = sum(
+        support_cost_by_label.get(selection.section_label or '', 0.60)
+        for selection in prior_selections
+        if selection.parent_id == donor_parent
+    )
+
+    base_budget = 1.15
+    if any(selection.parent_id == donor_parent and selection.section_label == 'build' for selection in prior_selections):
+        base_budget += 0.25
+    if any(selection.parent_id == donor_parent and selection.section_label == 'payoff' for selection in prior_selections):
+        base_budget -= 0.20
+
+    protected_late_support_slot = spec.label in {'bridge', 'outro'} or (spec.label == 'payoff' and spec.start_bar >= 40)
+    if not protected_late_support_slot:
+        return 0.0, spent
+
+    if spec.label == 'payoff':
+        base_budget -= 0.20
+    elif spec.label in {'bridge', 'outro'}:
+        base_budget -= 0.10
+
+    budget = max(0.85, base_budget)
+    overflow = max(0.0, (spent + current_cost) - budget)
+    normalized_overflow = min(1.0, overflow / max(0.35, current_cost))
+    return normalized_overflow, spent
 
 
 
@@ -1963,6 +2580,9 @@ def _selection_backbone_continuity_penalty(
             'off_program_structural_handoff': 0.0,
             'donor_overreach': 0.0,
             'donor_reentry_after_backbone': 0.0,
+            'donor_feature_cluster_overflow': 0.0,
+            'donor_support_budget_overflow': 0.0,
+            'donor_support_budget_spent': 0.0,
             'forward_backbone_rewind': 0.0,
             'forward_backbone_jump': 0.0,
         }
@@ -1972,6 +2592,13 @@ def _selection_backbone_continuity_penalty(
     off_program_structural_handoff = 0.0
     donor_overreach = 0.0
     donor_reentry_after_backbone = 0.0
+    donor_feature_cluster_overflow = 0.0
+    donor_support_budget_overflow, donor_support_budget_spent = _donor_support_budget_metrics(
+        spec,
+        parent_id,
+        prior_selections,
+        donor_parent,
+    )
     forward_backbone_rewind = 0.0
     forward_backbone_jump = 0.0
 
@@ -1987,6 +2614,14 @@ def _selection_backbone_continuity_penalty(
             donor_overreach += min(1.0, 0.30 + (0.18 * (donor_count - 2)))
         if donor_major_count >= 2 and spec.label == 'payoff':
             donor_overreach += min(1.0, 0.35 + (0.20 * (donor_major_count - 2)))
+
+        trailing_donor_feature_cluster = 0
+        for selection in reversed(prior_selections):
+            if selection.parent_id != donor_parent or selection.section_label not in donor_feature_labels:
+                break
+            trailing_donor_feature_cluster += 1
+        if trailing_donor_feature_cluster >= 2:
+            donor_feature_cluster_overflow = min(1.0, 0.85 + (0.10 * (trailing_donor_feature_cluster - 2)))
 
         prior_parents = [selection.parent_id for selection in prior_selections]
         if donor_parent in prior_parents:
@@ -2010,6 +2645,8 @@ def _selection_backbone_continuity_penalty(
         1.0,
         (0.90 * off_program_structural_handoff)
         + (0.70 * donor_overreach)
+        + (1.10 * donor_feature_cluster_overflow)
+        + (1.75 * donor_support_budget_overflow)
         + (0.95 * donor_reentry_after_backbone)
         + (1.05 * forward_backbone_rewind)
         + (0.80 * forward_backbone_jump),
@@ -2018,6 +2655,9 @@ def _selection_backbone_continuity_penalty(
         'off_program_structural_handoff': off_program_structural_handoff,
         'donor_overreach': min(1.0, donor_overreach),
         'donor_reentry_after_backbone': donor_reentry_after_backbone,
+        'donor_feature_cluster_overflow': donor_feature_cluster_overflow,
+        'donor_support_budget_overflow': donor_support_budget_overflow,
+        'donor_support_budget_spent': donor_support_budget_spent,
         'forward_backbone_rewind': forward_backbone_rewind,
         'forward_backbone_jump': forward_backbone_jump,
     }
@@ -2087,10 +2727,127 @@ def _enumerate_section_choices(
                 backbone_parent,
             )
         }
+        opening_identity_metrics_map = {
+            candidate.label: _opening_lane_pair_metrics(
+                spec,
+                parent_id,
+                candidate,
+                features_map[candidate.label],
+                prior_selections,
+                backbone_parent,
+            )
+            for candidate in candidates
+        }
+        intro_followthrough_metrics_map = {
+            candidate.label: _intro_followthrough_metrics(
+                spec,
+                parent_id,
+                song,
+                candidate,
+                prior_selections,
+                backbone_parent,
+            )
+            for candidate in candidates
+        }
+        hard_intro_followthrough_candidates = {
+            candidate.label
+            for candidate in candidates
+            if intro_followthrough_metrics_map[candidate.label]['opening_followthrough_gap'] <= 0.32
+            and intro_followthrough_metrics_map[candidate.label]['opening_followthrough_identity_gap'] <= 0.28
+            and intro_followthrough_metrics_map[candidate.label]['opening_followthrough_lane_gap'] <= 0.24
+        }
+        if hard_intro_followthrough_candidates:
+            best_followthrough_gap = min(
+                intro_followthrough_metrics_map[label]['opening_followthrough_gap']
+                for label in hard_intro_followthrough_candidates
+            )
+            best_followthrough_identity_gap = min(
+                intro_followthrough_metrics_map[label]['opening_followthrough_identity_gap']
+                for label in hard_intro_followthrough_candidates
+            )
+            best_followthrough_lane_gap = min(
+                intro_followthrough_metrics_map[label]['opening_followthrough_lane_gap']
+                for label in hard_intro_followthrough_candidates
+            )
+            hard_intro_followthrough_candidates = {
+                label
+                for label in hard_intro_followthrough_candidates
+                if intro_followthrough_metrics_map[label]['opening_followthrough_gap'] <= (best_followthrough_gap + 0.12)
+                and intro_followthrough_metrics_map[label]['opening_followthrough_identity_gap'] <= (best_followthrough_identity_gap + 0.10)
+                and intro_followthrough_metrics_map[label]['opening_followthrough_lane_gap'] <= (best_followthrough_lane_gap + 0.12)
+            }
+        hard_opening_identity_candidates = {
+            candidate.label
+            for candidate in candidates
+            if _is_hard_opening_identity_candidate(
+                spec,
+                parent_id,
+                candidate,
+                features_map[candidate.label],
+                prior_selections,
+                backbone_parent,
+            )
+        }
+        if hard_opening_identity_candidates:
+            best_identity_gap = min(
+                opening_identity_metrics_map[label]['opening_joint_identity_gap']
+                for label in hard_opening_identity_candidates
+            )
+            best_lane_gap = min(
+                opening_identity_metrics_map[label]['opening_joint_lane_gap']
+                for label in hard_opening_identity_candidates
+            )
+            hard_opening_identity_candidates = {
+                label
+                for label in hard_opening_identity_candidates
+                if opening_identity_metrics_map[label]['opening_joint_identity_gap'] <= (best_identity_gap + 0.08)
+                and opening_identity_metrics_map[label]['opening_joint_lane_gap'] <= (best_lane_gap + 0.18)
+            }
+        hard_backbone_candidates = {
+            candidate.label
+            for candidate in candidates
+            if _is_hard_backbone_continuity_candidate(
+                spec,
+                parent_id,
+                candidate,
+                prior_selections,
+                backbone_parent,
+                donor_parent,
+            )
+        }
+        hard_backbone_contiguous_lane_pool = _hard_backbone_contiguous_lane_pool(
+            spec,
+            parent_id,
+            candidates,
+            prior_selections,
+            backbone_parent,
+            donor_parent,
+        )
         identity_map = {
             candidate.label: _section_identity_metrics(spec, features_map[candidate.label])
             for candidate in candidates
         }
+        hard_backbone_intro_source_pool = _hard_backbone_intro_source_pool(
+            spec,
+            parent_id,
+            candidates,
+            identity_map,
+            intro_followthrough_metrics_map,
+            features_map,
+            backbone_parent,
+        )
+        if hard_backbone_intro_source_pool:
+            best_intro_identity = max(identity_map[label]['intro_identity'] for label in hard_backbone_intro_source_pool)
+            best_followthrough_gap = min(
+                intro_followthrough_metrics_map[label]['opening_followthrough_gap']
+                for label in hard_backbone_intro_source_pool
+            )
+            hard_backbone_intro_source_pool = {
+                label
+                for label in hard_backbone_intro_source_pool
+                if identity_map[label]['intro_identity'] >= (best_intro_identity - 0.12)
+                and intro_followthrough_metrics_map[label]['opening_followthrough_gap'] <= (best_followthrough_gap + 0.14)
+            }
         viable_intro_labels = [
             candidate.label
             for candidate in candidates
@@ -2114,6 +2871,16 @@ def _enumerate_section_choices(
         for candidate in candidates:
             if hard_opening_candidates and candidate.label not in hard_opening_candidates:
                 continue
+            if hard_opening_identity_candidates and candidate.label not in hard_opening_identity_candidates:
+                continue
+            if hard_backbone_candidates and candidate.label not in hard_backbone_candidates:
+                continue
+            if hard_backbone_contiguous_lane_pool and candidate.label not in hard_backbone_contiguous_lane_pool:
+                continue
+            if spec.label == 'intro' and hard_intro_followthrough_candidates and candidate.label not in hard_intro_followthrough_candidates:
+                continue
+            if spec.label == 'intro' and hard_backbone_intro_source_pool and candidate.label not in hard_backbone_intro_source_pool:
+                continue
             if spec.label == 'intro' and viable_intro_labels and candidate.label not in viable_intro_labels:
                 continue
             if spec.label == 'payoff' and viable_payoff_labels and candidate.label not in viable_payoff_labels:
@@ -2131,14 +2898,8 @@ def _enumerate_section_choices(
                 'build_lift_gap': 0.0,
                 'hard_block': 0.0,
             })
-            opening_lane_metrics = _opening_lane_pair_metrics(
-                spec,
-                parent_id,
-                candidate,
-                features_map[candidate.label],
-                prior_selections,
-                backbone_parent,
-            )
+            opening_lane_metrics = opening_identity_metrics_map[candidate.label]
+            intro_followthrough_metrics = intro_followthrough_metrics_map[candidate.label]
             if spec.label == 'intro':
                 section_identity_penalty = min(
                     1.0,
@@ -2309,6 +3070,7 @@ def _enumerate_section_choices(
                 + (0.90 * groove_continuity_penalty)
                 + (0.85 * phrase_groove_penalty)
                 + (1.05 * section_identity_penalty)
+                + (1.05 * intro_followthrough_metrics['opening_followthrough_gap'])
                 + (1.15 * opening_continuity_penalty)
                 + (0.95 * opening_lane_metrics['opening_joint_identity_gap'])
                 + (1.10 * opening_lane_metrics['opening_joint_lane_gap'])
@@ -2394,16 +3156,26 @@ def _enumerate_section_choices(
                         'intro_identity': identity_metrics['intro_identity'],
                         'verse_identity': identity_metrics['verse_identity'],
                         'fake_intro_risk': identity_metrics['fake_intro_risk'],
+                        'opening_followthrough': intro_followthrough_metrics['opening_followthrough_gap'],
+                        'opening_followthrough_identity_gap': intro_followthrough_metrics['opening_followthrough_identity_gap'],
+                        'opening_followthrough_lane_gap': intro_followthrough_metrics['opening_followthrough_lane_gap'],
                         'opening_continuity': opening_continuity_penalty,
                         'opening_phrase_jump_gap': opening_continuity_metrics['opening_phrase_jump_gap'],
                         'opening_time_jump_gap': opening_continuity_metrics['opening_time_jump_gap'],
                         'opening_rewind_gap': opening_continuity_metrics['opening_rewind_gap'],
                         'opening_joint_identity_gap': opening_lane_metrics['opening_joint_identity_gap'],
                         'opening_joint_lane_gap': opening_lane_metrics['opening_joint_lane_gap'],
+                        'early_verse_readability_gap': opening_lane_metrics['early_verse_readability_gap'],
+                        'early_verse_position_gap': opening_lane_metrics['early_verse_position_gap'],
+                        'early_verse_clarity_gap': opening_lane_metrics['early_verse_clarity_gap'],
+                        'early_verse_payoff_risk': opening_lane_metrics['early_verse_payoff_risk'],
                         'backbone_continuity': backbone_continuity_penalty,
                         'backbone_off_program_structural_handoff': backbone_continuity_metrics['off_program_structural_handoff'],
                         'backbone_donor_overreach': backbone_continuity_metrics['donor_overreach'],
                         'backbone_donor_reentry_after_backbone': backbone_continuity_metrics['donor_reentry_after_backbone'],
+                        'backbone_donor_feature_cluster_overflow': backbone_continuity_metrics['donor_feature_cluster_overflow'],
+                        'backbone_donor_support_budget_overflow': backbone_continuity_metrics['donor_support_budget_overflow'],
+                        'backbone_donor_support_budget_spent': backbone_continuity_metrics['donor_support_budget_spent'],
                         'backbone_forward_rewind': backbone_continuity_metrics['forward_backbone_rewind'],
                         'backbone_forward_jump': backbone_continuity_metrics['forward_backbone_jump'],
                         'parent_preference': preference_error,
@@ -2517,6 +3289,99 @@ def _infer_transition_mode(
     if spec.transition_in in {"swap", "drop"} or spec.label in {"build", "payoff"}:
         return "single_owner_handoff"
     return "crossfade_support"
+
+
+def _selection_identity(selection: _WindowSelection) -> tuple[str, str, float, float, str]:
+    candidate = selection.candidate
+    return (
+        selection.parent_id,
+        candidate.label,
+        round(candidate.start, 6),
+        round(candidate.end, 6),
+        candidate.origin,
+    )
+
+
+def _selection_shortlist_entry(
+    selection: _WindowSelection,
+    *,
+    rank: int,
+    selected: bool,
+    selected_error: float,
+    top_error: float,
+    backbone_parent: str,
+) -> dict[str, Any]:
+    candidate = selection.candidate
+    return {
+        'rank': rank,
+        'parent_id': selection.parent_id,
+        'role': 'backbone' if selection.parent_id == backbone_parent else 'donor',
+        'window_label': candidate.label,
+        'window_origin': candidate.origin,
+        'window_seconds': {'start': round(candidate.start, 3), 'end': round(candidate.end, 3)},
+        'planner_error': round(selection.blended_error, 3),
+        'error_delta_vs_rank_1': round(selection.blended_error - top_error, 3),
+        'error_delta_vs_selected': round(selection.blended_error - selected_error, 3),
+        'selected': selected,
+        'score_breakdown': {name: round(value, 3) for name, value in selection.score_breakdown.items()},
+    }
+
+
+def _build_selection_shortlist_diagnostics(
+    selected: _WindowSelection,
+    ranked: list[_WindowSelection],
+    *,
+    backbone_parent: str,
+    limit: int = 3,
+) -> dict[str, Any]:
+    if not ranked:
+        raise ValueError('ranked selections must not be empty')
+
+    ranked_by_identity = {_selection_identity(item): idx + 1 for idx, item in enumerate(ranked)}
+    selected_rank = ranked_by_identity.get(_selection_identity(selected))
+    top_ranked = ranked[0]
+    shortlist = list(ranked[: max(limit, 0)])
+    shortlist_identities = {_selection_identity(item) for item in shortlist}
+    selected_identity = _selection_identity(selected)
+    if selected_identity not in shortlist_identities:
+        shortlist.append(selected)
+        shortlist_identities.add(selected_identity)
+
+    other_parent = 'B' if selected.parent_id == 'A' else 'A'
+    cross_parent_best_alternate = next((item for item in ranked if item.parent_id == other_parent), None)
+    top_error = top_ranked.blended_error
+    selected_error = selected.blended_error
+
+    return {
+        'selected_rank': selected_rank,
+        'selected_by_guard': bool(selected_rank and selected_rank > 1),
+        'rank_1_parent': top_ranked.parent_id,
+        'rank_1_window_label': top_ranked.candidate.label,
+        'selected_error_delta_vs_rank_1': round(selected_error - top_error, 3),
+        'candidate_shortlist': [
+            _selection_shortlist_entry(
+                item,
+                rank=ranked_by_identity[_selection_identity(item)],
+                selected=_selection_identity(item) == selected_identity,
+                selected_error=selected_error,
+                top_error=top_error,
+                backbone_parent=backbone_parent,
+            )
+            for item in shortlist
+        ],
+        'cross_parent_best_alternate': (
+            _selection_shortlist_entry(
+                cross_parent_best_alternate,
+                rank=ranked_by_identity[_selection_identity(cross_parent_best_alternate)],
+                selected=False,
+                selected_error=selected_error,
+                top_error=top_error,
+                backbone_parent=backbone_parent,
+            )
+            if cross_parent_best_alternate is not None
+            else None
+        ),
+    }
 
 
 def _apply_section_level_authenticity_guard(
@@ -2654,7 +3519,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     sections: list[PlannedSection] = []
     selection_diagnostics: list[dict[str, Any]] = []
     previous = None
-    for spec, chosen in zip(section_specs, chosen_selections):
+    for spec, chosen, ranked in zip(section_specs, chosen_selections, ranked_choices):
         candidate = chosen.candidate
         transition_mode = _infer_transition_mode(spec, chosen, previous, previous.section_label if previous else None)
         continuity_treatment = None
@@ -2678,6 +3543,11 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
             f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
         )
         feedback = parent_feedback[chosen.parent_id]
+        shortlist_diagnostics = _build_selection_shortlist_diagnostics(
+            chosen,
+            ranked,
+            backbone_parent=backbone_plan.backbone_parent,
+        )
         selection_diagnostics.append(
             {
                 'label': spec.label,
@@ -2695,6 +3565,11 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 'transition_mode': transition_mode,
                 'continuity_treatment': continuity_treatment,
                 'planner_error': round(chosen.blended_error, 3),
+                'selection_rank': shortlist_diagnostics['selected_rank'],
+                'selected_by_guard': shortlist_diagnostics['selected_by_guard'],
+                'selected_error_delta_vs_rank_1': shortlist_diagnostics['selected_error_delta_vs_rank_1'],
+                'candidate_shortlist': shortlist_diagnostics['candidate_shortlist'],
+                'cross_parent_best_alternate': shortlist_diagnostics['cross_parent_best_alternate'],
                 'evaluator_alignment': {
                     'listen_feedback_penalty': round(chosen.score_breakdown['listen_feedback'], 3),
                     'seam_risk': round(chosen.score_breakdown['seam_risk'], 3),
@@ -2713,6 +3588,11 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
     backbone_usage_counts = Counter(selection.parent_id for selection in chosen_selections)
     diagnostics = {
         'planner_evaluator_bridge': 'listen-aligned planner diagnostics',
+        'selection_shortlist_policy': {
+            'per_section_limit': 3,
+            'always_include_selected_if_guarded': True,
+            'include_best_cross_parent_alternate': True,
+        },
         'backbone_plan': {
             'backbone_parent': backbone_plan.backbone_parent,
             'donor_parent': backbone_plan.donor_parent,
@@ -2747,6 +3627,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         'Sequential selection now discourages replaying the exact same source window or heavily overlapping window later in the child timeline unless the musical fit is clearly stronger.',
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Arrangement artifacts now expose listen-aligned planning_diagnostics so evaluator-facing groove/arc/transition signals are inspectable without parsing note strings.',
+        'Per-section diagnostics now include a structured multi-candidate shortlist plus the best cross-parent alternate so guard-driven picks and near-miss alternates stay machine-readable downstream.',
         'Stretch and bar-grid fit are now evaluated against the backbone parent tempo so donor phrases are judged on the child-song grid instead of each source parent silently keeping its own clock.',
         'For same-parent backbone continuity, diagnostics now flag backbone_flow candidates even though render still uses same_parent_flow until a dedicated low-overlap backbone treatment is wired end-to-end.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',

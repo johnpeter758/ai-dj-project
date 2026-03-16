@@ -57,6 +57,10 @@
           <div id="currentTask" class="value small mono">Loading…</div>
         </div>
         <div class="stat">
+          <div class="label">Loop progress</div>
+          <div id="loopProgressText" class="small mono">Loading…</div>
+        </div>
+        <div class="stat">
           <div class="label">Latest commit</div>
           <div id="latestCommit" class="small mono">Loading…</div>
         </div>
@@ -110,6 +114,9 @@
       const benchmark = data.latest_benchmark_listen_result || {};
       const artifact = data.last_artifact || {};
       document.getElementById('currentTask').textContent = data.current_task || '—';
+      const loopViz = data.workloop_visualization || {};
+      const currentStage = loopViz.current_stage || {};
+      document.getElementById('loopProgressText').innerHTML = `${esc(loopViz.progress_percent ?? 0)}% · ${esc(loopViz.completed_stage_count ?? 0)}/${esc(loopViz.total_stage_count ?? 0)} checkpoints${currentStage.label ? `<div class="muted">${esc(currentStage.label)} — ${esc(currentStage.detail || '')}</div>` : ''}`;
       document.getElementById('latestCommit').innerHTML = commit.short_hash
         ? `<strong>${esc(commit.short_hash)}</strong> — ${esc(commit.message || '')}<div class="muted">${esc(commit.date || '')}</div>`
         : 'No commit info.';
