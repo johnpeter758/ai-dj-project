@@ -18,6 +18,7 @@
     .label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#8ea0b8; margin-bottom:8px; }
     .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#1f2937; color:#cbd5e1; font-size:12px; margin-right:8px; }
     .two-col { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    .three-col { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:16px; }
     .loop-progress { width:100%; height:12px; background:#0b1220; border:1px solid #334155; border-radius:999px; overflow:hidden; margin:14px 0 18px; }
     .loop-progress-bar { height:100%; background:linear-gradient(90deg,#7c3aed,#a78bfa); }
     .loop-stage-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; }
@@ -45,6 +46,8 @@
         <div class="stat"><div class="label">Latest listen</div><div id="latestEval" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest compare-listen</div><div id="latestCompare" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest benchmark-listen</div><div id="latestBenchmark" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest closed-loop</div><div id="latestClosedLoop" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Latest auto shortlist</div><div id="latestAutoShortlist" class="mono">Loading…</div></div>
         <div class="stat">
           <div class="label">Latest listener-agent</div>
           <div id="latestListenerAgent" class="mono">Loading…</div>
@@ -70,6 +73,21 @@
       <div>
         <h2>Latest run artifacts</h2>
         <div id="latestRun" class="mono">Loading…</div>
+      </div>
+    </div>
+
+    <div class="card two-col">
+      <div>
+        <h2>Pairwise compare renders</h2>
+        <div class="muted" style="margin-bottom:10px;">Compare two recent render runs with the existing listen comparator.</div>
+        <div style="margin-bottom:10px;"><label class="label">Left run</label><select id="compareLeft" style="width:100%; padding:10px; border-radius:10px; background:#0f172a; color:#e8ecf1; border:1px solid #334155;"></select></div>
+        <div style="margin-bottom:10px;"><label class="label">Right run</label><select id="compareRight" style="width:100%; padding:10px; border-radius:10px; background:#0f172a; color:#e8ecf1; border:1px solid #334155;"></select></div>
+        <button id="runCompareBtn">Compare selected renders</button>
+        <div id="compareResult" class="mono" style="margin-top:12px;">No compare run yet.</div>
+      </div>
+      <div>
+        <h2>Latest run review</h2>
+        <div id="latestRunDiagnostics" class="mono">Loading…</div>
       </div>
     </div>
 
@@ -111,6 +129,22 @@
       }).join('');
       return `${artifactLink(bench)}<br><span class="pill">winner ${esc(bench.winner || '—')}</span><span class="pill">entries ${esc(bench.entry_count ?? 0)}</span><span class="pill">pairs ${esc(bench.comparison_count ?? 0)}</span>${bench.leader_gap !== null && bench.leader_gap !== undefined ? `<br>Leader gap vs runner-up: ${esc(bench.leader_gap)}` : ''}${top.label ? `<br><br><strong>Top run</strong><br>${esc(top.label)} · wins ${esc(top.wins ?? 0)} / losses ${esc(top.losses ?? 0)} · net ${esc(top.net_score_delta ?? '—')} · overall ${esc(top.overall_score ?? '—')}${top.verdict ? ` · ${esc(top.verdict)}` : ''}` : ''}${preview ? `<br><br><strong>Podium</strong><ul>${preview}</ul>` : ''}`;
     }
+    function renderClosedLoop(loop) {
+      if (!loop) return 'No closed-loop report yet.';
+      const best = loop.best_iteration || {};
+      const latest = loop.latest_iteration || {};
+      const intervention = loop.best_top_intervention || {};
+      const summary = (loop.summary || []).map(line => esc(line)).join('<br>');
+      const trajectory = (loop.score_trajectory || []).length ? (loop.score_trajectory || []).map(x => esc(x)).join(' → ') : null;
+      return `${artifactLink(loop)}<br><span class="pill">iterations ${esc(loop.total_iterations ?? 0)}</span><span class="pill">stop ${esc(loop.stop_reason || '—')}</span>${loop.net_improvement !== null && loop.net_improvement !== undefined ? `<span class="pill">net +${esc(loop.net_improvement)}</span>` : ''}${best.iteration ? `<br><br><strong>Best iteration</strong><br>#${esc(best.iteration)} · overall ${esc(best.candidate_overall_score ?? '—')}${best.candidate_verdict ? ` · ${esc(best.candidate_verdict)}` : ''}${best.candidate_listener_decision ? ` · listener ${esc(best.candidate_listener_decision)}` : ''}` : ''}${latest.iteration ? `<br><br><strong>Latest iteration</strong><br>#${esc(latest.iteration)} · overall ${esc(latest.candidate_overall_score ?? '—')}${latest.gap_to_target !== undefined ? ` · gap ${esc(latest.gap_to_target)}` : ''}${latest.plateau_count !== undefined ? ` · plateau ${esc(latest.plateau_count)}` : ''}` : ''}${intervention.component ? `<br><br><strong>Top intervention</strong><br>${esc(intervention.component)}${intervention.problem ? ` — ${esc(intervention.problem)}` : ''}` : ''}${trajectory ? `<br><br><strong>Score trajectory</strong><br>${trajectory}` : ''}${summary ? `<br><br>${summary}` : ''}`;
+    }
+    function renderAutoShortlist(bundle) {
+      if (!bundle) return 'No auto-shortlist run yet.';
+      const survivor = bundle.top_survivor || {};
+      const pruning = bundle.pruning || {};
+      const summary = (bundle.summary || []).map(line => esc(line)).join('<br>');
+      return `${artifactLink(bundle)}<br><span class="pill">survivors ${esc(bundle.survivor_count ?? 0)}</span><span class="pill">borderline ${esc(bundle.borderline_count ?? 0)}</span><span class="pill">rejected ${esc(bundle.rejected_count ?? 0)}</span>${pruning.enabled ? `<span class="pill">pruned ${esc(pruning.deleted_candidate_count ?? 0)}</span>` : ''}${bundle.winner ? `<br><br><strong>Top survivor</strong><br>${esc(bundle.winner)}${survivor.listener_rank !== undefined ? ` · rank ${esc(survivor.listener_rank)}` : ''}${survivor.overall_score !== undefined ? ` · overall ${esc(survivor.overall_score)}` : ''}${survivor.verdict ? ` · ${esc(survivor.verdict)}` : ''}` : '<br><br><strong>No survivors</strong><br>Nothing cleared the gate in the latest batch.'}${summary ? `<br><br>${summary}` : ''}`;
+    }
     function renderListenerAgent(agent) {
       if (!agent) return 'No listener-agent result yet.';
       const survivor = agent.top_survivor || {};
@@ -150,6 +184,57 @@
       `).join('');
       return { summary, stages };
     }
+    function renderRunDiagnostics(diag) {
+      if (!diag || !diag.worst_moments || !diag.worst_moments.length) return 'No worst-moment diagnostics yet.';
+      return diag.worst_moments.map(moment => `${esc(moment.label || moment.kind || 'moment')} · ${esc(moment.center_time ?? 0)}s · severity ${esc(moment.severity ?? '—')}<br><span class="muted">${esc(moment.summary || '')}</span>`).join('<br><br>');
+    }
+    async function loadRecentRenders() {
+      const res = await fetch('/api/recent-renders');
+      const data = await res.json();
+      const left = document.getElementById('compareLeft');
+      const right = document.getElementById('compareRight');
+      const options = (data.runs || []).map((run, idx) => `<option value="${esc(run.run_dir)}">${esc(run.name || run.run_dir)}${idx === 0 ? ' (latest)' : ''}</option>`).join('');
+      left.innerHTML = options;
+      right.innerHTML = options;
+      if ((data.runs || []).length > 1) right.selectedIndex = 1;
+    }
+    async function runCompare() {
+      const btn = document.getElementById('runCompareBtn');
+      const left = document.getElementById('compareLeft').value;
+      const right = document.getElementById('compareRight').value;
+      btn.disabled = true;
+      btn.textContent = 'Comparing…';
+      try {
+        const res = await fetch('/api/compare-listen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ left, right })
+        });
+        const data = await res.json();
+        document.getElementById('compareResult').innerHTML = data.status === 'success'
+          ? renderCompare({
+              ...(data.report || {}),
+              path: data.report_path,
+              relative_path: data.report_path,
+              download_url: data.report_path ? `/api/artifact?path=${encodeURIComponent(data.report_path)}` : '#',
+              overall_winner: ((data.report || {}).winner || {}).overall,
+              overall_score_delta: ((data.report || {}).deltas || {}).overall_score_delta,
+              biggest_component_delta: (() => {
+                const deltas = ((data.report || {}).deltas || {}).component_score_deltas || {};
+                const entries = Object.entries(deltas);
+                if (!entries.length) return null;
+                entries.sort((a, b) => Math.abs(Number(b[1] || 0)) - Math.abs(Number(a[1] || 0)));
+                return { component: entries[0][0], delta: entries[0][1] };
+              })(),
+            })
+          : esc(data.error || 'Compare failed');
+      } catch (err) {
+        document.getElementById('compareResult').textContent = String(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Compare selected renders';
+      }
+    }
     async function loadStatus() {
       const res = await fetch('/api/status');
       const data = await res.json();
@@ -167,9 +252,20 @@
       document.getElementById('latestEval').innerHTML = renderListen(data.latest_evaluator_result);
       document.getElementById('latestCompare').innerHTML = renderCompare(data.latest_compare_listen_result);
       document.getElementById('latestBenchmark').innerHTML = renderBenchmark(data.latest_benchmark_listen_result);
+      document.getElementById('latestClosedLoop').innerHTML = renderClosedLoop(data.latest_closed_loop_result);
+      document.getElementById('latestAutoShortlist').innerHTML = renderAutoShortlist(data.latest_auto_shortlist_result);
       document.getElementById('latestListenerAgent').innerHTML = renderListenerAgent(data.latest_listener_agent_result);
       document.getElementById('latestManifest').innerHTML = renderManifest(data.latest_manifest);
       document.getElementById('latestRun').innerHTML = renderRun(data.latest_run_summary);
+      if (data.latest_run_summary?.path) {
+        try {
+          const diagRes = await fetch(`/api/run-diagnostics?run_dir=${encodeURIComponent(data.latest_run_summary.path)}`);
+          const diag = await diagRes.json();
+          document.getElementById('latestRunDiagnostics').innerHTML = renderRunDiagnostics(diag);
+        } catch (err) {
+          document.getElementById('latestRunDiagnostics').textContent = String(err);
+        }
+      }
       const loopViz = renderLoopVisualization(data.workloop_visualization);
       document.getElementById('loopSummary').innerHTML = loopViz.summary;
       document.getElementById('loopStages').innerHTML = loopViz.stages;
@@ -211,8 +307,10 @@
       }
     }
     document.getElementById('runListenerAgentBtn').addEventListener('click', runListenerAgent);
+    document.getElementById('runCompareBtn').addEventListener('click', runCompare);
+    loadRecentRenders().catch(() => {});
     loadStatus();
-    setInterval(loadStatus, 15000);
+    setInterval(() => { loadStatus(); loadRecentRenders().catch(() => {}); }, 15000);
   </script>
 </body>
 </html>

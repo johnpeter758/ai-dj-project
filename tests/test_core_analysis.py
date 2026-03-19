@@ -14,6 +14,7 @@ def test_analyze_audio_file_returns_song_dna(monkeypatch):
     monkeypatch.setattr(analyzer, "detect_key", lambda audio, sr: {"tonic": "A", "mode": "minor", "camelot": "8A", "confidence": 0.91, "method": "krumhansl_correlation", "chroma": []})
     monkeypatch.setattr(analyzer, "estimate_structure", lambda audio, sr: {"sections": [{"start": 0.0, "end": 1.0, "label": "section_0"}]})
     monkeypatch.setattr(analyzer, "compute_energy_profile", lambda audio, sr: {"summary": {"mean_rms": 0.1}})
+    monkeypatch.setattr(analyzer, "analyze_musical_intelligence", lambda audio, sr: {"summary": {"melodic_identity_strength": 0.6, "rhythmic_confidence": 0.7}})
 
     result = analyzer.analyze_audio_file(Path("song.wav")).to_dict()
 
@@ -21,6 +22,7 @@ def test_analyze_audio_file_returns_song_dna(monkeypatch):
     assert result["tempo_bpm"] == 128.0
     assert result["key"]["camelot"] == "8A"
     assert result["structure"]["sections"][0]["label"] == "section_0"
+    assert result["musical_intelligence"]["summary"]["melodic_identity_strength"] == 0.6
     assert result["analysis_version"] == "0.1.0"
 
 

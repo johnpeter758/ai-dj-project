@@ -1,0 +1,23 @@
+{
+  "derived_priors": {
+    "backbone_reward_pressure": 0.0,
+    "groove_rejection_pressure": 0.0,
+    "medley_rejection_pressure": 0.0,
+    "payoff_upgrade_pressure": 0.0,
+    "transition_rejection_pressure": 0.0
+  },
+  "schema_version": "0.1.0",
+  "summary": {
+    "decision_counts": {},
+    "pairwise_event_count": 0,
+    "pairwise_winner_counts": {
+      "left": 0,
+      "right": 0,
+      "tie": 0
+    },
+    "render_event_count": 0,
+    "top_negative_tags": [],
+    "top_positive_tags": []
+  },
+  "timestamped_moments": []
+}

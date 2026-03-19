@@ -52,6 +52,19 @@ class PlannedSection:
     bar_count: int
     source_parent: str
     source_section_label: str | None = None
+    support_parent: str | None = None
+    support_section_label: str | None = None
+    support_gain_db: float | None = None
+    support_mode: str | None = None
+    backbone_owner: str | None = None
+    donor_support_required: bool = False
+    motif_anchor_parent: str | None = None
+    motif_anchor_label: str | None = None
+    motif_recurrence_strength: float | None = None
+    tension_target: str | None = None
+    rhythmic_constraint: str | None = None
+    harmonic_constraint: str | None = None
+    timbral_anchor: str | None = None
     target_energy: float | None = None
     transition_in: str | None = None
     transition_out: str | None = None

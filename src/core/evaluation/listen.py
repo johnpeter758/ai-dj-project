@@ -78,6 +78,9 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
     foreground_owner_counts = {'A': 0, 'B': 0}
     background_only_presence_counts = {'A': 0, 'B': 0}
     major_section_primary_counts = {'A': 0, 'B': 0}
+    integrated_two_parent_indices: set[int] = set()
+    foreground_counter_indices: set[int] = set()
+    support_layer_indices: set[int] = set()
     major_labels = {'verse', 'build', 'payoff', 'bridge'}
 
     for section in sections:
@@ -100,8 +103,15 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
                 major_section_primary_counts[primary_owner] += 1
         if fg in foreground_owner_counts:
             foreground_owner_counts[fg] += 1
+        raw_section_index = section.get('index')
+        section_index = int(raw_section_index) if isinstance(raw_section_index, int) else len(transition_risk_rows)
         if bg in background_only_presence_counts and bg not in {primary_owner, fg, low}:
             background_only_presence_counts[bg] += 1
+        if allowed_overlap and primary_owner in {'A', 'B'} and bg in {'A', 'B'} and bg != primary_owner:
+            integrated_two_parent_indices.add(section_index)
+            support_layer_indices.add(section_index)
+        if allowed_overlap and primary_owner in {'A', 'B'} and fg in {'A', 'B'} and fg != primary_owner:
+            foreground_counter_indices.add(section_index)
         if low in {'A', 'B'}:
             low_end_owner_sequence.append(str(low))
 
@@ -165,6 +175,14 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         low_end_owners = {o.get('parent_id') for o in orders if o.get('low_end_state') == 'owner'}
         foreground_owners = {o.get('parent_id') for o in orders if o.get('foreground_state') == 'owner'}
         lead_vocal_owners = {o.get('parent_id') for o in orders if o.get('vocal_state') in {'lead_only', 'lead'} }
+        parent_ids = {o.get('parent_id') for o in orders if o.get('parent_id') in {'A', 'B'}}
+        roles = {str(o.get('role') or '') for o in orders}
+        if len(parent_ids) > 1 and any(role != 'full_mix' for role in roles):
+            integrated_two_parent_indices.add(idx)
+        if 'foreground_counterlayer' in roles:
+            foreground_counter_indices.add(idx)
+        if any(role in {'filtered_counterlayer', 'filtered_support', 'foreground_counterlayer'} for role in roles):
+            support_layer_indices.add(idx)
         if len(low_end_owners) > 1 or len(foreground_owners) > 1:
             multi_owner_conflicts += 1
         if len(lead_vocal_owners) > 1:
@@ -178,6 +196,10 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         stretch_warning_sections = max(stretch_warning_sections, 1)
     if 'collapse' in warning_text:
         conservative_collapses = max(conservative_collapses, 1)
+
+    primary_sequence = _manifest_primary_sequence(manifest)
+    owner_switches = sum(1 for left, right in zip(primary_sequence, primary_sequence[1:]) if left != right)
+    owner_switch_ratio = owner_switches / max(len(primary_sequence) - 1, 1) if len(primary_sequence) >= 2 else 0.0
 
     section_count = max(len(sections), 1)
     low_end_owner_count = len(low_end_owner_sequence)
@@ -216,6 +238,18 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         3,
     )
 
+    integrated_two_parent_section_ratio = round(len(integrated_two_parent_indices) / section_count, 3)
+    foreground_counter_section_ratio = round(len(foreground_counter_indices) / section_count, 3)
+    support_layer_section_ratio = round(len(support_layer_indices) / section_count, 3)
+    full_mix_medley_risk = round(
+        _clamp01(
+            0.38 * _clamp01((owner_switch_ratio - 0.32) / 0.40)
+            + 0.26 * _clamp01((0.34 - integrated_two_parent_section_ratio) / 0.34)
+            + 0.18 * _clamp01((0.24 - support_layer_section_ratio) / 0.24)
+            + 0.18 * float(conservative_collapses / section_count)
+        ),
+        3,
+    )
     aggregate = {
         'section_count': len(sections),
         'overlap_section_ratio': round(overlap_sections / section_count, 3),
@@ -227,6 +261,10 @@ def _manifest_overlap_metrics(manifest: dict[str, Any]) -> dict[str, Any]:
         'seam_risk_ratio': round(seam_risk_sections / section_count, 3),
         'stretch_warning_ratio': round(stretch_warning_sections / section_count, 3),
         'collapse_ratio': round(conservative_collapses / section_count, 3),
+        'integrated_two_parent_section_ratio': integrated_two_parent_section_ratio,
+        'foreground_counter_section_ratio': foreground_counter_section_ratio,
+        'support_layer_section_ratio': support_layer_section_ratio,
+        'full_mix_medley_risk': full_mix_medley_risk,
         'low_end_owner_switch_count': low_end_switches,
         'low_end_owner_switch_ratio': round(low_end_switch_ratio, 3),
         'low_end_overlap_switch_ratio': round(low_end_overlap_switch_ratio, 3),
@@ -634,19 +672,30 @@ def _groove_score(song: SongDNA) -> ListenSubscore:
         onset = _resample(onset_values)
         low = _resample(low_values)
         groove_series = 0.65 * _normalize(onset) + 0.35 * _normalize(low)
-        groove_steps = np.diff(groove_series) if groove_series.size >= 2 else np.asarray([], dtype=float)
+        if groove_series.size < 2:
+            return 0.55, 0.55, 0.0, groove_series
+
+        smooth_window = min(max(3, target_len // 12), 8)
+        smoothed = _smooth_series(groove_series, window=smooth_window)
+        groove_steps = np.diff(smoothed) if smoothed.size >= 2 else np.asarray([], dtype=float)
         if groove_steps.size == 0:
             return 0.55, 0.55, 0.0, groove_series
 
         abs_steps = np.abs(groove_steps)
         down_steps = np.maximum(-groove_steps, 0.0)
+        collapse_floor = max(0.12, 0.35 * float(np.std(smoothed)))
+        collapse_events = down_steps[down_steps >= collapse_floor]
+        largest_drop = float(np.max(collapse_events)) if collapse_events.size else 0.0
+        sustained_drop = float(np.mean(collapse_events)) if collapse_events.size else 0.0
+        collapse_density = float(collapse_events.size / max(down_steps.size, 1))
+
         stability = _clamp01(
-            1.0 - (float(np.median(abs_steps)) + 2.4 * float(np.mean(down_steps))) / 0.18
+            1.0 - (0.80 * float(np.median(abs_steps)) + 1.35 * sustained_drop + 0.55 * collapse_density) / 0.22
         )
         consistency = _clamp01(
-            1.0 - (float(np.percentile(abs_steps, 90)) + 1.6 * float(np.percentile(down_steps, 90))) / 0.42
+            1.0 - (0.75 * float(np.percentile(abs_steps, 90)) + 0.95 * largest_drop + 0.45 * collapse_density) / 0.47
         )
-        collapse = _clamp01(float(np.max(down_steps)) / 0.55)
+        collapse = _clamp01((0.72 * largest_drop + 0.28 * sustained_drop) / 0.42)
         return stability, consistency, collapse, groove_series
 
     energy = song.energy or {}
@@ -680,6 +729,7 @@ def _groove_score(song: SongDNA) -> ListenSubscore:
         collapse_severity = bar_collapse_severity
         groove_series = bar_groove_series
 
+    collapse_penalty = 0.20 * collapse_severity + 0.16 * _clamp01((collapse_severity - 0.45) / 0.35)
     score = round(
         100.0
         * (
@@ -687,7 +737,7 @@ def _groove_score(song: SongDNA) -> ListenSubscore:
             + 0.20 * tempo_consistency
             + 0.18 * pocket_stability
             + 0.12 * pocket_consistency
-            - 0.20 * collapse_severity
+            - collapse_penalty
         ),
         1,
     )
@@ -974,6 +1024,69 @@ def _ownership_clutter_metrics(song: SongDNA) -> dict[str, float]:
         "crowding_burst_count": crowding_burst_count,
         "crowding_burst_risk": round(crowding_burst_risk, 3),
     }
+
+
+def _boundary_worst_moment_clips(
+    rows: list[dict[str, float | int | str]],
+    *,
+    duration_seconds: float,
+    max_items: int = 5,
+) -> list[dict[str, Any]]:
+    clips: list[dict[str, Any]] = []
+    track_duration = max(float(duration_seconds or 0.0), 0.0)
+    for row in sorted(rows, key=lambda item: float(item.get("severity", 0.0)), reverse=True)[: max_items]:
+        boundary_time = float(row.get("boundary_time", 0.0) or 0.0)
+        seam_window = max(float(row.get("seam_window_seconds", 0.0) or 0.0), 2.0)
+        clip_half = max(1.5, min(seam_window * 0.5, 4.0))
+        start_time = max(0.0, boundary_time - clip_half)
+        end_time = boundary_time + clip_half
+        if track_duration > 0.0:
+            end_time = min(track_duration, end_time)
+            start_time = max(0.0, min(start_time, end_time))
+        hot_axes = [
+            axis
+            for axis, value in [
+                ("energy", row.get("energy_jump", 0.0)),
+                ("spectral", row.get("spectral_jump", 0.0)),
+                ("onset", row.get("onset_jump", 0.0)),
+                ("edge_cliff", row.get("edge_cliff_risk", 0.0)),
+                ("low_end", row.get("low_end_crowding_risk", 0.0)),
+                ("foreground", row.get("foreground_collision_risk", 0.0)),
+                ("vocals", row.get("vocal_competition_risk", 0.0)),
+                ("texture", row.get("texture_shift", 0.0)),
+                ("intent", row.get("intent_mismatch", 0.0)),
+            ]
+            if float(value or 0.0) >= 0.4
+        ]
+        summary = f"{row.get('intent', 'cut')} seam near {boundary_time:.1f}s"
+        if hot_axes:
+            summary += f" is exposed on {', '.join(hot_axes[:3])}"
+        clips.append(
+            {
+                "kind": "boundary_transition",
+                "component": "transition",
+                "boundary_index": int(row.get("boundary_index", len(clips))),
+                "intent": str(row.get("intent", "cut")),
+                "start_time": round(start_time, 3),
+                "end_time": round(end_time, 3),
+                "center_time": round(boundary_time, 3),
+                "duration_seconds": round(max(0.0, end_time - start_time), 3),
+                "severity": round(float(row.get("severity", 0.0) or 0.0), 3),
+                "reason_codes": hot_axes,
+                "summary": summary,
+                "evidence": {
+                    "energy_jump": row.get("energy_jump"),
+                    "spectral_jump": row.get("spectral_jump"),
+                    "onset_jump": row.get("onset_jump"),
+                    "edge_cliff_risk": row.get("edge_cliff_risk"),
+                    "low_end_crowding_risk": row.get("low_end_crowding_risk"),
+                    "foreground_collision_risk": row.get("foreground_collision_risk"),
+                    "vocal_competition_risk": row.get("vocal_competition_risk"),
+                    "intent_mismatch": row.get("intent_mismatch"),
+                },
+            }
+        )
+    return clips
 
 
 def _transition_score(song: SongDNA) -> ListenSubscore:
@@ -1307,6 +1420,7 @@ def _transition_score(song: SongDNA) -> ListenSubscore:
     details = {
         "aggregate_metrics": aggregate_metrics,
         "worst_boundaries": worst,
+        "worst_moments": _boundary_worst_moment_clips(severity_rows, duration_seconds=duration),
         "transition_diagnostics": transition_types[:5],
     }
     if manifest_details:
@@ -1843,6 +1957,17 @@ def _song_likeness_score(
     narrative_flow = float(readability["narrative_flow"])
     direction_flip_ratio = float(readability["direction_flip_ratio"])
     label_support_ratio = float(readability["label_support_ratio"])
+    musical_intelligence = getattr(song, 'musical_intelligence', {}) or {}
+    mi_summary = dict(musical_intelligence.get('summary') or {})
+    has_musical_intelligence = bool(mi_summary)
+    melodic_identity_strength = float(mi_summary.get('melodic_identity_strength', 0.5) if has_musical_intelligence else 0.5)
+    rhythmic_confidence = float(mi_summary.get('rhythmic_confidence', 0.5) if has_musical_intelligence else 0.5)
+    harmonic_confidence = float(mi_summary.get('harmonic_confidence', 0.5) if has_musical_intelligence else 0.5)
+    timbral_coherence_signal = float(mi_summary.get('timbral_coherence', 0.5) if has_musical_intelligence else 0.5)
+    tension_release_confidence = float(mi_summary.get('tension_release_confidence', 0.5) if has_musical_intelligence else 0.5)
+    motif_repeat_strength = float(((musical_intelligence.get('motif_reuse') or {}).get('motif_repeat_strength', 0.5)) if has_musical_intelligence else 0.5)
+    cadence_strength = float(((musical_intelligence.get('harmonic_function') or {}).get('cadence_strength', 0.5)) if has_musical_intelligence else 0.5)
+    anchor_stability = float(((musical_intelligence.get('timbral_anchors') or {}).get('anchor_stability', 0.5)) if has_musical_intelligence else 0.5)
     recognizable_ratio = _clamp01(
         0.30 * readable_section_ratio
         + 0.22 * boundary_recovery
@@ -1878,6 +2003,8 @@ def _song_likeness_score(
         + 0.08 * narrative_flow
         + 0.06 * (1.0 - direction_flip_ratio)
         + 0.08 * (1.0 - _clamp01((owner_switch_ratio - 0.42) / 0.45))
+        + 0.04 * rhythmic_confidence
+        + 0.04 * timbral_coherence_signal
     )
 
     donor_clutter_rejection = _clamp01(
@@ -1889,6 +2016,8 @@ def _song_likeness_score(
         + 0.14 * (1.0 - min(float(manifest_metrics.get("avg_overlap_beats", 0.0)) / 4.0, 1.0))
         + 0.10 * (1.0 - float(manifest_metrics.get("crowding_ratio", 0.0)))
         + 0.06 * (1.0 - float(manifest_metrics.get("lead_conflict_ratio", 0.0)))
+        + 0.06 * timbral_coherence_signal
+        + 0.04 * harmonic_confidence
     )
 
     climax_conviction = _clamp01(
@@ -1900,36 +2029,60 @@ def _song_likeness_score(
         + 0.10 * role_plausibility
         + 0.10 * audio_boundary_clarity
         + 0.10 * section_contrast
+        + 0.08 * tension_release_confidence
+        + 0.06 * cadence_strength
     )
+
+    integrated_two_parent_section_ratio = float(manifest_metrics.get("integrated_two_parent_section_ratio", 0.0) or 0.0)
+    support_layer_section_ratio = float(manifest_metrics.get("support_layer_section_ratio", 0.0) or 0.0)
+    full_mix_medley_risk = float(manifest_metrics.get("full_mix_medley_risk", 0.0) or 0.0)
 
     identity_penalty = 0.0
     if manifest_details:
         identity_penalty = (
-            0.28 * float(manifest_metrics.get("background_only_identity_gap", 0.0))
-            + 0.18 * float(manifest_metrics.get("collapse_ratio", 0.0))
-            + 0.18 * _clamp01(max_parent_share - 0.86)
-            + 0.20 * float(manifest_metrics.get("crowding_ratio", 0.0))
-            + 0.16 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
+            0.24 * float(manifest_metrics.get("background_only_identity_gap", 0.0))
+            + 0.14 * float(manifest_metrics.get("collapse_ratio", 0.0))
+            + 0.16 * _clamp01(max_parent_share - 0.86)
+            + 0.14 * float(manifest_metrics.get("crowding_ratio", 0.0))
+            + 0.12 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
+            + 0.20 * full_mix_medley_risk
+            + 0.08 * _clamp01((0.35 - melodic_identity_strength) / 0.35)
+            + 0.08 * _clamp01((0.35 - harmonic_confidence) / 0.35)
+            + 0.08 * _clamp01((0.35 - timbral_coherence_signal) / 0.35)
         )
+        if not has_musical_intelligence:
+            identity_penalty += 0.04 * full_mix_medley_risk + 0.03 * float(manifest_metrics.get("crowding_ratio", 0.0))
 
     composite_song_risk = _clamp01(
-        0.24 * (1.0 - backbone_continuity)
-        + 0.16 * (1.0 - recognizable_ratio)
-        + 0.11 * (1.0 - boundary_recovery)
-        + 0.10 * (1.0 - role_plausibility)
-        + 0.10 * (1.0 - narrative_flow)
-        + 0.08 * (1.0 - planner_climax_conviction)
-        + 0.08 * (1.0 - audio_boundary_clarity)
-        + 0.11 * _clamp01((owner_switch_ratio - 0.38) / 0.34)
-        + 0.10 * float(manifest_metrics.get("background_only_identity_gap", 0.0))
-        + 0.06 * float(manifest_metrics.get("crowding_ratio", 0.0))
-        + 0.06 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
+        0.22 * (1.0 - backbone_continuity)
+        + 0.14 * (1.0 - recognizable_ratio)
+        + 0.10 * (1.0 - boundary_recovery)
+        + 0.08 * (1.0 - role_plausibility)
+        + 0.08 * (1.0 - narrative_flow)
+        + 0.07 * (1.0 - planner_climax_conviction)
+        + 0.07 * (1.0 - audio_boundary_clarity)
+        + 0.10 * _clamp01((owner_switch_ratio - 0.38) / 0.34)
+        + 0.08 * float(manifest_metrics.get("background_only_identity_gap", 0.0))
+        + 0.05 * float(manifest_metrics.get("crowding_ratio", 0.0))
+        + 0.05 * float(manifest_metrics.get("seam_risk_ratio", 0.0))
+        + 0.16 * full_mix_medley_risk
+        + 0.08 * _clamp01((0.20 - support_layer_section_ratio) / 0.20)
+        + 0.06 * _clamp01((0.30 - melodic_identity_strength) / 0.30)
+        + 0.06 * _clamp01((0.32 - harmonic_confidence) / 0.32)
+        + 0.05 * _clamp01((0.32 - timbral_coherence_signal) / 0.32)
+        + 0.04 * _clamp01((0.32 - tension_release_confidence) / 0.32)
     )
 
     raw_norm = _clamp01(
-        0.42 * backbone_continuity
-        + 0.33 * donor_clutter_rejection
-        + 0.25 * climax_conviction
+        0.39 * backbone_continuity
+        + 0.29 * donor_clutter_rejection
+        + 0.20 * climax_conviction
+        + 0.07 * integrated_two_parent_section_ratio
+        + 0.05 * support_layer_section_ratio
+        + 0.05 * melodic_identity_strength
+        + 0.04 * harmonic_confidence
+        + 0.04 * timbral_coherence_signal
+        + 0.03 * tension_release_confidence
         - identity_penalty
     )
     score = round(100.0 * raw_norm, 1)
@@ -1940,12 +2093,15 @@ def _song_likeness_score(
     evidence.append(
         f"section readability: readable sections {readable_section_ratio:.3f}, boundary recovery {boundary_recovery:.3f}, audio boundary clarity {audio_boundary_clarity:.3f}, role plausibility {role_plausibility:.3f}, narrative flow {narrative_flow:.3f}, direction flips {direction_flip_ratio:.3f}, section contrast {section_contrast:.3f}, planner/audio climax {planner_climax_conviction:.3f}, label support {label_support_ratio:.3f}, composite-song risk {composite_song_risk:.3f}"
     )
+    evidence.append(
+        f"musical intelligence: melodic identity {melodic_identity_strength:.3f}, motif repeat {motif_repeat_strength:.3f}, rhythmic confidence {rhythmic_confidence:.3f}, harmonic confidence {harmonic_confidence:.3f}, cadence strength {cadence_strength:.3f}, timbral coherence {timbral_coherence_signal:.3f}, anchor stability {anchor_stability:.3f}, tension/release confidence {tension_release_confidence:.3f}"
+    )
     if manifest_details:
         evidence.append(
             f"section-owner backbone: counts {section_primary_counts}, switches {owner_switches}, switch ratio {owner_switch_ratio:.3f}, max parent share {max_parent_share:.3f}, background-only identity gap {float(manifest_metrics.get('background_only_identity_gap', 0.0)):.3f}"
         )
         evidence.append(
-            f"manifest anti-clutter: avg overlap beats {float(manifest_metrics.get('avg_overlap_beats', 0.0)):.2f}, crowding {float(manifest_metrics.get('crowding_ratio', 0.0)):.2f}, lead conflicts {float(manifest_metrics.get('lead_conflict_ratio', 0.0)):.2f}, seam risk {float(manifest_metrics.get('seam_risk_ratio', 0.0)):.2f}, collapse {float(manifest_metrics.get('collapse_ratio', 0.0)):.2f}"
+            f"manifest anti-clutter: avg overlap beats {float(manifest_metrics.get('avg_overlap_beats', 0.0)):.2f}, crowding {float(manifest_metrics.get('crowding_ratio', 0.0)):.2f}, lead conflicts {float(manifest_metrics.get('lead_conflict_ratio', 0.0)):.2f}, seam risk {float(manifest_metrics.get('seam_risk_ratio', 0.0)):.2f}, collapse {float(manifest_metrics.get('collapse_ratio', 0.0)):.2f}, integrated two-parent sections {integrated_two_parent_section_ratio:.2f}, support-layer sections {support_layer_section_ratio:.2f}, medley risk {full_mix_medley_risk:.2f}"
         )
 
     if backbone_continuity < 0.52:
@@ -1966,6 +2122,20 @@ def _song_likeness_score(
         fixes.append("Too many section-owner flips are weakening continuity; keep a steadier backbone and reserve parent swaps for real structural turns.")
     if manifest_details and float(manifest_metrics.get("background_only_identity_gap", 0.0)) > 0.20:
         fixes.append("Do not count background-only donor presence as fusion identity; promote real section ownership or reject the render as fake two-parent glue.")
+    if manifest_details and integrated_two_parent_section_ratio < 0.20:
+        fixes.append("Stop rendering whole-section full-mix swaps as the default; major sections need explicit donor support or counterlayers so the child sounds recomposed, not stitched.")
+    if manifest_details and full_mix_medley_risk > 0.55:
+        fixes.append("Hard reject medley-like section switching; the current manifest is still alternating between parent full mixes instead of constructing integrated child sections.")
+    if melodic_identity_strength < 0.30:
+        fixes.append("Strengthen motif continuity and melodic anchor reuse; the child currently lacks a memorable contour thread across sections.")
+    if harmonic_confidence < 0.32:
+        fixes.append("Reject tonal incoherence and weak cadence logic; child sections need a clearer local harmonic center and better phrase resolution.")
+    if rhythmic_confidence < 0.38:
+        fixes.append("Reject rhythm-language mismatch; drum grammar and pulse lock are too weak to sell one coherent groove system.")
+    if timbral_coherence_signal < 0.32:
+        fixes.append("Stabilize timbral anchors across the child; the palette is changing faster than the arrangement can justify.")
+    if tension_release_confidence < 0.30:
+        fixes.append("Clarify tension/release targets; builds and payoffs are not creating a convincing emotional rise and release pattern.")
     if manifest_details and float(manifest_metrics.get("avg_overlap_beats", 0.0)) > 3.0:
         fixes.append("Reduce donor linger across section seams; current overlap length is high enough to blur the child-song backbone.")
     if composite_song_risk > 0.50:
@@ -2004,8 +2174,20 @@ def _song_likeness_score(
                 "owner_switch_count": owner_switches,
                 "max_parent_share": round(max_parent_share, 3),
                 "background_only_identity_gap": round(float(manifest_metrics.get("background_only_identity_gap", 0.0)), 3),
+                "integrated_two_parent_section_ratio": round(integrated_two_parent_section_ratio, 3),
+                "support_layer_section_ratio": round(support_layer_section_ratio, 3),
+                "full_mix_medley_risk": round(full_mix_medley_risk, 3),
+                "melodic_identity_strength": round(melodic_identity_strength, 3),
+                "motif_repeat_strength": round(motif_repeat_strength, 3),
+                "rhythmic_confidence": round(rhythmic_confidence, 3),
+                "harmonic_confidence": round(harmonic_confidence, 3),
+                "cadence_strength": round(cadence_strength, 3),
+                "timbral_coherence": round(timbral_coherence_signal, 3),
+                "timbral_anchor_stability": round(anchor_stability, 3),
+                "tension_release_confidence": round(tension_release_confidence, 3),
             },
             "manifest_metrics": manifest_details,
+            "musical_intelligence": musical_intelligence,
         },
     )
 
@@ -2028,6 +2210,13 @@ def _build_gating(
     manifest_alternating_triplet_ratio = float(transition_metrics.get("manifest_alternating_triplet_ratio", 0.0) or 0.0)
     manifest_swap_density = float(transition_metrics.get("manifest_swap_density", 0.0) or 0.0)
     composite_song_risk = float(song_metrics.get("composite_song_risk", 0.0) or 0.0)
+    integrated_two_parent_section_ratio = float(song_metrics.get("integrated_two_parent_section_ratio", 0.0) or 0.0)
+    support_layer_section_ratio = float(song_metrics.get("support_layer_section_ratio", 0.0) or 0.0)
+    full_mix_medley_risk = float(song_metrics.get("full_mix_medley_risk", 0.0) or 0.0)
+    melodic_identity_strength = float(song_metrics.get("melodic_identity_strength", 0.5) or 0.5)
+    harmonic_confidence = float(song_metrics.get("harmonic_confidence", 0.5) or 0.5)
+    rhythmic_confidence = float(song_metrics.get("rhythmic_confidence", 0.5) or 0.5)
+    timbral_coherence = float(song_metrics.get("timbral_coherence", 0.5) or 0.5)
     groove_floor_triggered = groove.score < 55.0
 
     if song_likeness.score < 45.0:
@@ -2042,6 +2231,10 @@ def _build_gating(
         hard_fail_reasons.append("obvious track-switch seams detected")
     if composite_song_risk > 0.50:
         hard_fail_reasons.append("composite detector says the render still sounds like multiple pasted songs")
+    if full_mix_medley_risk >= 0.68 and integrated_two_parent_section_ratio < 0.20:
+        hard_fail_reasons.append("render is still mostly alternating full-mix parent sections instead of integrated child sections")
+    if melodic_identity_strength < 0.24 and harmonic_confidence < 0.24 and timbral_coherence < 0.24:
+        hard_fail_reasons.append("musical identity is too weak across melody, harmony, and timbre")
     if groove_floor_triggered:
         soft_fail_reasons.append("groove grid is not stable enough")
     if transition.score < 45.0:
@@ -2050,6 +2243,16 @@ def _build_gating(
         soft_fail_reasons.append("mix/ownership clutter is still too high")
     if float(song_metrics.get("background_only_identity_gap", 0.0) or 0.0) > 0.35:
         soft_fail_reasons.append("minority-parent presence is mostly background-only")
+    if support_layer_section_ratio < 0.18 and manifest_owner_switch_ratio > 0.45 and full_mix_medley_risk > 0.55:
+        soft_fail_reasons.append("sections are switching parents faster than they are being recomposed")
+    if melodic_identity_strength < 0.34:
+        soft_fail_reasons.append("motif continuity is too weak")
+    if harmonic_confidence < 0.34:
+        soft_fail_reasons.append("tonal continuity is too weak")
+    if rhythmic_confidence < 0.34:
+        soft_fail_reasons.append("rhythmic language is too unstable")
+    if timbral_coherence < 0.34:
+        soft_fail_reasons.append("timbral palette coherence is too weak")
 
     gated_overall = overall
     if hard_fail_reasons:
@@ -2073,6 +2276,9 @@ def _build_gating(
         "manifest_alternating_triplet_ratio": round(manifest_alternating_triplet_ratio, 3),
         "manifest_swap_density": round(manifest_swap_density, 3),
         "composite_song_risk": round(composite_song_risk, 3),
+        "integrated_two_parent_section_ratio": round(integrated_two_parent_section_ratio, 3),
+        "support_layer_section_ratio": round(support_layer_section_ratio, 3),
+        "full_mix_medley_risk": round(full_mix_medley_risk, 3),
         "composite_detector_triggered": bool(composite_song_risk > 0.50),
         "track_switch_seam_hard_reject_triggered": bool(
             manifest_switch_detector_risk >= 0.72

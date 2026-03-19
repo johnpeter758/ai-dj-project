@@ -504,12 +504,49 @@ def _resolve_source_window(
 def _validate_planned_section(idx: int, sec: PlannedSection, previous_start_bar: int | None) -> None:
     if sec.source_parent not in {"A", "B"}:
         raise ValueError(f"section {idx} ({sec.label}) has unsupported source_parent: {sec.source_parent}")
+    if sec.support_parent is not None and sec.support_parent not in {"A", "B"}:
+        raise ValueError(f"section {idx} ({sec.label}) has unsupported support_parent: {sec.support_parent}")
     if not isinstance(sec.start_bar, int) or sec.start_bar < 0:
         raise ValueError(f"section {idx} ({sec.label}) has invalid start_bar: {sec.start_bar}")
     if not isinstance(sec.bar_count, int) or sec.bar_count <= 0:
         raise ValueError(f"section {idx} ({sec.label}) has invalid bar_count: {sec.bar_count}")
     if previous_start_bar is not None and sec.start_bar < previous_start_bar:
         raise ValueError("arrangement sections must be sorted by non-decreasing start_bar")
+
+
+
+def _resolve_support_source_window(
+    section: PlannedSection,
+    song_map: dict[str, SongDNA],
+    grid_map: dict[str, ParentGrid],
+    config: ResolverConfig,
+    *,
+    target_bpm: float,
+) -> tuple[SourceSectionRef | None, float | None, list[str], list[str]]:
+    support_parent = (section.support_parent or "").strip() or None
+    support_label = (section.support_section_label or "").strip() or None
+    if support_parent is None or support_label is None:
+        return None, None, [], []
+    temp = PlannedSection(
+        label=section.label,
+        start_bar=section.start_bar,
+        bar_count=section.bar_count,
+        source_parent=support_parent,
+        source_section_label=support_label,
+        target_energy=section.target_energy,
+        transition_in=section.transition_in,
+        transition_out=section.transition_out,
+        transition_mode=section.transition_mode,
+    )
+    support_song = song_map[support_parent]
+    support_grid = grid_map[support_parent]
+    source_ref, warnings = _resolve_source_window(temp, support_song, support_grid, config, target_bpm=target_bpm)
+    target_duration_sec = section.bar_count * config.beats_per_bar * 60.0 / target_bpm
+    source_duration = max(0.0, source_ref.snapped_end_sec - source_ref.snapped_start_sec)
+    raw_stretch_ratio = source_duration / target_duration_sec if target_duration_sec > 0 and source_duration > 0 else 1.0
+    stretch_ratio, stretch_warnings, stretch_fallbacks = _clamp_stretch_ratio(raw_stretch_ratio)
+    return source_ref, stretch_ratio, [*warnings, *stretch_warnings], stretch_fallbacks
+
 
 
 def _clamp_stretch_ratio(stretch_ratio: float) -> tuple[float, list[str], list[str]]:
@@ -586,10 +623,22 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         stretch_ratio, stretch_warnings, stretch_fallbacks = _clamp_stretch_ratio(raw_stretch_ratio)
         section_warnings.extend(stretch_warnings)
 
+        support_ref, support_stretch_ratio, support_warnings, support_fallbacks = _resolve_support_source_window(
+            sec,
+            song_map,
+            grid_map,
+            config,
+            target_bpm=target_bpm,
+        )
+        integrated_support_active = support_ref is not None and (sec.support_parent or None) not in {None, parent_id}
+        section_warnings.extend(support_warnings)
+
         if section_warnings:
             warnings.extend([f"section {idx} ({sec.label}): {w}" for w in section_warnings])
         if stretch_fallbacks:
             fallbacks.extend([f"section {idx} ({sec.label}): {w}" for w in stretch_fallbacks])
+        if support_fallbacks:
+            fallbacks.extend([f"section {idx} ({sec.label}) support: {w}" for w in support_fallbacks])
         if section_warnings or stretch_fallbacks:
             fallbacks.extend([f"section {idx} ({sec.label}): {w}" for w in section_warnings])
 
@@ -633,6 +682,10 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         owner_mode = "backbone_only"
         arrival_focus = "backbone_led"
         low_end_owner = parent_id
+        foreground_owner = parent_id
+        donor_owner = background_owner
+        vocal_policy = f"{parent_id}_only"
+        base_vocal_state = "lead_only"
         if background_owner is not None:
             owner_mode = "backbone_plus_donor_support"
             arrival_focus = "donor_led" if overlap_beats >= 2.0 else "backbone_led"
@@ -640,6 +693,21 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             # intro high-pass in the renderer, so the outgoing parent remains the
             # effective kick/sub anchor until the overlap clears.
             low_end_owner = background_owner
+        if integrated_support_active:
+            owner_mode = "integrated_two_parent_section"
+            background_owner = str(sec.support_parent)
+            donor_owner = str(sec.support_parent)
+            arrival_focus = "integrated_two_parent"
+            low_end_owner = parent_id
+            if (sec.support_mode or "") == "foreground_counterlayer":
+                foreground_owner = str(sec.support_parent)
+                vocal_policy = f"{sec.support_parent}_lead_over_{parent_id}_bed"
+                base_vocal_state = "support"
+            else:
+                vocal_policy = f"{parent_id}_lead_with_{sec.support_parent}_support"
+            section_warnings.append(
+                f"integrated donor support scheduled from {sec.support_parent}:{sec.support_section_label} using {sec.support_mode or 'filtered support'}"
+            )
         resolved = ResolvedSection(
             index=idx,
             label=sec.label,
@@ -653,15 +721,15 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 duration_sec=target_duration_sec,
                 anchor_bpm=anchor_bpm,
             ),
-            foreground_owner=parent_id,
+            foreground_owner=foreground_owner,
             background_owner=background_owner,
             low_end_owner=low_end_owner,
             backbone_owner=parent_id,
-            donor_owner=background_owner,
+            donor_owner=donor_owner,
             owner_mode=owner_mode,
             arrival_focus=arrival_focus,
-            vocal_policy=f"{parent_id}_only",
-            allowed_overlap=overlap_beats > 0,
+            vocal_policy=vocal_policy,
+            allowed_overlap=overlap_beats > 0 or integrated_support_active,
             overlap_beats_max=overlap_beats,
             collapse_if_conflict=True,
             transition_in=sec.transition_in,
@@ -669,7 +737,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             transition_mode=sec.transition_mode,
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
-            warnings=section_warnings + stretch_fallbacks,
+            warnings=section_warnings + stretch_fallbacks + support_fallbacks,
         )
         resolved_sections.append(resolved)
 
@@ -694,16 +762,40 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 previous_label,
                 sec.label,
                 donor_support_active=background_owner is not None,
-            ),
+            ) - (1.25 if integrated_support_active and (sec.support_mode or '') == 'foreground_counterlayer' else 0.0),
             fade_in_sec=fade_in_sec,
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
             transition_type=sec.transition_in,
             transition_mode=sec.transition_mode,
             foreground_state="owner",
             low_end_state="owner",
-            vocal_state="lead_only",
+            vocal_state=base_vocal_state,
             conflict_policy="collapse_to_single_source",
         ))
+        if integrated_support_active and support_ref is not None and support_stretch_ratio is not None:
+            work_orders.append(AudioWorkOrder(
+                order_id=f"section_{idx}_support",
+                section_index=idx,
+                order_type="section_support",
+                parent_id=str(sec.support_parent),
+                role=str(sec.support_mode or 'filtered_support'),
+                source_path=support_ref.source_path,
+                source_start_sec=support_ref.snapped_start_sec,
+                source_end_sec=support_ref.snapped_end_sec,
+                target_start_sec=target_start_sec,
+                target_duration_sec=target_duration_sec,
+                stretch_ratio=support_stretch_ratio,
+                semitone_shift=0.0,
+                gain_db=float(sec.support_gain_db if sec.support_gain_db is not None else -10.0),
+                fade_in_sec=min(0.75, target_duration_sec * 0.15),
+                fade_out_sec=min(1.0, target_duration_sec * 0.18),
+                transition_type=None,
+                transition_mode=str(sec.support_mode or 'filtered_support'),
+                foreground_state="owner" if (sec.support_mode or '') == 'foreground_counterlayer' else "support",
+                low_end_state="support",
+                vocal_state="lead" if (sec.support_mode or '') == 'foreground_counterlayer' else "none",
+                conflict_policy="duck_to_backbone",
+            ))
 
     return ResolvedRenderPlan(
         schema_version="0.1.0",

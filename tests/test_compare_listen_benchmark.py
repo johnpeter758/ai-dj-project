@@ -327,6 +327,50 @@ def test_build_listen_benchmark_handles_duplicate_basenames_without_label_collis
     assert benchmark['case_index'][0]['input_label'] == 'fusion_rerun.json'
 
 
+def test_build_listen_benchmark_prefers_explicit_case_labels(tmp_path: Path):
+    stronger = BenchmarkCase(
+        name='stronger',
+        overall_score=82.0,
+        component_scores={
+            'structure': 83.0,
+            'groove': 82.0,
+            'energy_arc': 84.0,
+            'transition': 81.0,
+            'coherence': 82.0,
+            'mix_sanity': 80.0,
+        },
+        verdict='promising',
+    )
+    weaker = BenchmarkCase(
+        name='weaker',
+        overall_score=74.0,
+        component_scores={
+            'structure': 75.0,
+            'groove': 74.0,
+            'energy_arc': 73.0,
+            'transition': 74.0,
+            'coherence': 75.0,
+            'mix_sanity': 73.0,
+        },
+        verdict='mixed',
+    )
+
+    stronger_path = _write_case(tmp_path, stronger)
+    weaker_path = _write_case(tmp_path, weaker)
+
+    benchmark = ai_dj._build_listen_benchmark([
+        f'baseline={stronger_path}',
+        f'experimental={weaker_path}',
+    ])
+
+    assert benchmark['winner'] == 'baseline'
+    assert [row['label'] for row in benchmark['ranking']] == ['baseline', 'experimental']
+    assert [row['input_path'] for row in benchmark['case_index']] == [str(stronger_path), str(weaker_path)]
+    assert benchmark['case_index'][0]['input_label'] == 'baseline'
+    assert benchmark['comparisons'][0]['left'] == 'baseline'
+    assert benchmark['comparisons'][0]['right'] == 'experimental'
+
+
 def test_build_listen_benchmark_returns_ranked_scoreboard(tmp_path: Path):
     producer = BenchmarkCase(
         name='producer_grade',

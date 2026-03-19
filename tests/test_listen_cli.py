@@ -599,6 +599,23 @@ def test_compare_listen_disambiguates_duplicate_basenames_in_explanations(tmp_pa
     assert any('pass_a/fusion_rerun.json wins overall by 8.0 listen points over pass_b/fusion_rerun.json.' == line for line in comparison['decision']['why'])
 
 
+def test_compare_listen_respects_explicit_case_labels(monkeypatch, tmp_path: Path):
+    left = tmp_path / 'left.wav'
+    right = tmp_path / 'right.wav'
+    left.write_bytes(b'fake')
+    right.write_bytes(b'fake')
+
+    monkeypatch.setattr(ai_dj, 'analyze_audio_file', lambda path, stems_dir=None: DummySong(str(path)))
+
+    comparison = ai_dj._build_listen_comparison(f'baseline={left}', f'experimental={right}')
+
+    assert comparison['left']['input_label'] == 'baseline'
+    assert comparison['right']['input_label'] == 'experimental'
+    assert comparison['left']['display_label'] == 'baseline'
+    assert comparison['right']['display_label'] == 'experimental'
+    assert comparison['left']['case_id'] != comparison['right']['case_id']
+
+
 def test_compare_listen_can_resolve_render_output_directories(monkeypatch, tmp_path: Path):
     left_dir = tmp_path / 'render_a'
     right_dir = tmp_path / 'render_b'
@@ -763,6 +780,49 @@ def test_song_likeness_gate_rejects_non_song_like_render(tmp_path: Path):
     assert report.gating['track_switch_seam_hard_reject_triggered'] is True
     assert 'obvious track-switch seams detected' in report.gating['hard_fail_reasons']
     assert any('backbone continuity' in fix.lower() or 'cluttered donor carryover' in fix.lower() for fix in report.top_fixes)
+
+
+
+def test_song_likeness_hard_rejects_full_mix_section_switch_medley(tmp_path: Path):
+    run_dir = tmp_path / 'medley_like'
+    run_dir.mkdir()
+    audio = run_dir / 'child_master.wav'
+    audio.write_bytes(b'fake')
+    (run_dir / 'render_manifest.json').write_text("""{
+  "outputs": {"master_wav": "%s"},
+  "sections": [
+    {"index": 0, "label": "verse", "source_parent": "A", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "A", "background_owner": null, "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 1, "label": "build", "source_parent": "B", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "B", "background_owner": null, "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0},
+    {"index": 2, "label": "payoff", "source_parent": "A", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "A", "background_owner": null, "low_end_owner": "A", "vocal_policy": "A_only", "stretch_ratio": 1.0},
+    {"index": 3, "label": "bridge", "source_parent": "B", "allowed_overlap": false, "overlap_beats_max": 0.0, "foreground_owner": "B", "background_owner": null, "low_end_owner": "B", "vocal_policy": "B_only", "stretch_ratio": 1.0}
+  ],
+  "work_orders": [
+    {"section_index": 0, "parent_id": "A", "role": "full_mix", "foreground_state": "owner", "low_end_state": "owner", "vocal_state": "lead_only"},
+    {"section_index": 1, "parent_id": "B", "role": "full_mix", "foreground_state": "owner", "low_end_state": "owner", "vocal_state": "lead_only"},
+    {"section_index": 2, "parent_id": "A", "role": "full_mix", "foreground_state": "owner", "low_end_state": "owner", "vocal_state": "lead_only"},
+    {"section_index": 3, "parent_id": "B", "role": "full_mix", "foreground_state": "owner", "low_end_state": "owner", "vocal_state": "lead_only"}
+  ]
+}""" % audio.as_posix(), encoding='utf-8')
+
+    song = DummySong(str(audio))
+    song.structure['sections'] = [
+        {'label': 'verse', 'start': 0.0, 'end': 24.0},
+        {'label': 'build', 'start': 24.0, 'end': 48.0, 'transition_in': 'lift'},
+        {'label': 'payoff', 'start': 48.0, 'end': 72.0, 'transition_in': 'drop'},
+        {'label': 'bridge', 'start': 72.0, 'end': 96.0},
+    ]
+    song.structure['phrase_boundaries_seconds'] = [0, 24, 48, 72, 96]
+    song.structure['novelty_boundaries_seconds'] = [24, 48, 72]
+
+    report = evaluate_song(song)
+    metrics = report.song_likeness.details['aggregate_metrics']
+
+    assert metrics['integrated_two_parent_section_ratio'] == 0.0
+    assert metrics['support_layer_section_ratio'] == 0.0
+    assert metrics['full_mix_medley_risk'] > 0.65
+    assert report.gating['status'] == 'reject'
+    assert 'render is still mostly alternating full-mix parent sections instead of integrated child sections' in report.gating['hard_fail_reasons']
+    assert any('full-mix swaps' in fix.lower() or 'medley-like' in fix.lower() for fix in report.top_fixes)
 
 
 

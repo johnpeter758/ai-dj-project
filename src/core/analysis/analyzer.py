@@ -6,6 +6,7 @@ from .energy import compute_energy_profile
 from .key import detect_key
 from .loader import duration_seconds, load_audio
 from .models import SongDNA
+from .musical_intelligence import analyze_musical_intelligence
 from .stems import separate_stems
 from .structure import estimate_structure
 from .tempo import detect_tempo
@@ -30,6 +31,7 @@ def analyze_audio_file(audio_path: str | Path, stems_dir: str | Path | None = No
         structure=estimate_structure(audio, sample_rate),
         energy=compute_energy_profile(audio, sample_rate),
         stems=stems,
+        musical_intelligence=analyze_musical_intelligence(audio, sample_rate),
         metadata={
             "schema_version": "0.1.0",
             "tempo": tempo,

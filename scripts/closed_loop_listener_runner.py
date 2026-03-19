@@ -37,6 +37,7 @@ from scripts.reference_input_normalizer import normalize_reference_inputs
 PYTHON = ROOT / ".venv" / "bin" / "python"
 CLOSED_LOOP_SCHEMA_VERSION = "0.2.0"
 CHANGE_COMMAND_CONTEXT_SCHEMA_VERSION = "0.1.0"
+DISPATCH_SPEC_SCHEMA_VERSION = "0.1.0"
 COMMAND_TEMPLATE_FIELDS: list[tuple[str, str]] = [
     ("iteration", "1-indexed loop iteration number."),
     ("iteration_dir", "Directory for this iteration's artifacts."),
@@ -63,6 +64,46 @@ COMMAND_TEMPLATE_FIELDS: list[tuple[str, str]] = [
 
 class LoopError(RuntimeError):
     """Closed-loop runner failure."""
+
+
+def _read_dispatch_spec(path: str | Path, *, label: str) -> dict[str, Any]:
+    spec_path = Path(path).expanduser().resolve()
+    if not spec_path.exists():
+        raise LoopError(f"{label} dispatch spec not found: {spec_path}")
+    try:
+        payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LoopError(f"{label} dispatch spec must be valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise LoopError(f"{label} dispatch spec must be a JSON object")
+    payload = dict(payload)
+    payload.setdefault("spec_path", str(spec_path))
+    return payload
+
+
+def _hydrate_dispatch_spec(spec: dict[str, Any] | None, *, label: str) -> dict[str, Any] | None:
+    if spec is None:
+        return None
+    template = str(spec.get("command") or spec.get("template") or "").strip()
+    if not template:
+        raise LoopError(f"{label} dispatch spec must include command or template")
+    timeout_raw = spec.get("timeout")
+    timeout = 3600
+    if timeout_raw is not None:
+        try:
+            timeout = int(timeout_raw)
+        except (TypeError, ValueError) as exc:
+            raise LoopError(f"{label} dispatch spec timeout must be an integer") from exc
+        if timeout < 1:
+            raise LoopError(f"{label} dispatch spec timeout must be at least 1 second")
+    hydrated = {
+        "schema_version": str(spec.get("schema_version") or DISPATCH_SPEC_SCHEMA_VERSION),
+        "command": template,
+        "timeout": timeout,
+    }
+    if spec.get("spec_path"):
+        hydrated["spec_path"] = str(spec.get("spec_path"))
+    return hydrated
 
 
 def _command_template_fields_text() -> str:
@@ -216,7 +257,7 @@ def _require_feedback_brief_shape(feedback_brief: dict[str, Any]) -> dict[str, A
 
     normalized = dict(feedback_brief)
     normalized["ranked_interventions"] = [item for item in ranked if isinstance(item, dict)]
-    for list_key in ("next_code_targets", "planner_feedback_map", "render_feedback_map"):
+    for list_key in ("next_code_targets", "planner_feedback_map", "render_feedback_map", "prioritized_execution_plan"):
         value = normalized.get(list_key)
         if value is None:
             normalized[list_key] = []
@@ -266,6 +307,7 @@ def _build_iteration_artifacts(
                 "ranked_intervention_count": len(feedback_brief.get("ranked_interventions") or []),
                 "planner_feedback_count": len(feedback_brief.get("planner_feedback_map") or []),
                 "render_feedback_count": len(feedback_brief.get("render_feedback_map") or []),
+                "prioritized_execution_count": len(feedback_brief.get("prioritized_execution_plan") or []),
             },
         ),
     }
@@ -351,6 +393,61 @@ def _quality_gate_status(*, overall: float, quality_gate: float, feedback_brief:
         "reason": reason,
         "blocking_components": blocking_components[:3],
     }
+
+
+def _listener_decision_rank(decision: str) -> int:
+    order = {
+        "reject": 0,
+        "borderline": 1,
+        "survivor": 2,
+    }
+    return order.get(str(decision or "").strip().lower(), -1)
+
+
+def _progress_signal(*, overall: float, listener_assessment: dict[str, Any], quality_gate_status: dict[str, Any]) -> tuple[int, float, float, float]:
+    decision_rank = _listener_decision_rank(str(listener_assessment.get("decision") or "unknown"))
+    reference_weighted = quality_gate_status.get("candidate_reference_weighted_score")
+    if reference_weighted is None:
+        reference_weighted = float(overall)
+    return (
+        decision_rank,
+        float(reference_weighted),
+        float(listener_assessment.get("listener_rank") or 0.0),
+        float(overall),
+    )
+
+
+def _is_meaningful_progress(
+    *,
+    overall: float,
+    listener_assessment: dict[str, Any],
+    quality_gate_status: dict[str, Any],
+    best_progress_signal: tuple[int, float, float, float] | None,
+    min_improvement: float,
+) -> tuple[bool, tuple[int, float, float, float]]:
+    current = _progress_signal(
+        overall=overall,
+        listener_assessment=listener_assessment,
+        quality_gate_status=quality_gate_status,
+    )
+    if best_progress_signal is None:
+        return True, current
+
+    best_decision, best_weighted, best_rank, best_overall = best_progress_signal
+    decision, weighted, listener_rank, current_overall = current
+    threshold = float(min_improvement)
+
+    if decision > best_decision:
+        return True, current
+    if decision < best_decision:
+        return False, best_progress_signal
+    if weighted >= best_weighted + threshold:
+        return True, current
+    if listener_rank >= best_rank + threshold:
+        return True, current
+    if current_overall >= best_overall + threshold:
+        return True, current
+    return False, best_progress_signal
 
 
 def _build_iteration_summary(iteration_record: dict[str, Any]) -> dict[str, Any]:
@@ -443,6 +540,7 @@ def _build_change_command_context(
         "goal": dict(feedback_brief.get("goal") or {}),
         "next_code_targets": list(feedback_brief.get("next_code_targets") or []),
         "top_interventions": list((feedback_brief.get("ranked_interventions") or [])[:3]),
+        "prioritized_execution_plan": list((feedback_brief.get("prioritized_execution_plan") or [])[:5]),
         "planner_feedback_map": list((feedback_brief.get("planner_feedback_map") or [])[:5]),
         "top_intervention": top_intervention,
         "best_score_so_far": float(best_score),
@@ -527,12 +625,26 @@ def run_closed_loop(
     min_improvement: float = 0.5,
     change_command: str | None = None,
     test_command: str | None = None,
+    change_dispatch: dict[str, Any] | None = None,
+    test_dispatch: dict[str, Any] | None = None,
     target_score: float = 99.0,
 ) -> dict[str, Any]:
     if max_iterations < 1:
         raise LoopError("max_iterations must be at least 1")
     if plateau_limit < 1:
         raise LoopError("plateau_limit must be at least 1")
+    if change_command and change_dispatch:
+        raise LoopError("Specify either change_command or change_dispatch, not both")
+    if test_command and test_dispatch:
+        raise LoopError("Specify either test_command or test_dispatch, not both")
+
+    hydrated_change_dispatch = _hydrate_dispatch_spec(change_dispatch, label="change")
+    hydrated_test_dispatch = _hydrate_dispatch_spec(test_dispatch, label="test")
+    if hydrated_change_dispatch and not change_command:
+        change_command = str(hydrated_change_dispatch["command"])
+    if hydrated_test_dispatch and not test_command:
+        test_command = str(hydrated_test_dispatch["command"])
+
     try:
         references = normalize_reference_inputs(references)
     except ValueError as exc:
@@ -554,6 +666,8 @@ def run_closed_loop(
             "target_score": float(target_score),
             "change_command": change_command,
             "test_command": test_command,
+            "change_dispatch": hydrated_change_dispatch,
+            "test_dispatch": hydrated_test_dispatch,
         },
         "iterations": [],
         "best_iteration": None,
@@ -563,6 +677,7 @@ def run_closed_loop(
 
     best_score: float | None = None
     best_iteration_index: int | None = None
+    best_progress_signal: tuple[int, float, float, float] | None = None
     plateau_count = 0
 
     for iteration_index in range(1, max_iterations + 1):
@@ -590,9 +705,15 @@ def run_closed_loop(
             quality_gate=quality_gate,
             feedback_brief=feedback_brief,
         )
-        improved = best_score is None or overall >= (best_score + float(min_improvement))
+        improved, best_progress_signal = _is_meaningful_progress(
+            overall=overall,
+            listener_assessment=listener_assessment,
+            quality_gate_status=quality_gate_status,
+            best_progress_signal=best_progress_signal,
+            min_improvement=min_improvement,
+        )
         if improved:
-            best_score = overall
+            best_score = overall if best_score is None else max(best_score, overall)
             best_iteration_index = iteration_index
             plateau_count = 0
         else:
@@ -662,13 +783,23 @@ def run_closed_loop(
                 change_context_path=change_context_path,
                 change_request_path=change_request_path,
             )
-            change_result = _run_command_template(change_command, context, label="change")
+            change_result = _run_command_template(
+                change_command,
+                context,
+                timeout=int((hydrated_change_dispatch or {}).get("timeout") or 3600),
+                label="change",
+            )
             iteration_record["change_command"] = change_result
             if int(change_result["returncode"]) != 0:
                 stop_reason = f"change_command_failed:{iteration_index}"
 
             if not stop_reason and test_command:
-                test_result = _run_command_template(test_command, context, label="test")
+                test_result = _run_command_template(
+                    test_command,
+                    context,
+                    timeout=int((hydrated_test_dispatch or {}).get("timeout") or 3600),
+                    label="test",
+                )
                 iteration_record["test_command"] = test_result
                 if int(test_result["returncode"]) != 0:
                     stop_reason = f"test_command_failed:{iteration_index}"
@@ -743,7 +874,12 @@ def main() -> int:
     parser.add_argument("--target-score", type=float, default=99.0, help="Long-term aspirational target score for the feedback brief")
     parser.add_argument("--change-command", help="Optional command template used to change code between iterations")
     parser.add_argument("--test-command", help="Optional command template used to validate changes between iterations")
+    parser.add_argument("--change-dispatch", help="Optional JSON dispatch spec for the change step")
+    parser.add_argument("--test-dispatch", help="Optional JSON dispatch spec for the test step")
     args = parser.parse_args()
+
+    change_dispatch = _read_dispatch_spec(args.change_dispatch, label="change") if args.change_dispatch else None
+    test_dispatch = _read_dispatch_spec(args.test_dispatch, label="test") if args.test_dispatch else None
 
     report = run_closed_loop(
         song_a=args.song_a,
@@ -756,6 +892,8 @@ def main() -> int:
         min_improvement=args.min_improvement,
         change_command=args.change_command,
         test_command=args.test_command,
+        change_dispatch=change_dispatch,
+        test_dispatch=test_dispatch,
         target_score=args.target_score,
     )
     print(json.dumps({

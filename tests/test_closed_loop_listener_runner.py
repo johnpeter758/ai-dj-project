@@ -317,6 +317,7 @@ def test_closed_loop_writes_change_packet_and_exposes_template_fields(monkeypatc
     assert payload['candidate']['overall_score'] == 61.0
     assert payload['next_code_targets'] == ['src/core/planner/arrangement.py', 'src/core/evaluation/listen.py']
     assert payload['planner_feedback_map'][0]['failure_mode'] == 'backbone_continuity'
+    assert payload['prioritized_execution_plan'] == []
     assert iteration['candidate_listener_decision'] == 'reject'
     assert iteration['candidate_listener_rank'] == 43.5
     assert Path(iteration['listener_assessment_path']).exists()
@@ -552,6 +553,122 @@ def test_closed_loop_stops_on_test_command_failure(monkeypatch, tmp_path: Path):
 
 
 
+def test_closed_loop_plateau_resets_on_listener_decision_progress_even_without_overall_gain(monkeypatch, tmp_path: Path):
+    scores = iter([64.0, 64.0, 64.0, 64.0])
+    decisions = iter(['reject', 'borderline', 'borderline', 'borderline'])
+    ranks = iter([40.0, 40.0, 40.0, 40.0])
+
+    def fake_render(song_a: str, song_b: str, output_dir: Path):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {'output_dir': str(output_dir), 'stdout': '', 'stderr': '', 'command': ['fusion']}
+
+    def fake_candidate_report(_candidate_input: str):
+        score = next(scores)
+        payload = dict(BASE_REPORT)
+        payload['overall_score'] = score
+        payload['verdict'] = 'mixed'
+        payload['gating'] = {'status': 'review', 'raw_overall_score': score}
+        return payload
+
+    def fake_feedback(_candidate: str, _refs: list[str], target_score: float = 99.0):
+        return {
+            'schema_version': '0.2.0',
+            'goal': {'target_listener_score': target_score, 'current_overall_score': 64.0, 'gap_to_target': 35.0},
+            'ranked_interventions': [{'component': 'song_likeness', 'code_targets': ['src/core/planner/arrangement.py']}],
+            'planner_feedback_map': [],
+            'render_feedback_map': [],
+            'next_code_targets': ['src/core/planner/arrangement.py'],
+        }
+
+    monkeypatch.setattr(loop, 'render_iteration', fake_render)
+    monkeypatch.setattr(loop, '_candidate_report', fake_candidate_report)
+    monkeypatch.setattr(loop, '_candidate_listener_assessment', lambda _candidate_input: {'decision': next(decisions), 'listener_rank': next(ranks)})
+    monkeypatch.setattr(loop, 'build_feedback_brief', fake_feedback)
+    monkeypatch.setattr(loop, '_run_command_template', lambda *args, **kwargs: {'returncode': 0, 'stdout': '', 'stderr': '', 'command': ['noop'], 'command_text': 'noop'})
+
+    report = loop.run_closed_loop(
+        song_a='a.wav',
+        song_b='b.wav',
+        references=['ref.wav'],
+        output_root=str(tmp_path / 'loop_listener_progress'),
+        max_iterations=4,
+        quality_gate=90.0,
+        plateau_limit=2,
+        change_command='echo patch {iteration}',
+    )
+
+    assert report['stop_reason'] == 'plateau:2'
+    assert len(report['iterations']) == 4
+    assert report['iterations'][0]['plateau_count'] == 0
+    assert report['iterations'][1]['plateau_count'] == 0
+    assert report['iterations'][2]['plateau_count'] == 1
+    assert report['iterations'][3]['plateau_count'] == 2
+    assert report['iterations'][1]['improved_vs_best_before'] is True
+    assert report['best_iteration']['iteration'] == 2
+
+
+
+def test_closed_loop_plateau_resets_on_reference_weighted_gain_even_when_overall_is_flat(monkeypatch, tmp_path: Path):
+    weighted_scores = iter([70.0, 71.0, 71.0, 71.0])
+
+    def fake_render(song_a: str, song_b: str, output_dir: Path):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {'output_dir': str(output_dir), 'stdout': '', 'stderr': '', 'command': ['fusion']}
+
+    def fake_candidate_report(_candidate_input: str):
+        payload = dict(BASE_REPORT)
+        payload['overall_score'] = 64.0
+        payload['verdict'] = 'mixed'
+        payload['gating'] = {'status': 'review', 'raw_overall_score': 64.0}
+        return payload
+
+    def fake_feedback(_candidate: str, _refs: list[str], target_score: float = 99.0):
+        weighted = next(weighted_scores)
+        return {
+            'schema_version': '0.5.0',
+            'goal': {'target_listener_score': target_score, 'current_overall_score': 64.0, 'gap_to_target': 35.0},
+            'quality_gate_diagnostics': {
+                'reference_weighted': {
+                    'candidate_weighted_score': weighted,
+                    'reference_weighted_score': 80.0,
+                    'weighted_gap_vs_references': weighted - 80.0,
+                    'top_blockers': [{'component': 'song_likeness', 'weighted_gap_contribution': -9.0}],
+                },
+            },
+            'ranked_interventions': [{'component': 'song_likeness', 'code_targets': ['src/core/planner/arrangement.py']}],
+            'planner_feedback_map': [],
+            'render_feedback_map': [],
+            'next_code_targets': ['src/core/planner/arrangement.py'],
+        }
+
+    monkeypatch.setattr(loop, 'render_iteration', fake_render)
+    monkeypatch.setattr(loop, '_candidate_report', fake_candidate_report)
+    monkeypatch.setattr(loop, '_candidate_listener_assessment', lambda _candidate_input: {'decision': 'reject', 'listener_rank': 40.0})
+    monkeypatch.setattr(loop, 'build_feedback_brief', fake_feedback)
+    monkeypatch.setattr(loop, '_run_command_template', lambda *args, **kwargs: {'returncode': 0, 'stdout': '', 'stderr': '', 'command': ['noop'], 'command_text': 'noop'})
+
+    report = loop.run_closed_loop(
+        song_a='a.wav',
+        song_b='b.wav',
+        references=['ref.wav'],
+        output_root=str(tmp_path / 'loop_weighted_progress'),
+        max_iterations=4,
+        quality_gate=90.0,
+        plateau_limit=2,
+        min_improvement=0.5,
+        change_command='echo patch {iteration}',
+    )
+
+    assert report['stop_reason'] == 'plateau:2'
+    assert len(report['iterations']) == 4
+    assert report['iterations'][1]['plateau_count'] == 0
+    assert report['iterations'][2]['plateau_count'] == 1
+    assert report['iterations'][3]['plateau_count'] == 2
+    assert report['iterations'][1]['improved_vs_best_before'] is True
+    assert report['best_iteration']['iteration'] == 2
+
+
+
 def test_closed_loop_rejects_malformed_feedback_brief(monkeypatch, tmp_path: Path):
     def fake_render(song_a: str, song_b: str, output_dir: Path):
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -659,3 +776,40 @@ def test_closed_loop_rejects_feedback_brief_missing_schema_version(monkeypatch, 
 def test_run_command_template_rejects_shell_operators(template: str):
     with pytest.raises(loop.LoopError):
         loop._run_command_template(template, {}, label='change')
+
+
+def test_hydrate_dispatch_spec_uses_command_and_timeout():
+    hydrated = loop._hydrate_dispatch_spec({'command': 'echo {iteration}', 'timeout': 17}, label='change')
+
+    assert hydrated['command'] == 'echo {iteration}'
+    assert hydrated['timeout'] == 17
+    assert hydrated['schema_version'] == loop.DISPATCH_SPEC_SCHEMA_VERSION
+
+
+def test_main_reads_change_dispatch_spec_and_passes_hydrated_payload(tmp_path: Path, monkeypatch):
+    dispatch_path = tmp_path / 'change_dispatch.json'
+    dispatch_path.write_text(json.dumps({'command': 'echo patch {iteration}', 'timeout': 19}), encoding='utf-8')
+    seen: dict[str, object] = {}
+
+    def fake_run_closed_loop(**kwargs):
+        seen.update(kwargs)
+        return {'best_iteration': None, 'stop_reason': 'no_change_command_configured', 'summary': []}
+
+    monkeypatch.setattr(loop, 'run_closed_loop', fake_run_closed_loop)
+    monkeypatch.setattr(loop.sys, 'argv', [
+        'closed_loop_listener_runner.py',
+        'song_a.wav',
+        'song_b.wav',
+        'ref.wav',
+        '--output-root',
+        str(tmp_path / 'out'),
+        '--change-dispatch',
+        str(dispatch_path),
+    ])
+
+    rc = loop.main()
+
+    assert rc == 0
+    assert seen['change_dispatch']['command'] == 'echo patch {iteration}'
+    assert seen['change_dispatch']['timeout'] == 19
+    assert seen['change_command'] is None

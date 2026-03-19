@@ -134,6 +134,20 @@ def test_listener_agent_keeps_only_synthetic_good_outputs_for_human_review(tmp_p
 
 
 def test_synthetic_good_fixture_spec_passes_fixed_benchmark_harness(tmp_path: Path):
+    reference = _write_report(
+        tmp_path / "reference_anchor.json",
+        _synthetic_report(
+            95.0,
+            source_path="reference_anchor.wav",
+            structure=93.0,
+            groove=92.0,
+            energy_arc=95.0,
+            transition=93.0,
+            coherence=94.0,
+            mix_sanity=91.0,
+            song_likeness=94.0,
+        ),
+    )
     elite = _write_report(
         tmp_path / "elite_good.json",
         _synthetic_report(
@@ -189,23 +203,29 @@ def test_synthetic_good_fixture_spec_passes_fixed_benchmark_harness(tmp_path: Pa
     )
 
     spec = build_spec(
+        reference_cases_raw=[f"reference_anchor={reference}"],
         good_cases_raw=[f"elite_good={elite}"],
         cases_raw=[f"solid_good={solid}"],
         bad_cases_raw=[f"bad_case={bad}"],
-        expected_order_raw="elite_good,solid_good,bad_case",
-        overall_at_least=["elite_good:overall_score_at_least=88", "solid_good:overall_score_at_least=80"],
+        expected_order_raw="reference_anchor,elite_good,solid_good,bad_case",
+        overall_at_least=["reference_anchor:overall_score_at_least=92", "elite_good:overall_score_at_least=88", "solid_good:overall_score_at_least=80"],
         overall_at_most=["bad_case:overall_score_at_most=65"],
         component_at_least=[
+            "reference_anchor:energy_arc=94",
+            "reference_anchor:song_likeness=93",
             "elite_good:energy_arc=90",
             "elite_good:song_likeness=87",
             "solid_good:transition=76",
         ],
         component_at_most=["bad_case:transition=50", "bad_case:song_likeness=50"],
         metric_at_least=[
+            "reference_anchor:song_likeness.details.aggregate_metrics.readable_section_ratio=0.75",
             "elite_good:song_likeness.details.aggregate_metrics.readable_section_ratio=0.75",
             "solid_good:song_likeness.details.aggregate_metrics.readable_section_ratio=0.75",
+            "reference_anchor:song_likeness.details.aggregate_metrics.planner_audio_climax_conviction=0.72",
             "elite_good:song_likeness.details.aggregate_metrics.planner_audio_climax_conviction=0.72",
             "solid_good:song_likeness.details.aggregate_metrics.planner_audio_climax_conviction=0.72",
+            "reference_anchor:song_likeness.details.aggregate_metrics.climax_conviction=0.75",
             "elite_good:song_likeness.details.aggregate_metrics.climax_conviction=0.75",
             "solid_good:song_likeness.details.aggregate_metrics.climax_conviction=0.75",
         ],
@@ -215,6 +235,7 @@ def test_synthetic_good_fixture_spec_passes_fixed_benchmark_harness(tmp_path: Pa
             "bad_case:song_likeness.details.aggregate_metrics.climax_conviction=0.45",
         ],
         better_than_raw=[
+            "reference_anchor>elite_good:overall=3:component=energy_arc=2,song_likeness=3",
             "elite_good>solid_good:overall=5:component=energy_arc=8,song_likeness=8",
             "solid_good>bad_case:overall=20:component=transition=20,song_likeness=25",
         ],
@@ -224,8 +245,9 @@ def test_synthetic_good_fixture_spec_passes_fixed_benchmark_harness(tmp_path: Pa
 
     report = run_harness(str(spec_path))
     assert report["passed"] is True
-    assert report["expected_order"] == ["elite_good", "solid_good", "bad_case"]
+    assert report["expected_order"] == ["reference_anchor", "elite_good", "solid_good", "bad_case"]
     assert [row["label"] for row in sorted(report["cases"], key=lambda row: int(row["benchmark_rank"]))] == [
+        "reference_anchor",
         "elite_good",
         "solid_good",
         "bad_case",
@@ -235,4 +257,5 @@ def test_synthetic_good_fixture_spec_passes_fixed_benchmark_harness(tmp_path: Pa
         "pairwise_failures": [],
         "order_failures": [],
     }
-    assert any(line.startswith("#1 elite_good") for line in report["summary"])
+    assert any(line.startswith("#1 reference_anchor") for line in report["summary"])
+    assert any(line.startswith("#2 elite_good") for line in report["summary"])

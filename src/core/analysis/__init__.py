@@ -3,6 +3,7 @@ from .energy import compute_energy_profile
 from .key import detect_key
 from .loader import duration_seconds, load_audio
 from .models import SongDNA
+from .musical_intelligence import analyze_musical_intelligence
 from .stems import DemucsError, demucs_available, separate_stems
 from .structure import estimate_structure
 from .tempo import detect_tempo
@@ -17,6 +18,7 @@ __all__ = [
     "detect_tempo",
     "duration_seconds",
     "estimate_structure",
+    "analyze_musical_intelligence",
     "load_audio",
     "separate_stems",
 ]

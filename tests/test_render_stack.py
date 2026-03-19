@@ -62,7 +62,8 @@ def test_resolve_render_plan_emits_sections_and_work_orders(tmp_path: Path):
     plan = build_stub_arrangement_plan(a, b)
     manifest = resolve_render_plan(plan, a, b)
     assert len(manifest.sections) == 3
-    assert len(manifest.work_orders) == 3
+    assert len(manifest.work_orders) >= len(manifest.sections)
+    assert sum(1 for work in manifest.work_orders if work.order_type == 'section_base') == len(manifest.sections)
 
 
 def test_resolve_render_plan_keeps_non_overlap_sections_single_owner(tmp_path: Path):
@@ -304,6 +305,66 @@ def _single_section_plan(*, source_parent: str = 'A', start_bar: int = 0, bar_co
         )
     ]
     return ChildArrangementPlan(parents=parents, compatibility=compatibility, sections=sections)
+
+
+def test_resolve_render_plan_emits_support_order_for_integrated_two_parent_section(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 440.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0),
+        sections=[
+            PlannedSection(
+                label='payoff',
+                start_bar=0,
+                bar_count=4,
+                source_parent='A',
+                source_section_label='phrase_0_2',
+                support_parent='B',
+                support_section_label='phrase_0_2',
+                support_gain_db=-8.0,
+                support_mode='foreground_counterlayer',
+            )
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert len(manifest.work_orders) == 2
+    support = next(work for work in manifest.work_orders if work.order_type == 'section_support')
+    assert support.parent_id == 'B'
+    assert support.role == 'foreground_counterlayer'
+    assert support.low_end_state == 'support'
+    assert manifest.sections[0].owner_mode == 'integrated_two_parent_section'
+    assert manifest.sections[0].foreground_owner == 'B'
+
+
+
+def test_render_resolved_plan_support_layer_changes_audio_output(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 880.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    base_plan = _single_section_plan(source_parent='A', bar_count=4, source_section_label='phrase_0_2')
+    integrated_plan = ChildArrangementPlan(
+        parents=base_plan.parents,
+        compatibility=base_plan.compatibility,
+        sections=[replace(base_plan.sections[0], label='payoff', support_parent='B', support_section_label='phrase_0_2', support_gain_db=-8.0, support_mode='filtered_counterlayer')],
+    )
+    base_manifest = resolve_render_plan(base_plan, a, b)
+    integrated_manifest = resolve_render_plan(integrated_plan, a, b)
+    base_result = render_resolved_plan(base_manifest, tmp_path / 'base_render')
+    integrated_result = render_resolved_plan(integrated_manifest, tmp_path / 'integrated_render')
+    base_audio, _ = sf.read(base_result.master_wav_path, always_2d=True)
+    integrated_audio, _ = sf.read(integrated_result.master_wav_path, always_2d=True)
+    assert integrated_manifest.sections[0].owner_mode == 'integrated_two_parent_section'
+    assert not np.allclose(base_audio, integrated_audio)
+
 
 
 def test_resolve_render_plan_rejects_overlapping_sections(tmp_path: Path):

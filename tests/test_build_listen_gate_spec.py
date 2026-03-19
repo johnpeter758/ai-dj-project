@@ -89,6 +89,46 @@ def test_build_listen_gate_spec_rejects_invalid_expected_order(tmp_path: Path):
     assert 'must include each case label exactly once' in result.stderr
 
 
+def test_build_listen_gate_spec_supports_curated_reference_good_and_bad_cases(tmp_path: Path):
+    reference = tmp_path / 'reference.json'
+    good = tmp_path / 'good.json'
+    neutral = tmp_path / 'neutral.json'
+    bad = tmp_path / 'bad.json'
+    reference.write_text('{}', encoding='utf-8')
+    good.write_text('{}', encoding='utf-8')
+    neutral.write_text('{}', encoding='utf-8')
+    bad.write_text('{}', encoding='utf-8')
+    output = tmp_path / 'tiered_spec.json'
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            '--reference-case', f'reference_case={reference}',
+            '--good-case', f'good_case={good}',
+            '--case', f'neutral_case={neutral}',
+            '--bad-case', f'bad_case={bad}',
+            '--output', str(output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output.read_text(encoding='utf-8'))
+    assert payload['expected_order'] == ['reference_case', 'good_case', 'neutral_case', 'bad_case']
+    assert [case['label'] for case in payload['cases']] == ['reference_case', 'good_case', 'neutral_case', 'bad_case']
+    assert payload['cases'][0]['curation_tier'] == 'reference'
+    assert payload['cases'][1]['curation_tier'] == 'good'
+    assert payload['cases'][3]['curation_tier'] == 'bad'
+    assert payload['cases'][0]['expect']['gating_status'] == 'pass'
+    assert payload['cases'][1]['expect']['gating_status'] == 'pass'
+    assert 'expect' not in payload['cases'][2]
+    assert payload['cases'][3]['expect']['gating_status'] == 'reject'
+
+
+
 def test_build_listen_gate_spec_supports_curated_good_and_bad_cases(tmp_path: Path):
     good = tmp_path / 'good.json'
     neutral = tmp_path / 'neutral.json'

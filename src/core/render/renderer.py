@@ -153,10 +153,13 @@ def _require_finite_nonnegative(value: float, label: str) -> float:
 def _validate_manifest(manifest: ResolvedRenderPlan) -> None:
     if manifest.sample_rate <= 0:
         raise ValueError("manifest sample_rate must be positive")
-    if len(manifest.sections) != len(manifest.work_orders):
-        raise ValueError("manifest sections/work_orders length mismatch")
+    if not manifest.sections:
+        raise ValueError("manifest must contain at least one section")
+    if not manifest.work_orders:
+        raise ValueError("manifest must contain at least one work order")
 
     previous_start_sec = -1.0
+    section_indices: set[int] = set()
     for idx, section in enumerate(manifest.sections):
         start_sec = _require_finite_nonnegative(section.target.start_sec, f"section[{idx}].target.start_sec")
         end_sec = _require_finite_nonnegative(section.target.end_sec, f"section[{idx}].target.end_sec")
@@ -168,12 +171,20 @@ def _validate_manifest(manifest: ResolvedRenderPlan) -> None:
         if start_sec < previous_start_sec:
             raise ValueError("manifest sections must be sorted by target start time")
         previous_start_sec = start_sec
+        section_indices.add(int(section.index))
 
     seen_order_ids: set[str] = set()
+    section_order_counts: dict[int, int] = {index: 0 for index in section_indices}
+    section_base_counts: dict[int, int] = {index: 0 for index in section_indices}
     for idx, work in enumerate(manifest.work_orders):
         if work.order_id in seen_order_ids:
             raise ValueError(f"duplicate work order id: {work.order_id}")
         seen_order_ids.add(work.order_id)
+        if int(work.section_index) not in section_indices:
+            raise ValueError(f"work_orders[{idx}] references unknown section index {work.section_index}")
+        section_order_counts[int(work.section_index)] += 1
+        if work.order_type == 'section_base':
+            section_base_counts[int(work.section_index)] += 1
         _require_finite_nonnegative(work.source_start_sec, f"work_orders[{idx}].source_start_sec")
         _require_finite_nonnegative(work.source_end_sec, f"work_orders[{idx}].source_end_sec")
         _require_finite_nonnegative(work.target_start_sec, f"work_orders[{idx}].target_start_sec")
@@ -184,6 +195,13 @@ def _validate_manifest(manifest: ResolvedRenderPlan) -> None:
             raise ValueError(f"work_orders[{idx}] source window must have positive duration")
         if work.stretch_ratio <= 0.0 or not math.isfinite(work.stretch_ratio):
             raise ValueError(f"work_orders[{idx}] stretch_ratio must be finite and positive")
+
+    missing_orders = sorted(index for index, count in section_order_counts.items() if count <= 0)
+    if missing_orders:
+        raise ValueError(f"manifest sections without work orders: {missing_orders}")
+    missing_bases = sorted(index for index, count in section_base_counts.items() if count <= 0)
+    if missing_bases:
+        raise ValueError(f"manifest sections without section_base work orders: {missing_bases}")
 
 
 def _extract(audio: np.ndarray, sr: int, start_sec: float, end_sec: float) -> np.ndarray:
@@ -255,6 +273,47 @@ def _bandstop(audio: np.ndarray, sr: int, low_hz: float, high_hz: float) -> np.n
         return audio.astype(np.float32)
     sos = signal.butter(2, [low, high], btype="bandstop", fs=sr, output="sos")
     return _safe_sosfiltfilt(sos, audio)
+
+
+
+def _lowpass(audio: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
+    cutoff = min(float(cutoff_hz), sr * 0.45)
+    if cutoff <= 40.0:
+        return audio.astype(np.float32)
+    sos = signal.butter(2, cutoff, btype="lowpass", fs=sr, output="sos")
+    return _safe_sosfiltfilt(sos, audio)
+
+
+
+def _attenuate_mid(audio: np.ndarray, mid_gain_db: float) -> np.ndarray:
+    if audio.shape[0] != 2:
+        return _apply_gain_db(audio, mid_gain_db)
+    mid = (audio[0] + audio[1]) * 0.5
+    side = (audio[0] - audio[1]) * 0.5
+    mid = _apply_gain_db(mid[np.newaxis, :], mid_gain_db)[0]
+    left = mid + side
+    right = mid - side
+    return np.vstack([left, right]).astype(np.float32)
+
+
+
+def _prepare_role_layer(segment: np.ndarray, sr: int, work, section) -> np.ndarray:
+    out = segment.astype(np.float32)
+    role = str(getattr(work, 'role', '') or '')
+    vocal_state = str(getattr(work, 'vocal_state', '') or '')
+    if role in {'filtered_counterlayer', 'filtered_support'}:
+        out = _highpass(out, sr, 150.0)
+        out = _lowpass(out, sr, 7000.0)
+        out = _attenuate_mid(out, -7.0 if vocal_state == 'none' else -5.5)
+        out = _bandstop(out, sr, 280.0, 2200.0)
+    elif role == 'foreground_counterlayer':
+        out = _highpass(out, sr, 135.0)
+        out = _lowpass(out, sr, 8200.0)
+        out = _attenuate_mid(out, -3.5)
+    if vocal_state == 'support':
+        out = _attenuate_mid(out, -4.0)
+        out = _highpass(out, sr, 90.0)
+    return out.astype(np.float32)
 
 
 def _compress_bus(audio: np.ndarray, threshold_db: float = -18.0, ratio: float = 2.0, makeup_db: float = 1.0) -> np.ndarray:
@@ -369,6 +428,7 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
         audio, _ = _load_stereo(work.source_path, sr)
         segment = _extract(audio, sr, work.source_start_sec, work.source_end_sec)
         segment = _fit_to_duration(segment, sr, work.target_duration_sec, work.stretch_ratio)
+        segment = _prepare_role_layer(segment, sr, work, section_map[work.section_index])
         segment = _section_mix_cleanup(segment, sr, work, section_map[work.section_index])
         segment = _apply_gain_db(segment, work.gain_db)
         segment = _apply_transition_sonics(

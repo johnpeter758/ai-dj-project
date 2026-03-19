@@ -52,6 +52,49 @@ def test_normalize_reference_inputs_loads_text_reference_collections_and_skips_c
     assert normalized == [str(ref_a.resolve()), str(ref_b.resolve())]
 
 
+def test_normalize_reference_inputs_preserves_explicit_case_labels(tmp_path: Path):
+    ref_a = tmp_path / 'ref_a.json'
+    ref_a.write_text('{}', encoding='utf-8')
+
+    normalized = normalize_reference_inputs([
+        f'baseline={ref_a}',
+        f'baseline={ref_a}',
+    ])
+
+    assert normalized == [f'baseline={ref_a.resolve()}']
+
+
+def test_normalize_reference_inputs_extracts_paths_from_listener_agent_bundle(tmp_path: Path):
+    render_a = tmp_path / 'fusion_a'
+    render_b = tmp_path / 'fusion_b'
+    render_a.mkdir()
+    render_b.mkdir()
+
+    bundle = tmp_path / 'listener_agent_report.json'
+    bundle.write_text(
+        json.dumps(
+            {
+                'summary': ['Listener agent kept 1 candidate for review.'],
+                'recommended_for_human_review': [
+                    {'label': 'fusion_a', 'input_path': str(render_a)},
+                ],
+                'borderline': [
+                    {'label': 'fusion_b', 'input_path': str(render_b)},
+                ],
+                'rejected': [
+                    {'label': 'fusion_a_dup', 'input_path': str(render_a)},
+                ],
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    normalized = normalize_reference_inputs([str(bundle)])
+
+    assert normalized == [str(render_a.resolve()), str(render_b.resolve())]
+
+
+
 def test_normalize_reference_inputs_requires_at_least_one_entry():
     with pytest.raises(ReferenceInputError):
         normalize_reference_inputs([])

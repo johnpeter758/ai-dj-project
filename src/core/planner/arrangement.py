@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..analysis.models import SongDNA
+from ..intelligence import build_child_section_recipe
 from .compatibility import build_compatibility_report
 from .models import ChildArrangementPlan, ParentReference, PlannedSection
 
@@ -1743,6 +1744,95 @@ def _selection_section_shape_penalty(
     }
 
 
+def _selection_build_ramp_penalty(
+    spec: _SectionSpec,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+    previous: _WindowSelection | None,
+) -> tuple[float, dict[str, float]]:
+    if spec.label != 'build':
+        return 0.0, {
+            'build_rise_gap': 0.0,
+            'build_headroom_gap': 0.0,
+            'build_plateau_risk': 0.0,
+            'build_entry_lift_gap': 0.0,
+        }
+
+    build_rise = _clamp01(
+        (0.42 * features.lift_strength)
+        + (0.34 * features.ramp_consistency)
+        + (0.24 * features.groove_drive)
+    )
+    build_rise_gap = max(0.0, 0.58 - build_rise)
+    build_headroom_gap = max(0.0, 0.46 - features.headroom)
+    build_plateau_risk = _clamp01(
+        (0.44 * features.plateau_stability)
+        + (0.30 * features.end_focus)
+        + (0.16 * features.payoff_strength)
+        + (0.10 * max(0.0, candidate.energy - 0.72) / 0.20)
+        - 0.56
+    )
+
+    build_entry_lift_gap = 0.0
+    if previous is not None and previous.section_label in {'intro', 'verse'}:
+        build_entry_lift_gap = max(0.0, 0.05 - (candidate.energy - previous.candidate.energy))
+
+    penalty = min(
+        1.0,
+        (1.00 * build_rise_gap)
+        + (0.75 * build_headroom_gap)
+        + (0.95 * build_plateau_risk)
+        + (0.80 * build_entry_lift_gap),
+    )
+    return penalty, {
+        'build_rise_gap': build_rise_gap,
+        'build_headroom_gap': build_headroom_gap,
+        'build_plateau_risk': build_plateau_risk,
+        'build_entry_lift_gap': build_entry_lift_gap,
+    }
+
+
+
+def _hard_build_candidate_pool(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidates: list[_SectionCandidate],
+    build_metrics_map: dict[str, dict[str, float]],
+    previous: _WindowSelection | None,
+) -> set[str]:
+    if spec.label != 'build' or (spec.source_parent_preference is not None and parent_id != spec.source_parent_preference):
+        return set()
+
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if build_metrics_map[candidate.label]['build_rise_gap'] <= 0.12
+        and build_metrics_map[candidate.label]['build_headroom_gap'] <= 0.12
+        and build_metrics_map[candidate.label]['build_plateau_risk'] <= 0.12
+        and build_metrics_map[candidate.label]['build_entry_lift_gap'] <= 0.08
+    ]
+    if not viable_labels:
+        return set()
+
+    best_rise_gap = min(build_metrics_map[label]['build_rise_gap'] for label in viable_labels)
+    best_headroom_gap = min(build_metrics_map[label]['build_headroom_gap'] for label in viable_labels)
+    best_plateau_risk = min(build_metrics_map[label]['build_plateau_risk'] for label in viable_labels)
+    best_entry_lift_gap = min(build_metrics_map[label]['build_entry_lift_gap'] for label in viable_labels)
+
+    if best_rise_gap > 0.04 or best_headroom_gap > 0.06 or best_plateau_risk > 0.08:
+        return set()
+
+    return {
+        label
+        for label in viable_labels
+        if build_metrics_map[label]['build_rise_gap'] <= (best_rise_gap + 0.04)
+        and build_metrics_map[label]['build_headroom_gap'] <= (best_headroom_gap + 0.04)
+        and build_metrics_map[label]['build_plateau_risk'] <= (best_plateau_risk + 0.06)
+        and build_metrics_map[label]['build_entry_lift_gap'] <= (best_entry_lift_gap + 0.04)
+    }
+
+
+
 def _selection_build_to_payoff_contrast_penalty(
     spec: _SectionSpec,
     candidate: _SectionCandidate,
@@ -1784,6 +1874,51 @@ def _selection_build_to_payoff_contrast_penalty(
         'energy_lift_gap': energy_lift_gap,
         'tail_dominance_gap': tail_dominance_gap,
         'payoff_conviction_gap': payoff_conviction_gap,
+    }
+
+
+
+def _hard_build_to_payoff_candidate_pool(
+    spec: _SectionSpec,
+    candidates: list[_SectionCandidate],
+    build_to_payoff_metrics_map: dict[str, dict[str, float]],
+    previous: _WindowSelection | None,
+) -> set[str]:
+    if spec.label != 'payoff' or previous is None or previous.section_label != 'build':
+        return set()
+
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if build_to_payoff_metrics_map[candidate.label]['energy_lift_gap'] <= 0.06
+        and build_to_payoff_metrics_map[candidate.label]['tail_dominance_gap'] <= 0.06
+        and build_to_payoff_metrics_map[candidate.label]['payoff_conviction_gap'] <= 0.12
+    ]
+    if not viable_labels:
+        return set()
+
+    best_energy_lift_gap = min(
+        build_to_payoff_metrics_map[label]['energy_lift_gap']
+        for label in viable_labels
+    )
+    best_tail_dominance_gap = min(
+        build_to_payoff_metrics_map[label]['tail_dominance_gap']
+        for label in viable_labels
+    )
+    best_payoff_conviction_gap = min(
+        build_to_payoff_metrics_map[label]['payoff_conviction_gap']
+        for label in viable_labels
+    )
+
+    if best_energy_lift_gap > 0.03 and best_tail_dominance_gap > 0.03:
+        return set()
+
+    return {
+        label
+        for label in viable_labels
+        if build_to_payoff_metrics_map[label]['energy_lift_gap'] <= (best_energy_lift_gap + 0.04)
+        and build_to_payoff_metrics_map[label]['tail_dominance_gap'] <= (best_tail_dominance_gap + 0.04)
+        and build_to_payoff_metrics_map[label]['payoff_conviction_gap'] <= (best_payoff_conviction_gap + 0.10)
     }
 
 
@@ -2390,6 +2525,277 @@ def _is_hard_opening_identity_candidate(
     )
 
 
+def _hard_opening_readability_candidate_pool(
+    spec: _SectionSpec,
+    parent_id: str,
+    candidates: list[_SectionCandidate],
+    opening_identity_metrics_map: dict[str, dict[str, float]],
+    backbone_parent: str | None,
+) -> set[str]:
+    if spec.label != 'verse' or parent_id != backbone_parent:
+        return set()
+
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if opening_identity_metrics_map[candidate.label]['early_verse_readability_gap'] <= 0.22
+        and opening_identity_metrics_map[candidate.label]['early_verse_payoff_risk'] <= 0.45
+        and opening_identity_metrics_map[candidate.label]['early_verse_position_gap'] <= 0.20
+        and opening_identity_metrics_map[candidate.label]['opening_joint_identity_gap'] <= 0.34
+        and opening_identity_metrics_map[candidate.label]['opening_joint_lane_gap'] <= 0.34
+    ]
+    if not viable_labels:
+        return set()
+
+    best_readability_gap = min(
+        opening_identity_metrics_map[label]['early_verse_readability_gap']
+        for label in viable_labels
+    )
+    best_payoff_risk = min(
+        opening_identity_metrics_map[label]['early_verse_payoff_risk']
+        for label in viable_labels
+    )
+    best_position_gap = min(
+        opening_identity_metrics_map[label]['early_verse_position_gap']
+        for label in viable_labels
+    )
+    best_joint_identity_gap = min(
+        opening_identity_metrics_map[label]['opening_joint_identity_gap']
+        for label in viable_labels
+    )
+    best_joint_lane_gap = min(
+        opening_identity_metrics_map[label]['opening_joint_lane_gap']
+        for label in viable_labels
+    )
+    if best_readability_gap > 0.18:
+        return set()
+    return {
+        label
+        for label in viable_labels
+        if opening_identity_metrics_map[label]['early_verse_readability_gap'] <= (best_readability_gap + 0.10)
+        and opening_identity_metrics_map[label]['early_verse_payoff_risk'] <= (best_payoff_risk + 0.14)
+        and opening_identity_metrics_map[label]['early_verse_position_gap'] <= (best_position_gap + 0.12)
+        and opening_identity_metrics_map[label]['opening_joint_identity_gap'] <= (best_joint_identity_gap + 0.08)
+        and opening_identity_metrics_map[label]['opening_joint_lane_gap'] <= (best_joint_lane_gap + 0.10)
+    }
+
+
+def _hard_groove_candidate_pool(
+    spec: _SectionSpec,
+    song: SongDNA,
+    candidates: list[_SectionCandidate],
+    features_map: dict[str, _RoleFeatures],
+    *,
+    reference_tempo_bpm: float | None = None,
+) -> set[str]:
+    if spec.label not in {'verse', 'payoff'} or not candidates:
+        return set()
+
+    onset_series_present = bool(_safe_float_list(song.energy.get('onset_density', [])) or _safe_float_list(song.energy.get('onset_strength', [])))
+    if not onset_series_present:
+        return set()
+
+    feedback = _planner_listen_feedback(song)
+    if feedback.groove_confidence < 0.42:
+        return set()
+
+    drive_gap_ceiling = {
+        'verse': 0.10,
+        'build': 0.14,
+        'payoff': 0.14,
+        'bridge': 0.16,
+    }[spec.label]
+    stability_gap_ceiling = {
+        'verse': 0.12,
+        'build': 0.16,
+        'payoff': 0.16,
+        'bridge': 0.18,
+    }[spec.label]
+
+    groove_metrics_map: dict[str, dict[str, float]] = {}
+    viable_labels: list[str] = []
+    for candidate in candidates:
+        stretch_ratio, _, stretch_penalty = _stretch_profile(
+            song,
+            candidate,
+            spec.bar_count,
+            reference_tempo_bpm=reference_tempo_bpm,
+        )
+        stretch_gate = 0.0
+        if stretch_ratio > _CONSERVATIVE_STRETCH_MAX:
+            stretch_gate = _clamp01((stretch_ratio - _CONSERVATIVE_STRETCH_MAX) / max(1e-6, _HARD_STRETCH_MAX - _CONSERVATIVE_STRETCH_MAX))
+        elif stretch_ratio < _CONSERVATIVE_STRETCH_MIN:
+            stretch_gate = _clamp01((_CONSERVATIVE_STRETCH_MIN - stretch_ratio) / max(1e-6, _CONSERVATIVE_STRETCH_MIN - _HARD_STRETCH_MIN))
+
+        phrase_penalty, phrase_metrics = _selection_phrase_groove_penalty(spec, features_map[candidate.label])
+        groove_metrics_map[candidate.label] = {
+            'stretch_ratio': stretch_ratio,
+            'stretch_penalty': stretch_penalty,
+            'stretch_gate': stretch_gate,
+            'phrase_groove': phrase_penalty,
+            'groove_drive_gap': phrase_metrics['groove_drive_gap'],
+            'groove_stability_gap': phrase_metrics['groove_stability_gap'],
+            'groove_drive': features_map[candidate.label].groove_drive,
+            'groove_stability': features_map[candidate.label].groove_stability,
+        }
+        if (
+            stretch_gate <= 0.0
+            and stretch_penalty <= 0.16
+            and phrase_penalty <= 0.16
+            and phrase_metrics['groove_drive_gap'] <= drive_gap_ceiling
+            and phrase_metrics['groove_stability_gap'] <= stability_gap_ceiling
+        ):
+            viable_labels.append(candidate.label)
+
+    if not viable_labels:
+        return set()
+
+    best_phrase_penalty = min(groove_metrics_map[label]['phrase_groove'] for label in viable_labels)
+    best_stretch_penalty = min(groove_metrics_map[label]['stretch_penalty'] for label in viable_labels)
+    best_drive_gap = min(groove_metrics_map[label]['groove_drive_gap'] for label in viable_labels)
+    best_stability_gap = min(groove_metrics_map[label]['groove_stability_gap'] for label in viable_labels)
+
+    return {
+        label
+        for label in viable_labels
+        if groove_metrics_map[label]['phrase_groove'] <= (best_phrase_penalty + 0.08)
+        and groove_metrics_map[label]['stretch_penalty'] <= (best_stretch_penalty + 0.10)
+        and groove_metrics_map[label]['groove_drive_gap'] <= (best_drive_gap + 0.10)
+        and groove_metrics_map[label]['groove_stability_gap'] <= (best_stability_gap + 0.10)
+    }
+
+
+def _hard_payoff_candidate_pool(
+    spec: _SectionSpec,
+    candidates: list[_SectionCandidate],
+    payoff_metrics_map: dict[str, dict[str, float]],
+) -> set[str]:
+    if spec.label != 'payoff' or spec.start_bar < 24:
+        return set()
+
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if payoff_metrics_map[candidate.label]['hard_block'] <= 0.0
+        and payoff_metrics_map[candidate.label]['payoff_hit'] >= 0.62
+        and payoff_metrics_map[candidate.label]['sustained_conviction'] >= 0.64
+        and payoff_metrics_map[candidate.label]['early_position_gap'] <= 0.12
+        and payoff_metrics_map[candidate.label]['early_start_gap'] <= 0.10
+    ]
+    if not viable_labels:
+        return set()
+
+    best_payoff_hit = max(payoff_metrics_map[label]['payoff_hit'] for label in viable_labels)
+    best_sustained_conviction = max(
+        payoff_metrics_map[label]['sustained_conviction']
+        for label in viable_labels
+    )
+    best_position_gap = min(
+        payoff_metrics_map[label]['early_position_gap']
+        for label in viable_labels
+    )
+    best_start_gap = min(
+        payoff_metrics_map[label]['early_start_gap']
+        for label in viable_labels
+    )
+
+    return {
+        label
+        for label in viable_labels
+        if payoff_metrics_map[label]['payoff_hit'] >= (best_payoff_hit - 0.08)
+        and payoff_metrics_map[label]['sustained_conviction'] >= (best_sustained_conviction - 0.08)
+        and payoff_metrics_map[label]['early_position_gap'] <= (best_position_gap + 0.08)
+        and payoff_metrics_map[label]['early_start_gap'] <= (best_start_gap + 0.08)
+    }
+
+
+def _bridge_reset_candidate_metrics(
+    spec: _SectionSpec,
+    candidate: _SectionCandidate,
+    features: _RoleFeatures,
+    previous: _WindowSelection | None,
+) -> dict[str, float]:
+    if spec.label != 'bridge' or previous is None or previous.section_label != 'payoff':
+        return {
+            'energy_reset_gap': 0.0,
+            'bridge_identity_gap': 0.0,
+            'late_position_gap': 0.0,
+            'hard_block': 0.0,
+        }
+
+    prior_energy = max(0.0, min(1.0, previous.candidate.energy))
+    current_energy = max(0.0, min(1.0, candidate.energy))
+    energy_reset = prior_energy - current_energy
+    energy_reset_gap = max(0.0, 0.18 - energy_reset)
+
+    bridge_identity = _clamp01(
+        (0.34 * features.novelty)
+        + (0.20 * max(0.0, 1.0 - features.repetition))
+        + (0.16 * _score_slope_down(features.energy_slope))
+        + (0.12 * max(0.0, 1.0 - features.hook_strength))
+        + (0.10 * max(0.0, 1.0 - features.payoff_strength))
+        + (0.08 * max(0.0, (features.position - 0.50) / 0.35))
+    )
+    bridge_identity_gap = max(0.0, 0.54 - bridge_identity)
+    late_position_gap = max(0.0, 0.84 - features.position)
+
+    hard_block = (
+        (energy_reset_gap > 0.16 and bridge_identity_gap > 0.14)
+        or (features.position < 0.44 and bridge_identity_gap > 0.18)
+    )
+    return {
+        'energy_reset_gap': energy_reset_gap,
+        'bridge_identity_gap': bridge_identity_gap,
+        'late_position_gap': late_position_gap,
+        'hard_block': 1.0 if hard_block else 0.0,
+    }
+
+
+
+def _hard_bridge_reset_candidate_pool(
+    spec: _SectionSpec,
+    candidates: list[_SectionCandidate],
+    bridge_reset_metrics_map: dict[str, dict[str, float]],
+) -> set[str]:
+    if spec.label != 'bridge' or not bridge_reset_metrics_map:
+        return set()
+
+    viable_labels = [
+        candidate.label
+        for candidate in candidates
+        if bridge_reset_metrics_map[candidate.label]['hard_block'] <= 0.0
+        and bridge_reset_metrics_map[candidate.label]['energy_reset_gap'] <= 0.14
+        and bridge_reset_metrics_map[candidate.label]['bridge_identity_gap'] <= 0.18
+        and bridge_reset_metrics_map[candidate.label]['late_position_gap'] <= 0.16
+    ]
+    if not viable_labels:
+        return set()
+
+    best_reset_gap = min(
+        bridge_reset_metrics_map[label]['energy_reset_gap']
+        for label in viable_labels
+    )
+    best_identity_gap = min(
+        bridge_reset_metrics_map[label]['bridge_identity_gap']
+        for label in viable_labels
+    )
+    best_position_gap = min(
+        bridge_reset_metrics_map[label]['late_position_gap']
+        for label in viable_labels
+    )
+
+    if best_reset_gap > 0.10:
+        return set()
+
+    return {
+        label
+        for label in viable_labels
+        if bridge_reset_metrics_map[label]['energy_reset_gap'] <= (best_reset_gap + 0.08)
+        and bridge_reset_metrics_map[label]['bridge_identity_gap'] <= (best_identity_gap + 0.12)
+        and bridge_reset_metrics_map[label]['late_position_gap'] <= (best_position_gap + 0.10)
+    }
+
+
 def _selection_opening_continuity_penalty(
     spec: _SectionSpec,
     parent_id: str,
@@ -2803,6 +3209,13 @@ def _enumerate_section_choices(
                 if opening_identity_metrics_map[label]['opening_joint_identity_gap'] <= (best_identity_gap + 0.08)
                 and opening_identity_metrics_map[label]['opening_joint_lane_gap'] <= (best_lane_gap + 0.18)
             }
+        hard_opening_readability_candidates = _hard_opening_readability_candidate_pool(
+            spec,
+            parent_id,
+            candidates,
+            opening_identity_metrics_map,
+            backbone_parent,
+        )
         hard_backbone_candidates = {
             candidate.label
             for candidate in candidates
@@ -2853,6 +3266,13 @@ def _enumerate_section_choices(
             for candidate in candidates
             if not _is_hard_fake_intro_candidate(spec, identity_map[candidate.label])
         ]
+        hard_groove_candidates = _hard_groove_candidate_pool(
+            spec,
+            song,
+            candidates,
+            features_map,
+            reference_tempo_bpm=song_map[backbone_parent].tempo_bpm if backbone_parent in song_map else None,
+        )
         payoff_block_metrics_map = {
             candidate.label: _payoff_candidate_block_metrics(
                 song,
@@ -2867,11 +3287,63 @@ def _enumerate_section_choices(
             for candidate in candidates
             if payoff_block_metrics_map.get(candidate.label, {}).get('hard_block', 0.0) <= 0.0
         ]
+        hard_payoff_candidates = _hard_payoff_candidate_pool(
+            spec,
+            candidates,
+            payoff_block_metrics_map,
+        )
+        build_metrics_map = {
+            candidate.label: _selection_build_ramp_penalty(
+                spec,
+                candidate,
+                features_map[candidate.label],
+                previous,
+            )[1]
+            for candidate in candidates
+        } if spec.label == 'build' else {}
+        hard_build_candidates = _hard_build_candidate_pool(
+            spec,
+            parent_id,
+            candidates,
+            build_metrics_map,
+            previous,
+        )
+        build_to_payoff_metrics_map = {
+            candidate.label: _selection_build_to_payoff_contrast_penalty(
+                spec,
+                candidate,
+                features_map[candidate.label],
+                previous,
+            )[1]
+            for candidate in candidates
+        } if spec.label == 'payoff' and previous is not None and previous.section_label == 'build' else {}
+        hard_build_to_payoff_candidates = _hard_build_to_payoff_candidate_pool(
+            spec,
+            candidates,
+            build_to_payoff_metrics_map,
+            previous,
+        )
+        bridge_reset_metrics_map = {
+            candidate.label: _bridge_reset_candidate_metrics(
+                spec,
+                candidate,
+                features_map[candidate.label],
+                previous,
+            )
+            for candidate in candidates
+        } if spec.label == 'bridge' and previous is not None and previous.section_label == 'payoff' else {}
+        hard_bridge_reset_candidates = _hard_bridge_reset_candidate_pool(
+            spec,
+            candidates,
+            bridge_reset_metrics_map,
+        )
 
         for candidate in candidates:
             if hard_opening_candidates and candidate.label not in hard_opening_candidates:
                 continue
             if hard_opening_identity_candidates and candidate.label not in hard_opening_identity_candidates:
+                continue
+            if hard_opening_readability_candidates and candidate.label not in hard_opening_readability_candidates:
                 continue
             if hard_backbone_candidates and candidate.label not in hard_backbone_candidates:
                 continue
@@ -2883,7 +3355,17 @@ def _enumerate_section_choices(
                 continue
             if spec.label == 'intro' and viable_intro_labels and candidate.label not in viable_intro_labels:
                 continue
+            if hard_groove_candidates and candidate.label not in hard_groove_candidates:
+                continue
+            if spec.label == 'build' and hard_build_candidates and candidate.label not in hard_build_candidates:
+                continue
             if spec.label == 'payoff' and viable_payoff_labels and candidate.label not in viable_payoff_labels:
+                continue
+            if spec.label == 'payoff' and hard_payoff_candidates and candidate.label not in hard_payoff_candidates:
+                continue
+            if spec.label == 'payoff' and hard_build_to_payoff_candidates and candidate.label not in hard_build_to_payoff_candidates:
+                continue
+            if spec.label == 'bridge' and hard_bridge_reset_candidates and candidate.label not in hard_bridge_reset_candidates:
                 continue
 
             identity_metrics = identity_map[candidate.label]
@@ -2897,6 +3379,18 @@ def _enumerate_section_choices(
                 'weak_tail_gap': 0.0,
                 'build_lift_gap': 0.0,
                 'hard_block': 0.0,
+            })
+            bridge_reset_metrics = bridge_reset_metrics_map.get(candidate.label, {
+                'energy_reset_gap': 0.0,
+                'bridge_identity_gap': 0.0,
+                'late_position_gap': 0.0,
+                'hard_block': 0.0,
+            })
+            build_metrics = build_metrics_map.get(candidate.label, {
+                'build_rise_gap': 0.0,
+                'build_headroom_gap': 0.0,
+                'build_plateau_risk': 0.0,
+                'build_entry_lift_gap': 0.0,
             })
             opening_lane_metrics = opening_identity_metrics_map[candidate.label]
             intro_followthrough_metrics = intro_followthrough_metrics_map[candidate.label]
@@ -2967,6 +3461,12 @@ def _enumerate_section_choices(
                 stretch_gate = _clamp01((stretch_ratio - _CONSERVATIVE_STRETCH_MAX) / max(1e-6, _HARD_STRETCH_MAX - _CONSERVATIVE_STRETCH_MAX))
             transition_impact_error = 1.0 - _transition_impact_fit(previous, candidate, spec, seam_risk, seam_metrics, stretch_ratio)
             section_shape_penalty, section_shape_metrics = _selection_section_shape_penalty(
+                spec,
+                candidate,
+                features_map[candidate.label],
+                previous,
+            )
+            build_ramp_penalty, build_ramp_metrics = _selection_build_ramp_penalty(
                 spec,
                 candidate,
                 features_map[candidate.label],
@@ -3061,6 +3561,7 @@ def _enumerate_section_choices(
                 + (1.75 * seam_risk)
                 + (1.35 * seam_gate_error)
                 + (0.95 * listen_feedback_penalty)
+                + (0.90 * build_ramp_penalty)
                 + (0.85 * final_payoff_delivery_penalty)
                 + (0.95 * build_to_payoff_contrast_penalty)
                 + (1.05 * section_shape_penalty)
@@ -3100,6 +3601,11 @@ def _enumerate_section_choices(
                         'seam_risk': seam_risk,
                         'seam_gate': seam_gate_error,
                         'listen_feedback': listen_feedback_penalty,
+                        'build_ramp': build_ramp_penalty,
+                        'build_rise_gap': build_ramp_metrics['build_rise_gap'],
+                        'build_headroom_gap': build_ramp_metrics['build_headroom_gap'],
+                        'build_plateau_risk': build_ramp_metrics['build_plateau_risk'],
+                        'build_entry_lift_gap': build_ramp_metrics['build_entry_lift_gap'],
                         'final_payoff_delivery': final_payoff_delivery_penalty,
                         'build_to_payoff_contrast': build_to_payoff_contrast_penalty,
                         'contrast_energy_lift_gap': build_to_payoff_contrast_metrics['energy_lift_gap'],
@@ -3118,6 +3624,10 @@ def _enumerate_section_choices(
                         'payoff_sustained_gap': payoff_block_metrics['sustained_gap'],
                         'payoff_weak_tail_gap': payoff_block_metrics['weak_tail_gap'],
                         'payoff_build_lift_gap': payoff_block_metrics['build_lift_gap'],
+                        'bridge_reset_gap': bridge_reset_metrics['energy_reset_gap'],
+                        'bridge_identity_gap': bridge_reset_metrics['bridge_identity_gap'],
+                        'bridge_late_position_gap': bridge_reset_metrics['late_position_gap'],
+                        'bridge_hard_block': bridge_reset_metrics['hard_block'],
                         'source_role_position': source_role_position_penalty,
                         'source_role_too_early_gap': source_role_position_metrics['source_role_too_early_gap'],
                         'source_role_too_late_gap': source_role_position_metrics['source_role_too_late_gap'],
@@ -3208,6 +3718,55 @@ def _choose_with_major_section_balance_guard(
 ) -> tuple[_WindowSelection, str | None]:
     if not ranked:
         raise ValueError('ranked selections must not be empty')
+
+    if spec.label == 'intro':
+        chosen = ranked[0]
+        if chosen.score_breakdown.get('parent_preference', 0.0) > 0.0:
+            preferred_alternate = next(
+                (item for item in ranked if item.score_breakdown.get('parent_preference', 1.0) <= 0.0),
+                None,
+            )
+            if preferred_alternate is not None:
+                error_delta = preferred_alternate.blended_error - chosen.blended_error
+                alternate_intro_identity = preferred_alternate.score_breakdown.get('intro_identity', 0.0)
+                alternate_fake_intro_risk = preferred_alternate.score_breakdown.get('fake_intro_risk', 1.0)
+                alternate_followthrough_gap = preferred_alternate.score_breakdown.get('opening_followthrough', 1.0)
+                alternate_followthrough_identity_gap = preferred_alternate.score_breakdown.get('opening_followthrough_identity_gap', 1.0)
+                alternate_followthrough_lane_gap = preferred_alternate.score_breakdown.get('opening_followthrough_lane_gap', 1.0)
+                alternate_joint_identity_gap = preferred_alternate.score_breakdown.get('opening_joint_identity_gap', 1.0)
+                alternate_joint_lane_gap = preferred_alternate.score_breakdown.get('opening_joint_lane_gap', 1.0)
+                alternate_stretch_ratio = preferred_alternate.score_breakdown.get('stretch_ratio', 1.0)
+                alternate_stretch_gate = preferred_alternate.score_breakdown.get('stretch_gate', 0.0)
+                alternate_section_identity = preferred_alternate.score_breakdown.get('section_identity', 1.0)
+                alternate_shape_penalty = preferred_alternate.score_breakdown.get('shape_intro_hotspot', 1.0)
+                alternate_groove_confidence = preferred_alternate.score_breakdown.get('listen_groove_confidence', 0.0)
+                chosen_intro_identity = chosen.score_breakdown.get('intro_identity', 0.0)
+                chosen_followthrough_gap = chosen.score_breakdown.get('opening_followthrough', 1.0)
+
+                if not (
+                    error_delta > 0.85
+                    or alternate_intro_identity < 0.60
+                    or alternate_fake_intro_risk > 0.54
+                    or alternate_followthrough_gap > 0.26
+                    or alternate_followthrough_identity_gap > 0.24
+                    or alternate_followthrough_lane_gap > 0.20
+                    or alternate_joint_identity_gap > 0.16
+                    or alternate_joint_lane_gap > 0.18
+                    or alternate_stretch_gate > 0.0
+                    or alternate_stretch_ratio > 1.12
+                    or alternate_section_identity > 0.32
+                    or alternate_shape_penalty > 0.26
+                    or alternate_groove_confidence < 0.54
+                    or alternate_intro_identity < (chosen_intro_identity - 0.08)
+                    or alternate_followthrough_gap > min(0.30, chosen_followthrough_gap + 0.10)
+                ):
+                    note = (
+                        f"intro backbone-preference guard: switched to {preferred_alternate.parent_id}:{preferred_alternate.candidate.label} "
+                        f"because the preferred-parent opening lane stayed musically readable; alt delta {error_delta:.2f}; "
+                        f"intro identity {alternate_intro_identity:.2f}; followthrough gap {alternate_followthrough_gap:.2f}"
+                    )
+                    return preferred_alternate, note
+        return chosen, None
 
     major_labels = {'verse', 'build', 'payoff', 'bridge'}
     if spec.label not in major_labels:
@@ -3471,6 +4030,55 @@ def _apply_section_level_authenticity_guard(
     return updated, [note]
 
 
+_SUPPORT_GAIN_BY_LABEL = {
+    'verse': -10.5,
+    'build': -9.0,
+    'bridge': -9.5,
+    'payoff': -8.0,
+}
+
+
+def _choose_support_recipe(
+    spec: _SectionSpec,
+    chosen: _WindowSelection,
+    shortlist_diagnostics: dict[str, Any],
+    *,
+    backbone_parent: str,
+) -> dict[str, Any] | None:
+    if spec.label not in {'verse', 'build', 'bridge', 'payoff'}:
+        return None
+    alternate = shortlist_diagnostics.get('cross_parent_best_alternate') or None
+    if not isinstance(alternate, dict):
+        return None
+    alt_parent = str(alternate.get('parent_id') or '')
+    alt_label = str(alternate.get('window_label') or '')
+    if not alt_parent or not alt_label or alt_parent == chosen.parent_id:
+        return None
+
+    score_breakdown = dict(alternate.get('score_breakdown') or {})
+    stretch_ratio = float(score_breakdown.get('stretch_ratio', 1.0) or 1.0)
+    stretch_gate = float(score_breakdown.get('stretch_gate', 0.0) or 0.0)
+    seam_risk = float(score_breakdown.get('seam_risk', 1.0) or 1.0)
+    transition_viability = float(score_breakdown.get('transition_viability', 1.0) or 1.0)
+    error_delta = float(alternate.get('error_delta_vs_selected', 99.0) or 99.0)
+    if error_delta > 0.42 or stretch_gate > 0.35 or stretch_ratio > 1.12 or seam_risk > 0.58 or transition_viability > 0.68:
+        return None
+
+    support_mode = 'filtered_counterlayer'
+    if spec.label == 'payoff' and alt_parent != backbone_parent:
+        support_mode = 'foreground_counterlayer'
+    return {
+        'parent_id': alt_parent,
+        'window_label': alt_label,
+        'gain_db': _SUPPORT_GAIN_BY_LABEL.get(spec.label, -10.0),
+        'mode': support_mode,
+        'planner_error': round(float(alternate.get('planner_error', chosen.blended_error) or chosen.blended_error), 3),
+        'error_delta_vs_selected': round(error_delta, 3),
+        'score_breakdown': score_breakdown,
+    }
+
+
+
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrangementPlan:
     report = build_compatibility_report(song_a, song_b)
 
@@ -3525,6 +4133,31 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         continuity_treatment = None
         if transition_mode == 'same_parent_flow' and chosen.parent_id == backbone_plan.backbone_parent and spec.label in {'verse', 'bridge', 'outro'}:
             continuity_treatment = 'backbone_flow'
+        breakdown = ', '.join(f"{name}={value:.2f}" for name, value in chosen.score_breakdown.items())
+        feedback = parent_feedback[chosen.parent_id]
+        shortlist_diagnostics = _build_selection_shortlist_diagnostics(
+            chosen,
+            ranked,
+            backbone_parent=backbone_plan.backbone_parent,
+        )
+        support_recipe = _choose_support_recipe(
+            spec,
+            chosen,
+            shortlist_diagnostics,
+            backbone_parent=backbone_plan.backbone_parent,
+        )
+        primary_mi = ((song_map[chosen.parent_id].musical_intelligence or {}).get('summary') or {})
+        support_parent_id = support_recipe['parent_id'] if support_recipe is not None else None
+        support_mi = ((song_map[support_parent_id].musical_intelligence or {}).get('summary') or {}) if support_parent_id else {}
+        recipe = build_child_section_recipe(
+            section_label=spec.label,
+            backbone_parent=backbone_plan.backbone_parent,
+            chosen_parent=chosen.parent_id,
+            chosen_label=candidate.label,
+            support_recipe=support_recipe,
+            primary_mi_summary=primary_mi,
+            support_mi_summary=support_mi,
+        )
         sections.append(
             PlannedSection(
                 label=spec.label,
@@ -3532,22 +4165,33 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 bar_count=spec.bar_count,
                 source_parent=chosen.parent_id,
                 source_section_label=candidate.label,
+                support_parent=support_parent_id,
+                support_section_label=support_recipe['window_label'] if support_recipe is not None else None,
+                support_gain_db=support_recipe['gain_db'] if support_recipe is not None else None,
+                support_mode=support_recipe['mode'] if support_recipe is not None else None,
+                backbone_owner=recipe.backbone_owner,
+                donor_support_required=recipe.donor_support_required,
+                motif_anchor_parent=recipe.motif_anchor_parent,
+                motif_anchor_label=recipe.motif_anchor_label,
+                motif_recurrence_strength=recipe.motif_recurrence_strength,
+                tension_target=recipe.tension_target,
+                rhythmic_constraint=recipe.rhythmic_constraint,
+                harmonic_constraint=recipe.harmonic_constraint,
+                timbral_anchor=recipe.timbral_anchor,
                 target_energy=spec.target_energy,
                 transition_in=spec.transition_in,
                 transition_out=spec.transition_out,
                 transition_mode=transition_mode,
             )
         )
-        breakdown = ', '.join(f"{name}={value:.2f}" for name, value in chosen.score_breakdown.items())
-        selection_notes.append(
-            f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
-        )
-        feedback = parent_feedback[chosen.parent_id]
-        shortlist_diagnostics = _build_selection_shortlist_diagnostics(
-            chosen,
-            ranked,
-            backbone_parent=backbone_plan.backbone_parent,
-        )
+        if support_recipe is not None:
+            selection_notes.append(
+                f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown}) and scheduled filtered donor support from {support_recipe['parent_id']}:{support_recipe['window_label']} at {support_recipe['gain_db']:.1f} dB."
+            )
+        else:
+            selection_notes.append(
+                f"{spec.label}: ranked full-window candidates across both parents; chose {chosen.parent_id}:{candidate.label} ({candidate.origin}, {candidate.start:.1f}-{candidate.end:.1f}s, energy {candidate.energy:.3f}, error {chosen.blended_error:.2f}; {breakdown})"
+            )
         selection_diagnostics.append(
             {
                 'label': spec.label,
@@ -3570,6 +4214,8 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
                 'selected_error_delta_vs_rank_1': shortlist_diagnostics['selected_error_delta_vs_rank_1'],
                 'candidate_shortlist': shortlist_diagnostics['candidate_shortlist'],
                 'cross_parent_best_alternate': shortlist_diagnostics['cross_parent_best_alternate'],
+                'support_recipe': support_recipe,
+                'child_section_recipe': recipe.to_dict(),
                 'evaluator_alignment': {
                     'listen_feedback_penalty': round(chosen.score_breakdown['listen_feedback'], 3),
                     'seam_risk': round(chosen.score_breakdown['seam_risk'], 3),
@@ -3593,6 +4239,10 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
             'always_include_selected_if_guarded': True,
             'include_best_cross_parent_alternate': True,
         },
+        'musical_intelligence_summary': {
+            parent_id: dict((song_map[parent_id].musical_intelligence or {}).get('summary') or {})
+            for parent_id in song_map
+        },
         'backbone_plan': {
             'backbone_parent': backbone_plan.backbone_parent,
             'donor_parent': backbone_plan.donor_parent,
@@ -3615,6 +4265,16 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
             }
             for parent_id, feedback in parent_feedback.items()
         },
+        'donor_integration_summary': {
+            'sections_with_support': sum(1 for item in selection_diagnostics if item.get('support_recipe')),
+            'support_parent_counts': dict(Counter(item['support_recipe']['parent_id'] for item in selection_diagnostics if item.get('support_recipe'))),
+            'motif_anchor_parents': dict(Counter(item['child_section_recipe']['motif_anchor_parent'] for item in selection_diagnostics if item.get('child_section_recipe'))),
+            'mean_motif_recurrence_strength': round(
+                sum(float(item['child_section_recipe'].get('motif_recurrence_strength', 0.0) or 0.0) for item in selection_diagnostics if item.get('child_section_recipe')) / max(len(selection_diagnostics), 1),
+                3,
+            ),
+            'tension_targets': [item['child_section_recipe']['tension_target'] for item in selection_diagnostics if item.get('child_section_recipe')],
+        },
         'selected_sections': selection_diagnostics,
     }
     notes = [
@@ -3628,6 +4288,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA) -> ChildArrang
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Arrangement artifacts now expose listen-aligned planning_diagnostics so evaluator-facing groove/arc/transition signals are inspectable without parsing note strings.',
         'Per-section diagnostics now include a structured multi-candidate shortlist plus the best cross-parent alternate so guard-driven picks and near-miss alternates stay machine-readable downstream.',
+        'Major child sections can now schedule filtered donor support from the best safe cross-parent alternate so the render can build integrated two-parent sections instead of only section-to-section handoffs.',
         'Stretch and bar-grid fit are now evaluated against the backbone parent tempo so donor phrases are judged on the child-song grid instead of each source parent silently keeping its own clock.',
         'For same-parent backbone continuity, diagnostics now flag backbone_flow candidates even though render still uses same_parent_flow until a dedicated low-overlap backbone treatment is wired end-to-end.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',

@@ -585,12 +585,42 @@ def _climax_reference_alignment(candidate_report: dict[str, Any], reference_item
     }
 
 
-def _load_manifest_summary(item: dict[str, Any]) -> dict[str, Any] | None:
+def _resolve_manifest_path(item: dict[str, Any]) -> Path | None:
     manifest_path = item.get("render_manifest_path")
-    if not manifest_path:
-        return None
-    path = Path(str(manifest_path)).expanduser()
-    if not path.exists():
+    if manifest_path:
+        path = Path(str(manifest_path)).expanduser()
+        if path.exists():
+            return path
+
+    candidate_paths: list[Path] = []
+    for key in ("input_path", "resolved_audio_path"):
+        raw_value = item.get(key)
+        if not raw_value:
+            continue
+        try:
+            base_path = Path(str(raw_value)).expanduser()
+        except (TypeError, ValueError):
+            continue
+        if base_path.is_dir():
+            candidate_paths.append(base_path / "render_manifest.json")
+            continue
+        candidate_paths.append(base_path.with_name("render_manifest.json"))
+        candidate_paths.append(base_path.parent / "render_manifest.json")
+
+    seen: set[str] = set()
+    for path in candidate_paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.exists():
+            return path
+    return None
+
+
+def _load_manifest_summary(item: dict[str, Any]) -> dict[str, Any] | None:
+    path = _resolve_manifest_path(item)
+    if path is None:
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -800,6 +830,79 @@ def _render_feedback_map(candidate_report: dict[str, Any], gap_summary: dict[str
     return _rule_feedback_map(candidate_report, gap_summary, RENDER_FEEDBACK_RULES, target_key="render_code_targets")
 
 
+
+def _prioritized_execution_plan(
+    ranked_interventions: list[dict[str, Any]],
+    planner_feedback_map: list[dict[str, Any]],
+    render_feedback_map: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
+
+    for intervention in ranked_interventions:
+        component = str(intervention.get("component") or "")
+        problem = str(intervention.get("problem") or "")
+        gap = float(intervention.get("gap_vs_references") or 0.0)
+        priority = float(intervention.get("priority") or abs(gap))
+        code_targets = [str(item).strip() for item in (intervention.get("code_targets") or []) if str(item).strip()]
+        actions = [str(item).strip() for item in (intervention.get("actions") or []) if str(item).strip()]
+
+        matching_planner = [
+            item for item in planner_feedback_map
+            if str(item.get("component") or "") == component
+        ]
+        matching_render = [
+            item for item in render_feedback_map
+            if str(item.get("component") or "") == component
+        ]
+
+        planner_modes = [str(item.get("failure_mode") or "") for item in matching_planner if str(item.get("failure_mode") or "").strip()]
+        render_modes = [str(item.get("failure_mode") or "") for item in matching_render if str(item.get("failure_mode") or "").strip()]
+        planner_targets = sorted({
+            str(target).strip()
+            for item in matching_planner
+            for target in (item.get("planner_code_targets") or [])
+            if str(target).strip()
+        })
+        render_targets = sorted({
+            str(target).strip()
+            for item in matching_render
+            for target in (item.get("render_code_targets") or [])
+            if str(target).strip()
+        })
+        merged_targets = sorted(set(code_targets) | set(planner_targets) | set(render_targets))
+
+        focus_area = "cross_cutting"
+        if matching_planner and not matching_render:
+            focus_area = "planner"
+        elif matching_render and not matching_planner:
+            focus_area = "render"
+        elif matching_planner and matching_render:
+            focus_area = "planner_and_render"
+
+        plan.append(
+            {
+                "priority_rank": len(plan) + 1,
+                "component": component,
+                "focus_area": focus_area,
+                "gap_vs_references": round(gap, 1),
+                "priority": round(priority, 1),
+                "problem": problem,
+                "recommended_code_targets": merged_targets,
+                "primary_actions": actions[:3],
+                "planner_failure_modes": planner_modes,
+                "render_failure_modes": render_modes,
+                "why_now": {
+                    "planner_signal_count": len(matching_planner),
+                    "render_signal_count": len(matching_render),
+                    "planner_targets": planner_targets,
+                    "render_targets": render_targets,
+                },
+            }
+        )
+
+    return plan
+
+
 def build_feedback_brief(candidate: str, references: list[str], target_score: float = 99.0) -> dict[str, Any]:
     normalized_references = normalize_reference_inputs(references)
 
@@ -886,6 +989,12 @@ def build_feedback_brief(candidate: str, references: list[str], target_score: fl
             *planner_feedback_map,
         ]
 
+    prioritized_execution_plan = _prioritized_execution_plan(
+        ranked_interventions,
+        planner_feedback_map,
+        render_feedback_map,
+    )
+
     return {
         "schema_version": "0.5.0",
         "goal": {
@@ -930,6 +1039,7 @@ def build_feedback_brief(candidate: str, references: list[str], target_score: fl
         "ranked_interventions": ranked_interventions,
         "planner_feedback_map": planner_feedback_map,
         "render_feedback_map": render_feedback_map,
+        "prioritized_execution_plan": prioritized_execution_plan,
         "next_code_targets": sorted({
             target
             for item in ranked_interventions

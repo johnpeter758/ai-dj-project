@@ -203,3 +203,40 @@ def unstable_groove_review_fixture() -> dict[str, Any]:
         top_fixes=["Stabilize groove before human review; the pocket is too loose to trust even though the macro arc is readable."],
         top_reasons=["Synthetic borderline output: the arrangement mostly reads, but groove stability is still below the listener gate."],
     )
+
+
+def near_threshold_false_positive_review_fixture() -> dict[str, Any]:
+    return listen_report(
+        72.0,
+        verdict="mixed",
+        gate_status="review",
+        structure=76.0,
+        groove=60.0,
+        energy_arc=63.0,
+        transition=54.0,
+        coherence=61.0,
+        mix_sanity=63.0,
+        song_likeness=61.0,
+        song_metrics={
+            "backbone_continuity": 0.42,
+            "readable_section_ratio": 0.40,
+            "recognizable_section_ratio": 0.40,
+            "boundary_recovery": 0.38,
+            "role_plausibility": 0.40,
+            "planner_audio_climax_conviction": 0.52,
+            "climax_conviction": 0.51,
+            "background_only_identity_gap": 0.45,
+            "owner_switch_ratio": 0.78,
+            "composite_song_risk": 0.50,
+        },
+        component_fixes={
+            "groove": [
+                "Keep groove confidence above the listener floor before promoting to humans.",
+            ],
+            "transition": [
+                "Tighten seams a bit more before calling the arrangement human-review ready.",
+            ],
+        },
+        top_fixes=["Hold this in review: it is imperfect, but it should not be hard-rejected as a fake non-song."],
+        top_reasons=["Synthetic regression fixture: near-threshold listener metrics should stay review-only, not flip into a false hard reject."],
+    )

@@ -150,6 +150,27 @@ def test_build_feedback_brief_collects_reference_strengths(tmp_path: Path):
     assert max(strengths.values()) >= 93.0
 
 
+def test_load_manifest_summary_falls_back_from_listen_report_path(tmp_path: Path):
+    run_dir = tmp_path / 'iter_01' / 'render'
+    run_dir.mkdir(parents=True)
+    manifest_path = run_dir / 'render_manifest.json'
+    listen_report_path = run_dir / 'listen_report.json'
+    audio_path = run_dir / 'child_master.wav'
+    _write_manifest(manifest_path, ['intro', 'verse', 'build', 'payoff', 'outro'])
+    audio_path.write_bytes(b'wave')
+    listen_report_path.write_text(json.dumps(_report(74.0)), encoding='utf-8')
+
+    summary = loop._load_manifest_summary({
+        'input_path': str(listen_report_path),
+        'resolved_audio_path': str(audio_path),
+        'render_manifest_path': None,
+    })
+
+    assert summary is not None
+    assert summary['program_signature'] == 'intro -> verse -> build -> payoff -> outro'
+    assert summary['section_count'] == 5
+
+
 def test_build_feedback_brief_accepts_reference_collection_file(tmp_path: Path):
     candidate = tmp_path / 'candidate.json'
     ref_a = tmp_path / 'ref_a.json'
@@ -446,6 +467,54 @@ def test_build_feedback_brief_emits_structured_render_feedback_map(tmp_path: Pat
     assert any(path.endswith('src/core/render/renderer.py') for path in seam_map['render_code_targets'])
     assert any('cliff-like' in text.lower() or 'spectral shock' in text.lower() for text in seam_map['matched_feedback'])
     assert any(path.endswith('src/core/render/renderer.py') for path in brief['next_code_targets'])
+
+
+def test_build_feedback_brief_builds_prioritized_execution_plan(tmp_path: Path):
+    candidate = tmp_path / 'candidate.json'
+    ref = tmp_path / 'ref.json'
+
+    payload = _report(52.0, verdict='weak', song_likeness=34.0, transition=36.0, mix_sanity=40.0)
+    payload['song_likeness']['summary'] = 'stitched and not one song'
+    payload['song_likeness']['fixes'] = ['Improve backbone continuity and reduce cluttered donor carryover.']
+    payload['song_likeness']['details'] = {'aggregate_metrics': {'backbone_continuity': 0.31}}
+    payload['transition']['fixes'] = [
+        'Manifest ownership is flipping often enough to read like track switching.',
+        'Smooth energy handoffs at section seams so transitions do not feel pasted or cliff-like.',
+    ]
+    payload['transition']['details'] = {'aggregate_metrics': {'manifest_switch_detector_risk': 0.82, 'avg_edge_cliff_risk': 0.44}}
+    payload['mix_sanity']['fixes'] = [
+        'Reduce full-spectrum overlap; too many simultaneous elements are making the render feel crowded instead of arranged.',
+        'Low-end ownership is flipping too often across adjacent sections, especially through overlaps; keep the kick/sub anchor on one parent longer.',
+    ]
+    payload['mix_sanity']['details'] = {
+        'ownership_clutter_metrics': {'crowding_burst_risk': 0.52},
+        'manifest_metrics': {'aggregate_metrics': {'low_end_owner_stability_risk': 0.88}},
+    }
+    payload['top_fixes'] = ['Make it feel like one song with a steadier backbone.']
+
+    candidate.write_text(json.dumps(payload), encoding='utf-8')
+    ref.write_text(json.dumps(_report(93.0, song_likeness=92.0, transition=89.0, mix_sanity=88.0)), encoding='utf-8')
+
+    brief = build_feedback_brief(str(candidate), [str(ref)])
+
+    plan = brief['prioritized_execution_plan']
+    assert plan
+    assert [item['priority_rank'] for item in plan] == list(range(1, len(plan) + 1))
+    top = plan[0]
+    assert top['component'] == 'song_likeness'
+    assert top['focus_area'] == 'planner'
+    assert 'backbone_continuity' in top['planner_failure_modes']
+    assert any(path.endswith('src/core/planner/arrangement.py') for path in top['recommended_code_targets'])
+
+    transition_item = next(item for item in plan if item['component'] == 'transition')
+    assert transition_item['focus_area'] == 'planner_and_render'
+    assert 'ownership_switching' in transition_item['planner_failure_modes']
+
+    mix_item = next(item for item in plan if item['component'] == 'mix_sanity')
+    assert mix_item['focus_area'] == 'planner_and_render'
+    assert 'overlap_density_control' in mix_item['render_failure_modes']
+    assert mix_item['why_now']['render_signal_count'] >= 1
+
 
 
 def test_build_feedback_brief_extracts_stable_reference_features(tmp_path: Path):

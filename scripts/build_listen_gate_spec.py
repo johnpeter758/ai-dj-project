@@ -120,6 +120,7 @@ def _parse_better_than(raw: str) -> tuple[str, dict[str, Any]]:
 def build_spec(
     *,
     cases_raw: list[str] | None = None,
+    reference_cases_raw: list[str] | None = None,
     good_cases_raw: list[str] | None = None,
     review_cases_raw: list[str] | None = None,
     bad_cases_raw: list[str] | None = None,
@@ -135,12 +136,13 @@ def build_spec(
     better_than_raw: list[str] | None = None,
 ) -> dict[str, Any]:
     neutral_cases = list(cases_raw or [])
+    reference_cases = list(reference_cases_raw or [])
     good_cases = list(good_cases_raw or [])
     review_cases = list(review_cases_raw or [])
     bad_cases = list(bad_cases_raw or [])
-    combined_count = len(neutral_cases) + len(good_cases) + len(review_cases) + len(bad_cases)
+    combined_count = len(neutral_cases) + len(reference_cases) + len(good_cases) + len(review_cases) + len(bad_cases)
     if combined_count < 2:
-        raise SpecBuildError("Provide at least two cases across --case/--good-case/--review-case/--bad-case")
+        raise SpecBuildError("Provide at least two cases across --case/--reference-case/--good-case/--review-case/--bad-case")
 
     cases: dict[str, dict[str, Any]] = {}
     ordered_labels: list[str] = []
@@ -156,6 +158,7 @@ def build_spec(
             cases[label] = case
             ordered_labels.append(label)
 
+    add_cases(reference_cases, tier="reference")
     add_cases(good_cases, tier="good")
     add_cases(neutral_cases, tier=None)
     add_cases(review_cases, tier="review")
@@ -171,7 +174,7 @@ def build_spec(
 
     for label in ordered_labels:
         tier = cases[label].get("curation_tier")
-        if tier == "good":
+        if tier in {"reference", "good"}:
             _ensure_expect(cases[label]).setdefault("gating_status", "pass")
         elif tier == "review":
             _ensure_expect(cases[label]).setdefault("gating_status", "review")
@@ -240,7 +243,8 @@ def build_spec(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build a listen_gate_benchmark JSON spec from CLI flags.")
     parser.add_argument("--case", action="append", default=[], help="label=path to a listen report or run dir; repeatable")
-    parser.add_argument("--good-case", action="append", default=[], help="label=path for a curated good fixture; defaults gating_status=pass and sorts ahead of neutral/review/bad cases")
+    parser.add_argument("--reference-case", action="append", default=[], help="label=path for a known-good reference anchor; defaults gating_status=pass and sorts ahead of all other cases")
+    parser.add_argument("--good-case", action="append", default=[], help="label=path for a curated good fixture; defaults gating_status=pass and sorts after reference anchors but ahead of neutral/review/bad cases")
     parser.add_argument("--review-case", action="append", default=[], help="label=path for a curated borderline fixture; defaults gating_status=review and sorts after good/neutral but ahead of bad cases")
     parser.add_argument("--bad-case", action="append", default=[], help="label=path for a curated bad fixture; defaults gating_status=reject and sorts after good/neutral/review cases")
     parser.add_argument("--expected-order", help="Comma-separated case labels in strongest->weakest expected order")
@@ -264,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = build_spec(
             cases_raw=args.case,
+            reference_cases_raw=args.reference_case,
             good_cases_raw=args.good_case,
             review_cases_raw=args.review_case,
             bad_cases_raw=args.bad_case,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import traceback
 from datetime import datetime
@@ -12,8 +13,12 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
+from scripts.build_listen_gate_spec import SpecBuildError, build_spec
+from scripts.reference_input_normalizer import ReferenceInputError, normalize_reference_inputs
 from src.core.analysis import analyze_audio_file
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
+from src.feedback_learning import build_feedback_learning_summary, write_feedback_learning_summary
+from src.human_feedback import HumanFeedbackStore
 
 app = Flask(__name__)
 
@@ -26,6 +31,22 @@ PROJECT_PYTHON = Path("/Users/johnpeter/venvs/vocalfusion-env/bin/python")
 VAULT_DIR = Path("/Users/johnpeter/VocalFusionVault")
 TOOLS_LOG_PATH = VAULT_DIR / "memory" / "TOOLS_RUNNING_LOG.md"
 MEMORY_DIR = VAULT_DIR / "memory"
+HUMAN_FEEDBACK_DIR = BASE_DIR / "data" / "human_feedback"
+SIMPLE_FUSE_ADVANCED_TIMEOUT_SECONDS = 180
+SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS = 3600
+
+
+def _split_labeled_path(raw: str) -> tuple[str | None, str]:
+    text = str(raw).strip()
+    for delimiter in ("=", "::"):
+        if delimiter not in text:
+            continue
+        label, candidate = text.split(delimiter, 1)
+        label = label.strip()
+        candidate = candidate.strip()
+        if label and candidate:
+            return label, candidate
+    return None, text
 
 
 def load_songs() -> list[dict]:
@@ -315,14 +336,21 @@ def _latest_listener_agent_result() -> dict | None:
     path, payload = match
     recommended = payload.get("recommended_for_human_review") or []
     rejected = payload.get("rejected") or []
+    borderline = payload.get("borderline") or []
     top_survivor = recommended[0] if recommended else None
     top_reject = rejected[0] if rejected else None
+    empty_reason = "survivors_present" if recommended else "no_survivors" if borderline or rejected else "no_gate_run"
     result = _artifact_entry(path)
     result.update({
         "recommended_count": len(recommended),
+        "borderline_count": len(borderline),
         "rejected_count": len(rejected),
         "winner": top_survivor.get("label") if top_survivor else None,
         "summary": list(payload.get("summary") or [])[:3],
+        "survivor_preview": recommended[:3],
+        "borderline_preview": borderline[:3],
+        "reject_preview": rejected[:3],
+        "empty_reason": empty_reason,
         "top_survivor": {
             "label": top_survivor.get("label"),
             "listener_rank": top_survivor.get("listener_rank"),
@@ -330,6 +358,73 @@ def _latest_listener_agent_result() -> dict | None:
             "verdict": top_survivor.get("verdict"),
         } if top_survivor else None,
         "top_reject_reason": ((top_reject.get("hard_fail_reasons") or [None])[0] if top_reject else None),
+    })
+    return result
+
+
+
+def _latest_auto_shortlist_result() -> dict | None:
+    match = _find_latest_json(
+        lambda path, payload: path.name == "auto_shortlist_report.json" and "recommended_shortlist" in payload and "candidates" in payload
+    )
+    if not match:
+        return None
+    path, payload = match
+    recommended = list(payload.get("recommended_shortlist") or [])
+    closest_misses = list(payload.get("closest_misses") or [])
+    counts = (payload.get("listener_agent_report") or {}).get("counts") or {}
+    result = _artifact_entry(path)
+    pruning = payload.get("pruning") or {}
+    result.update({
+        "summary": list(payload.get("summary") or [])[:4],
+        "candidate_count": len(payload.get("candidates") or []),
+        "survivor_count": counts.get("survivors"),
+        "borderline_count": counts.get("borderline"),
+        "rejected_count": counts.get("rejected"),
+        "winner": (recommended[0] or {}).get("candidate_id") if recommended else None,
+        "top_survivor": recommended[0] if recommended else None,
+        "closest_misses": closest_misses[:2],
+        "pairwise_winner": ((payload.get("pairwise_pool") or {}).get("winner")),
+        "pruning": pruning,
+    })
+    return result
+
+
+def _latest_closed_loop_result() -> dict | None:
+    match = _find_latest_json(
+        lambda path, payload: path.name == "closed_loop_report.json" and "stop_reason" in payload and ("best_iteration" in payload or "loop_summary" in payload)
+    )
+    if not match:
+        return None
+    path, payload = match
+    loop_summary = payload.get("loop_summary") or {}
+    best = loop_summary.get("best_iteration") or payload.get("best_iteration") or {}
+    iteration_summaries = list(loop_summary.get("iteration_summaries") or [])
+    latest_iteration = iteration_summaries[-1] if iteration_summaries else None
+    result = _artifact_entry(path)
+    result.update({
+        "stop_reason": payload.get("stop_reason"),
+        "summary": list(payload.get("summary") or [])[:3],
+        "total_iterations": loop_summary.get("total_iterations") if loop_summary else len(payload.get("iterations") or []),
+        "net_improvement": loop_summary.get("net_improvement"),
+        "score_trajectory": list(loop_summary.get("score_trajectory") or [])[:6],
+        "best_iteration": {
+            "iteration": best.get("iteration"),
+            "candidate_overall_score": best.get("candidate_overall_score"),
+            "candidate_verdict": best.get("candidate_verdict"),
+            "candidate_listener_decision": best.get("candidate_listener_decision"),
+            "candidate_input": best.get("candidate_input"),
+        } if best else None,
+        "latest_iteration": {
+            "iteration": latest_iteration.get("iteration"),
+            "candidate_overall_score": latest_iteration.get("candidate_overall_score"),
+            "candidate_verdict": latest_iteration.get("candidate_verdict"),
+            "candidate_listener_decision": latest_iteration.get("candidate_listener_decision"),
+            "gap_to_target": latest_iteration.get("gap_to_target"),
+            "plateau_count": latest_iteration.get("plateau_count"),
+            "render_dir": latest_iteration.get("render_dir"),
+        } if latest_iteration else None,
+        "best_top_intervention": loop_summary.get("best_top_intervention"),
     })
     return result
 
@@ -355,6 +450,208 @@ def _recent_render_inputs(limit: int = 4) -> list[str]:
         if len(results) >= limit:
             break
     return results
+
+
+def _feedback_store() -> HumanFeedbackStore:
+    return HumanFeedbackStore(HUMAN_FEEDBACK_DIR)
+
+
+def _resolve_run_scoped_path(raw: str | Path, *, allow_music: bool = False) -> Path:
+    path = Path(str(raw)).expanduser().resolve()
+    try:
+        path.relative_to(RUNS_DIR.resolve())
+        return path
+    except ValueError:
+        if allow_music:
+            path.relative_to(MUSIC_DIR.resolve())
+            return path
+        raise
+
+
+def _load_run_manifest(run_dir: Path) -> dict | None:
+    return _load_json_file(run_dir / "render_manifest.json")
+
+
+def _candidate_master_audio(run_dir: Path) -> Path | None:
+    candidates = [run_dir / "child_master.mp3", run_dir / "child_master.wav", run_dir / "child_raw.wav"]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    manifest = _load_run_manifest(run_dir)
+    outputs = (manifest or {}).get("outputs") or {}
+    for key in ("master_mp3", "master_wav", "raw_wav"):
+        value = outputs.get(key)
+        if not value:
+            continue
+        candidate = Path(str(value)).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_existing_artifact_path(raw: str | None) -> Path | None:
+    if not raw:
+        return None
+    path = Path(str(raw)).expanduser().resolve()
+    try:
+        path.relative_to(RUNS_DIR.resolve())
+    except ValueError:
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    return path
+
+
+def _select_promotable_fuse_candidate(report: dict) -> tuple[str, dict, Path] | None:
+    candidate_groups = (
+        ("survivor", list(report.get("recommended_shortlist") or [])),
+        ("closest_miss", list(report.get("closest_misses") or [])),
+        ("candidate", list(report.get("candidates") or [])),
+    )
+    for source, rows in candidate_groups:
+        for row in rows:
+            audio_path = _resolve_existing_artifact_path(row.get("audio_path"))
+            if audio_path is None:
+                run_dir = row.get("run_dir")
+                if run_dir:
+                    try:
+                        resolved_run_dir = _resolve_run_scoped_path(run_dir)
+                    except ValueError:
+                        resolved_run_dir = None
+                    if resolved_run_dir and resolved_run_dir.exists() and resolved_run_dir.is_dir():
+                        audio_path = _candidate_master_audio(resolved_run_dir)
+            if audio_path is not None:
+                return source, row, audio_path
+    return None
+
+
+def _promote_fuse_candidate_output(*, run_id: str, output_dir: Path, report_path: Path, report: dict) -> dict:
+    selected = _select_promotable_fuse_candidate(report)
+    if selected is None:
+        raise FileNotFoundError("No playable candidate audio was found in the fusion batch.")
+
+    selection_source, candidate_row, source_audio = selected
+    source_ext = source_audio.suffix.lower() or ".wav"
+    promoted_audio = output_dir / f"fused_output{source_ext}"
+    if source_audio.resolve() != promoted_audio.resolve():
+        shutil.copy2(source_audio, promoted_audio)
+
+    delivery_mode = "survivor" if selection_source == "survivor" else "fallback"
+    summary_lines = list(report.get("summary") or [])
+    if delivery_mode == "survivor":
+        message = "Finished. Returning the top playable survivor from the advanced fuse pipeline."
+    else:
+        message = "Finished. No candidate fully cleared the listener gate, so this is the best playable fallback from the batch."
+
+    result_payload = {
+        "run_id": run_id,
+        "delivery_mode": delivery_mode,
+        "selection_source": selection_source,
+        "selected_candidate_id": candidate_row.get("candidate_id") or candidate_row.get("label"),
+        "selected_candidate_label": candidate_row.get("label") or candidate_row.get("candidate_id"),
+        "audio_path": str(promoted_audio),
+        "audio_url": f"/api/artifact?path={promoted_audio}",
+        "source_audio_path": str(source_audio),
+        "report_path": str(report_path),
+        "top_reasons": list(candidate_row.get("top_reasons") or [])[:3],
+        "top_fixes": list(candidate_row.get("top_fixes") or [])[:3],
+        "summary": summary_lines[:4],
+        "message": message,
+    }
+    result_path = output_dir / "fuse_result.json"
+    result_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
+    result_payload["result_path"] = str(result_path)
+    result_payload["result_url"] = f"/api/artifact?path={result_path}"
+    return result_payload
+
+
+def _promote_direct_fusion_output(*, run_id: str, output_dir: Path, fusion_dir: Path, fallback_reason: str, report_path: Path | None = None) -> dict:
+    source_audio = _candidate_master_audio(fusion_dir)
+    if source_audio is None:
+        raise FileNotFoundError("Deterministic fallback fusion did not produce a playable audio artifact.")
+
+    source_ext = source_audio.suffix.lower() or ".wav"
+    promoted_audio = output_dir / f"fused_output{source_ext}"
+    if source_audio.resolve() != promoted_audio.resolve():
+        shutil.copy2(source_audio, promoted_audio)
+
+    result_payload = {
+        "run_id": run_id,
+        "delivery_mode": "deterministic_fallback",
+        "selection_source": "direct_fusion",
+        "selected_candidate_id": "direct_fusion",
+        "selected_candidate_label": "deterministic fusion fallback",
+        "audio_path": str(promoted_audio),
+        "audio_url": f"/api/artifact?path={promoted_audio}",
+        "source_audio_path": str(source_audio),
+        "report_path": str(report_path) if report_path else None,
+        "top_reasons": [],
+        "top_fixes": [],
+        "summary": [fallback_reason],
+        "message": "Finished. The advanced fuse path did not deliver a playable result, so this output came from the deterministic fallback fuse path.",
+        "fallback_reason": fallback_reason,
+        "fallback_run_dir": str(fusion_dir),
+    }
+    result_path = output_dir / "fuse_result.json"
+    result_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
+    result_payload["result_path"] = str(result_path)
+    result_payload["result_url"] = f"/api/artifact?path={result_path}"
+    return result_payload
+
+
+def _run_listen_report_path(run_dir: Path) -> Path | None:
+    candidates = sorted(run_dir.glob("*listen*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for candidate in candidates:
+        payload = _load_json_file(candidate)
+        if isinstance(payload, dict) and "overall_score" in payload and "transition" in payload:
+            return candidate
+    return None
+
+
+def _derive_run_worst_moments(run_dir: Path) -> list[dict]:
+    moments: list[dict] = []
+    manifest = _load_run_manifest(run_dir) or {}
+    listen_path = _run_listen_report_path(run_dir)
+    listen_payload = _load_json_file(listen_path) if listen_path else None
+    sections = list(manifest.get("sections") or [])
+    for moment in (((listen_payload or {}).get("transition") or {}).get("details") or {}).get("worst_moments") or []:
+        payload = dict(moment)
+        payload.setdefault("source", "listen")
+        moments.append(payload)
+    risky_sections = (((listen_payload or {}).get("mix_sanity") or {}).get("details") or {}).get("manifest_metrics") or {}
+    risky_sections = risky_sections.get("risky_sections") or []
+    for row in risky_sections[:3]:
+        idx = int(row.get("section_index", 0) or 0)
+        section = sections[idx] if 0 <= idx < len(sections) else {}
+        target = section.get("target") or {}
+        start_sec = float(target.get("start_sec", section.get("start_sec", idx * 8.0)) or idx * 8.0)
+        end_sec = float(target.get("end_sec", section.get("end_sec", start_sec + 8.0)) or (start_sec + 8.0))
+        moments.append({
+            "kind": "manifest_risky_section",
+            "component": "mix_sanity",
+            "section_index": idx,
+            "label": str(section.get("label") or row.get("label") or f"section_{idx}"),
+            "start_time": round(start_sec, 3),
+            "end_time": round(end_sec, 3),
+            "center_time": round((start_sec + end_sec) * 0.5, 3),
+            "duration_seconds": round(max(0.0, end_sec - start_sec), 3),
+            "severity": round(float(row.get("risk", 0.0) or 0.0), 3),
+            "summary": f"{section.get('label') or row.get('label') or f'section_{idx}'} has elevated manifest risk",
+            "evidence": row,
+            "source": "manifest",
+        })
+    moments.sort(key=lambda item: float(item.get("severity", 0.0) or 0.0), reverse=True)
+    deduped: list[dict] = []
+    seen: set[tuple[str, float]] = set()
+    for moment in moments:
+        key = (str(moment.get("kind") or "unknown"), round(float(moment.get("center_time", 0.0) or 0.0), 1))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(moment)
+        if len(deduped) >= 6:
+            break
+    return deduped
 
 
 def _latest_manifest_summary() -> dict | None:
@@ -515,6 +812,8 @@ def _workloop_status() -> dict:
     latest_compare = _latest_compare_listen_result()
     latest_benchmark = _latest_benchmark_listen_result()
     latest_listener_agent = _latest_listener_agent_result()
+    latest_auto_shortlist = _latest_auto_shortlist_result()
+    latest_closed_loop = _latest_closed_loop_result()
     latest_artifact = _latest_artifact()
     latest_manifest = _latest_manifest_summary()
     latest_run = _latest_run_summary()
@@ -545,6 +844,8 @@ def _workloop_status() -> dict:
         "latest_compare_listen_result": latest_compare,
         "latest_benchmark_listen_result": latest_benchmark,
         "latest_listener_agent_result": latest_listener_agent,
+        "latest_auto_shortlist_result": latest_auto_shortlist,
+        "latest_closed_loop_result": latest_closed_loop,
         "latest_manifest": latest_manifest,
         "latest_run_summary": latest_run,
         "active_sprint": active_sprint,
@@ -554,7 +855,9 @@ def _workloop_status() -> dict:
             "debug_ui": "/debug",
             "status_ui": "/status",
             "listener_agent_api": "/api/listener-agent",
+            "auto_shortlist_api": "/api/auto-shortlist-fusion",
             "closed_loop_api": "/api/closed-loop",
+            "benchmark_spec_api": "/api/benchmark-spec",
         },
     }
 
@@ -679,6 +982,266 @@ def api_listener_agent():
     )
 
 
+@app.route("/api/recent-renders")
+def api_recent_renders():
+    runs: list[dict] = []
+    for raw in _recent_render_inputs(limit=20):
+        run_dir = Path(raw)
+        audio = _candidate_master_audio(run_dir)
+        runs.append({
+            "run_dir": str(run_dir),
+            "name": run_dir.name,
+            "audio_path": str(audio) if audio else None,
+            "audio_url": f"/api/artifact?path={audio}" if audio else None,
+            "listen_report_path": str(_run_listen_report_path(run_dir)) if _run_listen_report_path(run_dir) else None,
+            "worst_moments": _derive_run_worst_moments(run_dir)[:3],
+        })
+    return jsonify({"status": "success", "runs": runs, "count": len(runs)})
+
+
+@app.route("/api/run-diagnostics")
+def api_run_diagnostics():
+    raw = request.args.get("run_dir", "")
+    if not raw:
+        return jsonify({"status": "error", "error": "run_dir is required"}), 400
+    try:
+        run_dir = _resolve_run_scoped_path(raw)
+    except ValueError:
+        return jsonify({"status": "error", "error": "run_dir must stay inside runs/"}), 403
+    if not run_dir.exists() or not run_dir.is_dir():
+        return jsonify({"status": "error", "error": "run_dir not found"}), 404
+    manifest = _load_run_manifest(run_dir)
+    listen_path = _run_listen_report_path(run_dir)
+    listen_payload = _load_json_file(listen_path) if listen_path else None
+    return jsonify({
+        "status": "success",
+        "run_dir": str(run_dir),
+        "audio_path": str(_candidate_master_audio(run_dir)) if _candidate_master_audio(run_dir) else None,
+        "audio_url": f"/api/artifact?path={_candidate_master_audio(run_dir)}" if _candidate_master_audio(run_dir) else None,
+        "manifest_path": str(run_dir / 'render_manifest.json') if (run_dir / 'render_manifest.json').exists() else None,
+        "listen_report_path": str(listen_path) if listen_path else None,
+        "manifest": manifest,
+        "listen_report": listen_payload,
+        "worst_moments": _derive_run_worst_moments(run_dir),
+    })
+
+
+@app.route("/api/compare-listen", methods=["POST"])
+def api_compare_listen():
+    data = request.get_json(silent=True) or {}
+    raw_left = data.get("left")
+    raw_right = data.get("right")
+    if not raw_left or not raw_right:
+        return jsonify({"status": "error", "error": "left and right are required."}), 400
+    try:
+        left = _resolve_run_scoped_path(raw_left)
+        right = _resolve_run_scoped_path(raw_right)
+    except ValueError:
+        return jsonify({"status": "error", "error": "compare inputs must stay inside runs/"}), 403
+    if not left.exists() or not right.exists():
+        return jsonify({"status": "error", "error": "compare input not found."}), 404
+    compare_dir = RUNS_DIR / "compare_listen"
+    compare_dir.mkdir(parents=True, exist_ok=True)
+    output_path = compare_dir / f"listen_compare_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    cmd = [
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
+        str(BASE_DIR / "ai_dj.py"),
+        "compare-listen",
+        str(left),
+        str(right),
+        "--output",
+        str(output_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "error": "compare-listen timed out."}), 500
+    if proc.returncode != 0:
+        return jsonify({"status": "error", "error": "compare-listen failed.", "stdout": proc.stdout, "stderr": proc.stderr}), 500
+    payload = _load_json_file(output_path) or {}
+    return jsonify({"status": "success", "left": str(left), "right": str(right), "report_path": str(output_path), "report": payload, "stdout": proc.stdout})
+
+
+@app.route("/api/human-feedback/render", methods=["POST"])
+def api_human_feedback_render():
+    data = request.get_json(silent=True) or {}
+    raw_run_dir = data.get("run_dir")
+    if not raw_run_dir:
+        return jsonify({"status": "error", "error": "run_dir is required."}), 400
+    try:
+        run_dir = _resolve_run_scoped_path(raw_run_dir)
+    except ValueError:
+        return jsonify({"status": "error", "error": "run_dir must stay inside runs/."}), 403
+    if not run_dir.exists() or not run_dir.is_dir():
+        return jsonify({"status": "error", "error": "run_dir not found."}), 404
+    overall_label = str(data.get("overall_label") or data.get("decision") or "borderline").strip().lower()
+    if overall_label not in {"reject", "borderline", "promising", "favorite", "keep"}:
+        return jsonify({"status": "error", "error": "overall_label must be reject, borderline, promising, favorite, or keep."}), 400
+    tags = [str(tag).strip() for tag in (data.get("tags") or []) if str(tag).strip()]
+    event = _feedback_store().append_event({
+        "type": "render",
+        "reviewer": str(data.get("reviewer") or "human"),
+        "run_dir": str(run_dir),
+        "artifact_path": str(data.get("artifact_path") or _candidate_master_audio(run_dir) or ""),
+        "overall_label": overall_label,
+        "tags": tags,
+        "note": str(data.get("note") or "").strip(),
+        "timestamp_sec": data.get("timestamp_sec"),
+        "component_ratings": data.get("component_ratings") or {},
+    })
+    per_run_path = run_dir / "human_feedback.json"
+    per_run_path.write_text(json.dumps(event, indent=2, sort_keys=True), encoding="utf-8")
+    return jsonify({"status": "success", "feedback": event, "feedback_path": str(per_run_path)})
+
+
+@app.route("/api/human-feedback/pairwise", methods=["POST"])
+def api_human_feedback_pairwise():
+    data = request.get_json(silent=True) or {}
+    raw_left = data.get("left_run_dir")
+    raw_right = data.get("right_run_dir")
+    winner = str(data.get("winner") or "").strip().lower()
+    if not raw_left or not raw_right:
+        return jsonify({"status": "error", "error": "left_run_dir and right_run_dir are required."}), 400
+    if winner not in {"left", "right", "tie"}:
+        return jsonify({"status": "error", "error": "winner must be left, right, or tie."}), 400
+    try:
+        left = _resolve_run_scoped_path(raw_left)
+        right = _resolve_run_scoped_path(raw_right)
+    except ValueError:
+        return jsonify({"status": "error", "error": "pairwise inputs must stay inside runs/."}), 403
+    event = _feedback_store().append_event({
+        "type": "pairwise",
+        "reviewer": str(data.get("reviewer") or "human"),
+        "left_run_dir": str(left),
+        "right_run_dir": str(right),
+        "winner": winner,
+        "confidence": str(data.get("confidence") or "normal"),
+        "tags": [str(tag).strip() for tag in (data.get("tags") or []) if str(tag).strip()],
+        "note": str(data.get("note") or "").strip(),
+        "component_preferences": data.get("component_preferences") or {},
+        "compare_artifact_path": str(data.get("compare_artifact_path") or "").strip(),
+    })
+    return jsonify({"status": "success", "feedback": event})
+
+
+@app.route("/api/human-feedback")
+def api_human_feedback_list():
+    feedback_type = request.args.get("type") or None
+    run_dir = request.args.get("run_dir") or None
+    reviewer = request.args.get("reviewer") or None
+    limit = int(request.args.get("limit", "100") or 100)
+    events = _feedback_store().list_events(feedback_type=feedback_type, run_dir=run_dir, reviewer=reviewer, limit=limit)
+    return jsonify({"status": "success", "events": events, "count": len(events), "summary": _feedback_store().summarize()})
+
+
+@app.route("/api/human-feedback/learning")
+def api_human_feedback_learning():
+    limit = int(request.args.get("limit", "5000") or 5000)
+    payload = build_feedback_learning_summary(HUMAN_FEEDBACK_DIR, limit=limit)
+    return jsonify({"status": "success", "learning": payload})
+
+
+@app.route("/api/human-feedback/learning/distill", methods=["POST"])
+def api_human_feedback_learning_distill():
+    limit = int((request.get_json(silent=True) or {}).get("limit", 5000) or 5000)
+    output_path = HUMAN_FEEDBACK_DIR / "learning_snapshot.json"
+    payload = write_feedback_learning_summary(HUMAN_FEEDBACK_DIR, output_path, limit=limit)
+    return jsonify({"status": "success", "learning": payload, "output_path": str(output_path)})
+
+
+@app.route("/api/benchmark-spec", methods=["POST"])
+def api_benchmark_spec():
+    data = request.get_json(silent=True) or {}
+
+    case_keys = {
+        "cases": "cases_raw",
+        "reference_cases": "reference_cases_raw",
+        "good_cases": "good_cases_raw",
+        "review_cases": "review_cases_raw",
+        "bad_cases": "bad_cases_raw",
+    }
+
+    def _normalize_case_collection(raw_values, *, bucket: str) -> list[str] | tuple[dict, int]:
+        if raw_values in (None, []):
+            return []
+        if not isinstance(raw_values, list):
+            return jsonify({"status": "error", "error": f"{bucket} must be a JSON array."}), 400
+        normalized: list[str] = []
+        for index, item in enumerate(raw_values, start=1):
+            if not isinstance(item, dict):
+                return jsonify({"status": "error", "error": f"{bucket}[{index}] must be an object with label and path."}), 400
+            label = str(item.get("label") or "").strip()
+            raw_path = item.get("path")
+            if not label or raw_path in (None, ""):
+                return jsonify({"status": "error", "error": f"{bucket}[{index}] requires non-empty label and path."}), 400
+            path = Path(str(raw_path)).expanduser().resolve()
+            try:
+                path.relative_to(RUNS_DIR.resolve())
+            except ValueError:
+                return jsonify({"status": "error", "error": f"{bucket}[{index}] path must stay inside runs/: {path}"}), 403
+            if not path.exists():
+                return jsonify({"status": "error", "error": f"{bucket}[{index}] path not found: {path}"}), 404
+            normalized.append(f"{label}={path}")
+        return normalized
+
+    spec_kwargs: dict[str, object] = {}
+    for key, target in case_keys.items():
+        normalized = _normalize_case_collection(data.get(key), bucket=key)
+        if isinstance(normalized, tuple):
+            return normalized
+        spec_kwargs[target] = normalized
+
+    for request_key, target_key in (
+        ("expected_order", "expected_order_raw"),
+        ("gating_expectations", "gating_expectations"),
+        ("verdict_expectations", "verdict_expectations"),
+        ("overall_at_least", "overall_at_least"),
+        ("overall_at_most", "overall_at_most"),
+        ("component_at_least", "component_at_least"),
+        ("component_at_most", "component_at_most"),
+        ("metric_at_least", "metric_at_least"),
+        ("metric_at_most", "metric_at_most"),
+        ("better_than", "better_than_raw"),
+    ):
+        value = data.get(request_key)
+        if request_key == "expected_order":
+            if value is None:
+                spec_kwargs[target_key] = None
+            elif isinstance(value, list):
+                spec_kwargs[target_key] = ",".join(str(item).strip() for item in value if str(item).strip())
+            elif isinstance(value, str):
+                spec_kwargs[target_key] = value
+            else:
+                return jsonify({"status": "error", "error": "expected_order must be a JSON array or comma-separated string."}), 400
+            continue
+        if value is None:
+            spec_kwargs[target_key] = []
+        elif isinstance(value, list):
+            spec_kwargs[target_key] = [str(item) for item in value]
+        else:
+            return jsonify({"status": "error", "error": f"{request_key} must be a JSON array."}), 400
+
+    try:
+        payload = build_spec(**spec_kwargs)
+    except SpecBuildError as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 400
+
+    output_dir = RUNS_DIR / "benchmark_specs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"benchmark_spec_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    return jsonify(
+        {
+            "status": "success",
+            "report_path": str(output_path),
+            "case_count": len(payload.get("cases") or []),
+            "expected_order": payload.get("expected_order") or [],
+            "report": payload,
+        }
+    )
+
+
 @app.route("/api/closed-loop", methods=["POST"])
 def api_closed_loop():
     data = request.get_json(silent=True) or {}
@@ -711,12 +1274,31 @@ def api_closed_loop():
     if isinstance(song_b_path, tuple):
         return song_b_path
 
-    references: list[str] = []
+    reference_roots: list[str] = []
     for index, raw in enumerate(raw_references, start=1):
         resolved = _resolve_audio_input(raw, label=f"reference[{index}]")
         if isinstance(resolved, tuple):
             return resolved
-        references.append(str(resolved))
+        reference_roots.append(str(resolved))
+
+    try:
+        references = normalize_reference_inputs(reference_roots)
+    except ReferenceInputError as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 400
+
+    for index, raw in enumerate(references, start=1):
+        reference_label, reference_value = _split_labeled_path(raw)
+        path = Path(reference_value).expanduser().resolve()
+        try:
+            path.relative_to(MUSIC_DIR.resolve())
+        except ValueError:
+            try:
+                path.relative_to(RUNS_DIR.resolve())
+            except ValueError:
+                label = f"reference[{index}]"
+                if reference_label:
+                    label = f"reference[{index}] ({reference_label})"
+                return jsonify({"status": "error", "error": f"{label} must stay inside music/ or runs/"}), 403
 
     max_iterations = max(1, min(int(data.get("max_iterations", 3) or 3), 10))
     quality_gate = float(data.get("quality_gate", 85.0) or 85.0)
@@ -725,9 +1307,28 @@ def api_closed_loop():
     target_score = float(data.get("target_score", 99.0) or 99.0)
     change_command = data.get("change_command")
     test_command = data.get("test_command")
+    change_dispatch = data.get("change_dispatch")
+    test_dispatch = data.get("test_dispatch")
+    if change_command and change_dispatch:
+        return jsonify({"status": "error", "error": "Provide either change_command or change_dispatch, not both."}), 400
+    if test_command and test_dispatch:
+        return jsonify({"status": "error", "error": "Provide either test_command or test_dispatch, not both."}), 400
+    if change_dispatch is not None and not isinstance(change_dispatch, dict):
+        return jsonify({"status": "error", "error": "change_dispatch must be a JSON object."}), 400
+    if test_dispatch is not None and not isinstance(test_dispatch, dict):
+        return jsonify({"status": "error", "error": "test_dispatch must be a JSON object."}), 400
 
     report_root = RUNS_DIR / "closed_loop" / datetime.now().strftime("%Y%m%d_%H%M%S")
     report_root.mkdir(parents=True, exist_ok=True)
+
+    change_dispatch_path = None
+    test_dispatch_path = None
+    if change_dispatch is not None:
+        change_dispatch_path = report_root / "change_dispatch.json"
+        change_dispatch_path.write_text(json.dumps(change_dispatch, indent=2, sort_keys=True), encoding="utf-8")
+    if test_dispatch is not None:
+        test_dispatch_path = report_root / "test_dispatch.json"
+        test_dispatch_path.write_text(json.dumps(test_dispatch, indent=2, sort_keys=True), encoding="utf-8")
 
     cmd = [
         str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
@@ -753,6 +1354,10 @@ def api_closed_loop():
         cmd.extend(["--change-command", str(change_command)])
     if test_command:
         cmd.extend(["--test-command", str(test_command)])
+    if change_dispatch_path is not None:
+        cmd.extend(["--change-dispatch", str(change_dispatch_path)])
+    if test_dispatch_path is not None:
+        cmd.extend(["--test-dispatch", str(test_dispatch_path)])
 
     try:
         proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
@@ -794,9 +1399,105 @@ def api_closed_loop():
                 "target_score": target_score,
                 "change_command": change_command,
                 "test_command": test_command,
+                "change_dispatch": change_dispatch,
+                "test_dispatch": test_dispatch,
             },
             "report_path": str(report_path),
             "report": payload,
+            "stdout": proc.stdout,
+        }
+    )
+
+
+@app.route("/api/auto-shortlist-fusion", methods=["POST"])
+def api_auto_shortlist_fusion():
+    song_a = request.files.get("song_a")
+    song_b = request.files.get("song_b")
+
+    if song_a is None or song_b is None:
+        return jsonify({"status": "error", "error": "Two audio files are required."}), 400
+
+    allowed = {".mp3", ".wav", ".flac", ".m4a", ".aac"}
+    ext_a = Path(song_a.filename or "song_a").suffix.lower()
+    ext_b = Path(song_b.filename or "song_b").suffix.lower()
+    if ext_a not in allowed or ext_b not in allowed:
+        return jsonify({"status": "error", "error": "Only common audio files like MP3/WAV/FLAC/M4A/AAC are supported."}), 400
+
+    try:
+        batch_size = max(1, min(int(request.form.get("batch_size", "6") or 6), 12))
+        shortlist = max(1, min(int(request.form.get("shortlist", "1") or 1), 6))
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "error": "batch_size and shortlist must be integers."}), 400
+    variant_mode = str(request.form.get("variant_mode", "safe") or "safe").strip() or "safe"
+    keep_non_survivors = str(request.form.get("keep_non_survivors", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    run_id = f"auto_shortlist_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    outdir = RUNS_DIR / run_id
+    upload_dir = UPLOADS_DIR / run_id
+    outdir.mkdir(parents=True, exist_ok=True)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    song_a_path = upload_dir / f"song_a{ext_a}"
+    song_b_path = upload_dir / f"song_b{ext_b}"
+    song_a.save(song_a_path)
+    song_b.save(song_b_path)
+
+    cmd = [
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
+        str(BASE_DIR / "ai_dj.py"),
+        "auto-shortlist-fusion",
+        str(song_a_path),
+        str(song_b_path),
+        "--output",
+        str(outdir),
+        "--batch-size",
+        str(batch_size),
+        "--shortlist",
+        str(shortlist),
+        "--variant-mode",
+        variant_mode,
+    ]
+    if keep_non_survivors:
+        cmd.append("--keep-non-survivors")
+
+    try:
+        proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=7200)
+    except subprocess.TimeoutExpired:
+        return jsonify({"status": "error", "error": "Auto shortlist fusion timed out.", "run_id": run_id, "output_dir": str(outdir)}), 500
+
+    if proc.returncode != 0:
+        return jsonify(
+            {
+                "status": "error",
+                "error": "Auto shortlist fusion failed.",
+                "run_id": run_id,
+                "output_dir": str(outdir),
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        ), 500
+
+    report_path = outdir / "auto_shortlist_report.json"
+    payload = _load_json_file(report_path) or {}
+    recommended = list(payload.get("recommended_shortlist") or [])
+    closest_misses = list(payload.get("closest_misses") or [])
+    for row in recommended + closest_misses:
+        audio_path = row.get("audio_path")
+        audio_candidate = Path(str(audio_path)).expanduser().resolve() if audio_path else None
+        row["audio_url"] = f"/api/artifact?path={audio_candidate}" if audio_candidate and audio_candidate.exists() else None
+        run_dir = row.get("run_dir")
+        run_candidate = Path(str(run_dir)).expanduser().resolve() if run_dir else None
+        row["diagnostics_url"] = f"/api/run-diagnostics?run_dir={run_candidate}" if run_candidate and run_candidate.exists() else None
+    return jsonify(
+        {
+            "status": "success",
+            "run_id": run_id,
+            "output_dir": str(outdir),
+            "report_path": str(report_path),
+            "report": payload,
+            "recommended_shortlist": recommended,
+            "closest_misses": closest_misses,
+            "pruning": payload.get("pruning") or {"enabled": not keep_non_survivors},
             "stdout": proc.stdout,
         }
     )
@@ -819,54 +1520,153 @@ def fuse_upload():
     run_id = f"simple_fuse_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     outdir = RUNS_DIR / run_id
     upload_dir = UPLOADS_DIR / run_id
+    advanced_dir = outdir / "advanced_batch"
+    direct_fusion_dir = outdir / "deterministic_fallback"
     outdir.mkdir(parents=True, exist_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
+    advanced_dir.mkdir(parents=True, exist_ok=True)
+    direct_fusion_dir.mkdir(parents=True, exist_ok=True)
 
     song_a_path = upload_dir / f"song_a{ext_a}"
     song_b_path = upload_dir / f"song_b{ext_b}"
     song_a.save(song_a_path)
     song_b.save(song_b_path)
 
-    cmd = [
+    report_path = advanced_dir / "auto_shortlist_report.json"
+    advanced_cmd = [
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
+        str(BASE_DIR / "ai_dj.py"),
+        "auto-shortlist-fusion",
+        str(song_a_path),
+        str(song_b_path),
+        "--output",
+        str(advanced_dir),
+        "--batch-size",
+        "4",
+        "--shortlist",
+        "1",
+        "--variant-mode",
+        "safe",
+        "--keep-non-survivors",
+    ]
+
+    advanced_stdout = ""
+    advanced_stderr = ""
+    advanced_report = None
+    fallback_reason = None
+
+    try:
+        advanced_proc = subprocess.run(
+            advanced_cmd,
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=SIMPLE_FUSE_ADVANCED_TIMEOUT_SECONDS,
+        )
+        advanced_stdout = advanced_proc.stdout
+        advanced_stderr = advanced_proc.stderr
+        if advanced_proc.returncode == 0:
+            advanced_report = _load_json_file(report_path)
+            if isinstance(advanced_report, dict):
+                try:
+                    result = _promote_fuse_candidate_output(run_id=run_id, output_dir=outdir, report_path=report_path, report=advanced_report)
+                    return jsonify(
+                        {
+                            "status": "success",
+                            "run_id": run_id,
+                            "output_dir": str(outdir),
+                            "report_path": str(report_path),
+                            "report": advanced_report,
+                            "result": result,
+                            "stdout": advanced_stdout,
+                        }
+                    )
+                except FileNotFoundError:
+                    fallback_reason = "Advanced fuse completed, but no playable shortlist candidate could be promoted."
+            else:
+                fallback_reason = "Advanced fuse completed, but did not produce a readable shortlist report."
+        else:
+            fallback_reason = "Advanced fuse failed, so the endpoint is dropping to deterministic fallback fusion."
+    except subprocess.TimeoutExpired:
+        fallback_reason = "Advanced fuse timed out, so the endpoint is dropping to deterministic fallback fusion."
+
+    direct_cmd = [
         str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
         str(BASE_DIR / "ai_dj.py"),
         "fusion",
         str(song_a_path),
         str(song_b_path),
         "--output",
-        str(outdir),
+        str(direct_fusion_dir),
     ]
 
     try:
-        proc = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=3600)
+        direct_proc = subprocess.run(
+            direct_cmd,
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS,
+        )
     except subprocess.TimeoutExpired:
-        return jsonify({"status": "error", "error": "Fusion timed out.", "run_id": run_id, "output_dir": str(outdir)}), 500
-
-    if proc.returncode != 0:
         return jsonify(
             {
                 "status": "error",
-                "error": "Fusion failed.",
+                "error": "Fuse failed: advanced path timed out and deterministic fallback also timed out.",
                 "run_id": run_id,
                 "output_dir": str(outdir),
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
+                "report_path": str(report_path),
+                "report": advanced_report,
+                "stdout": advanced_stdout,
+                "stderr": advanced_stderr,
             }
         ), 500
 
-    artifacts = {
-        "raw_wav": str(outdir / "child_raw.wav"),
-        "master_wav": str(outdir / "child_master.wav"),
-        "master_mp3": str(outdir / "child_master.mp3"),
-        "manifest": str(outdir / "render_manifest.json"),
-    }
+    if direct_proc.returncode != 0:
+        return jsonify(
+            {
+                "status": "error",
+                "error": "Fuse failed: advanced path did not deliver a playable result and deterministic fallback failed too.",
+                "run_id": run_id,
+                "output_dir": str(outdir),
+                "report_path": str(report_path),
+                "report": advanced_report,
+                "stdout": (advanced_stdout or "") + ("\n" if advanced_stdout and direct_proc.stdout else "") + direct_proc.stdout,
+                "stderr": (advanced_stderr or "") + ("\n" if advanced_stderr and direct_proc.stderr else "") + direct_proc.stderr,
+            }
+        ), 500
+
+    try:
+        result = _promote_direct_fusion_output(
+            run_id=run_id,
+            output_dir=outdir,
+            fusion_dir=direct_fusion_dir,
+            fallback_reason=fallback_reason or "Advanced fuse did not deliver a result, so deterministic fallback was used.",
+            report_path=report_path if report_path.exists() else None,
+        )
+    except FileNotFoundError as exc:
+        return jsonify(
+            {
+                "status": "error",
+                "error": str(exc),
+                "run_id": run_id,
+                "output_dir": str(outdir),
+                "report_path": str(report_path),
+                "report": advanced_report,
+                "stdout": (advanced_stdout or "") + ("\n" if advanced_stdout and direct_proc.stdout else "") + direct_proc.stdout,
+                "stderr": (advanced_stderr or "") + ("\n" if advanced_stderr and direct_proc.stderr else "") + direct_proc.stderr,
+            }
+        ), 500
+
     return jsonify(
         {
             "status": "success",
             "run_id": run_id,
             "output_dir": str(outdir),
-            "artifacts": artifacts,
-            "stdout": proc.stdout,
+            "report_path": str(report_path) if report_path.exists() else None,
+            "report": advanced_report,
+            "result": result,
+            "stdout": (advanced_stdout or "") + ("\n" if advanced_stdout and direct_proc.stdout else "") + direct_proc.stdout,
         }
     )
 

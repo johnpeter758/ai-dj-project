@@ -11,10 +11,15 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import shutil
 import sys
+from copy import deepcopy
+from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
+from src.feedback_learning import build_feedback_learning_summary, write_feedback_learning_summary
 
 LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity", "song_likeness")
 
@@ -51,6 +56,19 @@ LISTENER_AGENT_SURVIVOR_MINIMUMS = {
     "song_likeness": 60.0,
     "groove": 55.0,
     "energy_arc": 55.0,
+}
+
+AUTO_SHORTLIST_SCHEMA_VERSION = "0.1.0"
+AUTO_SHORTLIST_DEFAULT_BATCH_SIZE = 6
+AUTO_SHORTLIST_DEFAULT_SHORTLIST = 2
+AUTO_SHORTLIST_MAX_BATCH_SIZE = 12
+AUTO_SHORTLIST_SECTION_PRIORITY = {
+    "payoff": 0,
+    "build": 1,
+    "bridge": 2,
+    "verse": 3,
+    "outro": 4,
+    "intro": 5,
 }
 
 
@@ -183,6 +201,228 @@ def analyze(track: str, detailed: bool, output: Optional[str]) -> int:
     return 0
 
 
+def _render_fusion_plan_candidate(
+    song_a: Any,
+    song_b: Any,
+    plan: Any,
+    outdir: str | Path,
+    *,
+    variant_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolve_plan, render_plan = _get_render_functions()
+    outdir_path = Path(outdir).expanduser().resolve()
+    outdir_path.mkdir(parents=True, exist_ok=True)
+
+    plan_payload = plan.to_dict()
+    if variant_config is not None:
+        plan_payload.setdefault("planning_diagnostics", {})["variant"] = variant_config
+    _write_json(outdir_path / "arrangement_plan.json", plan_payload)
+
+    manifest = resolve_plan(plan, song_a, song_b)
+    result = render_plan(manifest, outdir_path)
+    if variant_config is not None:
+        _write_json(outdir_path / "candidate_variant.json", variant_config)
+    return {
+        "outdir": str(outdir_path),
+        "variant_config": variant_config or {"variant_id": "baseline", "strategy": "baseline"},
+        "arrangement_plan_path": str(outdir_path / "arrangement_plan.json"),
+        "render_manifest_path": str(result.manifest_path),
+        "raw_wav_path": str(result.raw_wav_path),
+        "master_wav_path": str(result.master_wav_path),
+        "master_mp3_path": str(result.master_mp3_path) if result.master_mp3_path else None,
+    }
+
+
+
+def _opportunity_priority(label: str) -> int:
+    return AUTO_SHORTLIST_SECTION_PRIORITY.get(str(label or ""), 99)
+
+
+
+def _variant_swap_score(opportunity: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        _opportunity_priority(str(opportunity.get("section_label") or "")),
+        float(opportunity.get("error_delta", 999.0) or 999.0),
+        0 if opportunity.get("alternate_parent") != opportunity.get("selected_parent") else 1,
+        int(opportunity.get("selection_rank") or 999),
+        int(opportunity.get("section_index") or 0),
+    )
+
+
+
+def _collect_plan_variant_opportunities(plan: Any) -> list[dict[str, Any]]:
+    diagnostics = getattr(plan, "planning_diagnostics", {}) or {}
+    selected_sections = list(diagnostics.get("selected_sections") or [])
+    backbone_parent = ((diagnostics.get("backbone_plan") or {}).get("backbone_parent") or "A")
+    opportunities: list[dict[str, Any]] = []
+    for index, section_diag in enumerate(selected_sections):
+        selected_parent = str(section_diag.get("selected_parent") or "")
+        selected_label = str(section_diag.get("selected_window_label") or "")
+        shortlist = list(section_diag.get("candidate_shortlist") or [])
+        selected_rank = int(section_diag.get("selection_rank") or 1)
+        seen: set[tuple[str, str]] = {(selected_parent, selected_label)} if selected_parent and selected_label else set()
+        alternates: list[dict[str, Any]] = []
+        cross_parent = section_diag.get("cross_parent_best_alternate")
+        if isinstance(cross_parent, dict):
+            alternates.append(cross_parent)
+        alternates.extend(item for item in shortlist if isinstance(item, dict) and not bool(item.get("selected")))
+        for alt in alternates:
+            alternate_parent = str(alt.get("parent_id") or "")
+            alternate_label = str(alt.get("window_label") or "")
+            identity = (alternate_parent, alternate_label)
+            if not alternate_parent or not alternate_label or identity in seen:
+                continue
+            seen.add(identity)
+            score_breakdown = dict(alt.get("score_breakdown") or {})
+            stretch_ratio = float(score_breakdown.get("stretch_ratio", 1.0) or 1.0)
+            stretch_gate = float(score_breakdown.get("stretch_gate", 0.0) or 0.0)
+            seam_risk = float(score_breakdown.get("seam_risk", 0.0) or 0.0)
+            transition_viability = float(score_breakdown.get("transition_viability", 0.0) or 0.0)
+            if float(alt.get("error_delta_vs_selected", 99.0) or 99.0) > 1.15:
+                continue
+            if stretch_gate > 0.60 or stretch_ratio > 1.18 or seam_risk > 0.82 or transition_viability > 0.88:
+                continue
+            opportunities.append(
+                {
+                    "section_index": index,
+                    "section_label": section_diag.get("label"),
+                    "selected_parent": selected_parent,
+                    "selected_window_label": selected_label,
+                    "alternate_parent": alternate_parent,
+                    "alternate_window_label": alternate_label,
+                    "alternate_role": alt.get("role"),
+                    "window_origin": alt.get("window_origin"),
+                    "window_seconds": alt.get("window_seconds"),
+                    "selection_rank": int(alt.get("rank") or selected_rank),
+                    "selected_rank": selected_rank,
+                    "error_delta": float(alt.get("error_delta_vs_selected", 0.0) or 0.0),
+                    "planner_error": float(alt.get("planner_error", 0.0) or 0.0),
+                    "score_breakdown": score_breakdown,
+                    "backbone_parent": backbone_parent,
+                    "kind": "cross_parent_alternate" if alternate_parent != selected_parent else "shortlist_alternate",
+                }
+            )
+    opportunities.sort(key=_variant_swap_score)
+    return opportunities
+
+
+
+def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant_mode: str = "safe") -> list[dict[str, Any]]:
+    opportunities = _collect_plan_variant_opportunities(plan)
+    configs: list[dict[str, Any]] = [
+        {
+            "variant_id": "baseline",
+            "label": "baseline",
+            "strategy": "baseline",
+            "variant_mode": variant_mode,
+            "swaps": [],
+        }
+    ]
+    for idx, opportunity in enumerate(opportunities, start=1):
+        section_label = str(opportunity.get("section_label") or f"section_{opportunity.get('section_index', idx)}")
+        alt_parent = str(opportunity.get("alternate_parent") or "X")
+        alt_label = str(opportunity.get("alternate_window_label") or f"window_{idx}")
+        variant_id = f"swap_{idx:02d}_{section_label}_{alt_parent}"
+        configs.append(
+            {
+                "variant_id": variant_id,
+                "label": f"{section_label} -> {alt_parent}:{alt_label}",
+                "strategy": "single_section_alternate",
+                "variant_mode": variant_mode,
+                "swaps": [opportunity],
+            }
+        )
+        if len(configs) >= max(1, batch_size):
+            break
+    return configs[: max(1, batch_size)]
+
+
+
+def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | None) -> Any:
+    cloned = deepcopy(plan)
+    if not variant_config or not list(variant_config.get("swaps") or []):
+        diagnostics = getattr(cloned, "planning_diagnostics", {}) or {}
+        diagnostics["variant"] = variant_config or {"variant_id": "baseline", "strategy": "baseline"}
+        cloned.planning_diagnostics = diagnostics
+        return cloned
+
+    diagnostics = getattr(cloned, "planning_diagnostics", {}) or {}
+    selected_sections = list(diagnostics.get("selected_sections") or [])
+    overrides: list[dict[str, Any]] = []
+    for swap in list(variant_config.get("swaps") or []):
+        section_index = int(swap.get("section_index", -1) or -1)
+        if section_index < 0 or section_index >= len(cloned.sections):
+            continue
+        section = cloned.sections[section_index]
+        section.source_parent = str(swap.get("alternate_parent") or section.source_parent)
+        section.source_section_label = str(swap.get("alternate_window_label") or section.source_section_label)
+        if 0 <= section_index < len(selected_sections):
+            diag = dict(selected_sections[section_index])
+            diag["selected_parent"] = section.source_parent
+            diag["selected_role"] = "backbone" if section.source_parent == swap.get("backbone_parent") else "donor"
+            diag["selected_window_label"] = section.source_section_label
+            diag["selected_window_origin"] = swap.get("window_origin")
+            diag["selected_window_seconds"] = swap.get("window_seconds")
+            diag["planner_error"] = round(float(swap.get("planner_error", diag.get("planner_error", 0.0)) or 0.0), 3)
+            diag["selection_rank"] = int(swap.get("selection_rank") or diag.get("selection_rank") or 1)
+            diag["selected_by_guard"] = True
+            shortlist = []
+            for row in list(diag.get("candidate_shortlist") or []):
+                row_copy = dict(row)
+                row_copy["selected"] = bool(
+                    row_copy.get("parent_id") == section.source_parent
+                    and row_copy.get("window_label") == section.source_section_label
+                )
+                shortlist.append(row_copy)
+            diag["candidate_shortlist"] = shortlist
+            selected_sections[section_index] = diag
+        overrides.append(
+            {
+                "section_index": section_index,
+                "section_label": section.label,
+                "source_parent": section.source_parent,
+                "source_section_label": section.source_section_label,
+                "strategy": variant_config.get("strategy"),
+                "kind": swap.get("kind"),
+                "planner_error": swap.get("planner_error"),
+                "error_delta": swap.get("error_delta"),
+            }
+        )
+    diagnostics["selected_sections"] = selected_sections
+    diagnostics["variant"] = {
+        "variant_id": variant_config.get("variant_id"),
+        "label": variant_config.get("label"),
+        "strategy": variant_config.get("strategy"),
+        "variant_mode": variant_config.get("variant_mode"),
+        "overrides": overrides,
+    }
+    cloned.planning_diagnostics = diagnostics
+    cloned.planning_notes = list(getattr(cloned, "planning_notes", []) or []) + [
+        f"Auto-shortlist variant applied: {variant_config.get('label') or variant_config.get('variant_id')}."
+    ]
+    return cloned
+
+
+
+def _render_fusion_candidate(
+    song_a: Any,
+    song_b: Any,
+    base_plan: Any,
+    outdir: str | Path,
+    *,
+    candidate_id: str,
+    variant_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    variant = variant_config or {"variant_id": candidate_id, "label": candidate_id, "strategy": "baseline", "swaps": []}
+    plan = _apply_auto_shortlist_variant(base_plan, variant)
+    result = _render_fusion_plan_candidate(song_a, song_b, plan, outdir, variant_config=variant)
+    result["candidate_id"] = candidate_id
+    result["variant_config"] = variant
+    result["render_strategy"] = variant.get("strategy", "baseline")
+    return result
+
+
+
 def fusion(
     track1: str,
     track2: str,
@@ -194,7 +434,6 @@ def fusion(
     """Fuse two tracks together."""
     analyze_audio = _get_analyze_audio_file()
     _, build_arrangement_plan = _get_planner_functions()
-    resolve_plan, render_plan = _get_render_functions()
     track1_path = _resolve_existing_audio_path(track1, "track1")
     track2_path = _resolve_existing_audio_path(track2, "track2")
 
@@ -211,15 +450,14 @@ def fusion(
     song_a = analyze_audio(track1_path)
     song_b = analyze_audio(track2_path)
     plan = build_arrangement_plan(song_a, song_b)
-    manifest = resolve_plan(plan, song_a, song_b)
-    result = render_plan(manifest, outdir)
+    result = _render_fusion_plan_candidate(song_a, song_b, plan, outdir)
     if genre or bpm or key:
         print("Note: v1 render currently ignores target genre/BPM/key overrides and uses analyzed parent timing.")
     print("Render outputs:")
-    print(f"  raw wav: {result.raw_wav_path}")
-    print(f"  master wav: {result.master_wav_path}")
-    print(f"  master mp3: {result.master_mp3_path or 'not written (ffmpeg unavailable)'}")
-    print(f"  manifest: {result.manifest_path}")
+    print(f"  raw wav: {result['raw_wav_path']}")
+    print(f"  master wav: {result['master_wav_path']}")
+    print(f"  master mp3: {result['master_mp3_path'] or 'not written (ffmpeg unavailable)'}")
+    print(f"  manifest: {result['render_manifest_path']}")
     return 0
 
 
@@ -293,15 +531,33 @@ def _load_json(path: Path) -> Any:
         raise CliError(f"invalid JSON file: {path}") from exc
 
 
+def _split_labeled_input(raw: str) -> tuple[str | None, str]:
+    text = str(raw).strip()
+    for delimiter in ("=", "::"):
+        if delimiter not in text:
+            continue
+        label, candidate = text.split(delimiter, 1)
+        label = label.strip()
+        candidate = candidate.strip()
+        if not label or not candidate:
+            continue
+        if candidate.startswith(("/", "./", "../", "~/")):
+            return label, candidate
+        if len(candidate) >= 3 and candidate[1] == ":" and candidate[2] in {"/", "\\"}:
+            return label, candidate
+    return None, text
+
+
 def _short_label(path_str: Optional[str], fallback: str) -> str:
     if not path_str:
         return fallback
     return Path(path_str).name or fallback
 
 
-def _stable_case_id(path_str: str) -> str:
+def _stable_case_id(path_str: str, *, explicit_label: str | None = None) -> str:
     resolved = str(Path(path_str).expanduser().resolve())
-    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:10]
+    identity = f"{explicit_label}::{resolved}" if explicit_label else resolved
+    return hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
 
 
 def _path_tail_label(path_str: str, depth: int) -> str:
@@ -320,40 +576,55 @@ def _assign_display_labels(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not labeled:
         return labeled
 
-    depths = [1] * len(labeled)
-    max_depths = []
-    for item in labeled:
-        path = Path(str(item.get("input_path") or "")).expanduser().resolve()
-        parts = list(path.parts)
-        if parts and parts[0] == path.anchor:
-            parts = parts[1:]
-        max_depths.append(max(1, len(parts)))
+    explicit_labels = [str(item.get("explicit_case_label") or "").strip() for item in labeled]
+    unlabeled_indexes = [index for index, value in enumerate(explicit_labels) if not value]
 
-    labels = [str(item.get("input_label") or item.get("input_path") or f"case_{index}") for index, item in enumerate(labeled)]
-    while True:
-        labels = [_path_tail_label(str(item.get("input_path") or ""), depth) for item, depth in zip(labeled, depths)]
-        collisions: dict[str, list[int]] = {}
-        for index, label in enumerate(labels):
-            collisions.setdefault(label, []).append(index)
-        duplicate_groups = [indexes for indexes in collisions.values() if len(indexes) > 1]
-        if not duplicate_groups:
-            break
+    resolved_labels: list[str | None] = [value or None for value in explicit_labels]
+    if unlabeled_indexes:
+        depths = [1] * len(unlabeled_indexes)
+        max_depths = []
+        for index in unlabeled_indexes:
+            item = labeled[index]
+            path = Path(str(item.get("input_path") or "")).expanduser().resolve()
+            parts = list(path.parts)
+            if parts and parts[0] == path.anchor:
+                parts = parts[1:]
+            max_depths.append(max(1, len(parts)))
 
-        advanced = False
-        for indexes in duplicate_groups:
-            for index in indexes:
-                if depths[index] < max_depths[index]:
-                    depths[index] += 1
-                    advanced = True
-        if not advanced:
-            labels = [
-                f"{label}#{str(item.get('case_id') or '')[:6]}" if len(collisions.get(label, [])) > 1 else label
-                for item, label in zip(labeled, labels)
-            ]
-            break
+        while True:
+            labels = [_path_tail_label(str(labeled[index].get("input_path") or ""), depth) for index, depth in zip(unlabeled_indexes, depths)]
+            collisions: dict[str, list[int]] = {}
+            for local_index, label in enumerate(labels):
+                collisions.setdefault(label, []).append(local_index)
+            duplicate_groups = [indexes for indexes in collisions.values() if len(indexes) > 1]
+            if not duplicate_groups:
+                for local_index, label in enumerate(labels):
+                    resolved_labels[unlabeled_indexes[local_index]] = label
+                break
 
-    for item, label in zip(labeled, labels):
-        item["display_label"] = label
+            advanced = False
+            for indexes in duplicate_groups:
+                for local_index in indexes:
+                    if depths[local_index] < max_depths[local_index]:
+                        depths[local_index] += 1
+                        advanced = True
+            if not advanced:
+                for local_index, label in enumerate(labels):
+                    index = unlabeled_indexes[local_index]
+                    resolved_labels[index] = f"{label}#{str(labeled[index].get('case_id') or '')[:6]}" if len(collisions.get(label, [])) > 1 else label
+                break
+
+    final_collisions: dict[str, list[int]] = {}
+    for index, label in enumerate(resolved_labels):
+        final_collisions.setdefault(str(label or ""), []).append(index)
+    for label, indexes in final_collisions.items():
+        if len(indexes) < 2:
+            continue
+        for index in indexes:
+            resolved_labels[index] = f"{label}#{str(labeled[index].get('case_id') or '')[:6]}"
+
+    for item, label in zip(labeled, resolved_labels):
+        item["display_label"] = str(label or item.get("input_label") or item.get("input_path") or "case")
     return labeled
 
 
@@ -612,8 +883,9 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
     analyze_audio = _get_analyze_audio_file()
     evaluate = _get_evaluate_song()
 
-    raw_input = str(Path(input_path).expanduser())
-    path = Path(input_path).expanduser().resolve()
+    explicit_case_label, raw_candidate = _split_labeled_input(input_path)
+    raw_input = str(Path(raw_candidate).expanduser())
+    path = Path(raw_candidate).expanduser().resolve()
     if not path.exists():
         raise CliError(f"compare input not found: {path}")
 
@@ -627,6 +899,20 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
             raise CliError(f"directory does not contain render_manifest.json: {path}")
         render_manifest_path = manifest_candidate.resolve()
         manifest = _load_json(render_manifest_path)
+        listen_candidates = sorted(path.glob("*listen*.json"), key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+        for listen_candidate in listen_candidates:
+            payload = _load_json(listen_candidate)
+            if _is_listen_report_payload(payload):
+                return {
+                    "input_path": str(path),
+                    "input_label": explicit_case_label or _short_label(raw_input, path.name or "render_output"),
+                    "explicit_case_label": explicit_case_label,
+                    "case_id": _stable_case_id(str(path), explicit_label=explicit_case_label),
+                    "report_origin": "render_output",
+                    "resolved_audio_path": payload.get("source_path") or _pick_render_audio_path(manifest, render_manifest_path),
+                    "render_manifest_path": str(render_manifest_path),
+                    "report": payload,
+                }
         analyzed_path = Path(_pick_render_audio_path(manifest, render_manifest_path))
         report_origin = "render_output"
     elif path.suffix.lower() == ".json":
@@ -634,8 +920,9 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
         if _is_listen_report_payload(payload):
             return {
                 "input_path": str(path),
-                "input_label": _short_label(raw_input, path.name or "listen_report"),
-                "case_id": _stable_case_id(str(path)),
+                "input_label": explicit_case_label or _short_label(raw_input, path.name or "listen_report"),
+                "explicit_case_label": explicit_case_label,
+                "case_id": _stable_case_id(str(path), explicit_label=explicit_case_label),
                 "report_origin": "listen_report",
                 "resolved_audio_path": payload.get("source_path"),
                 "render_manifest_path": None,
@@ -654,8 +941,9 @@ def _resolve_compare_input(input_path: str) -> dict[str, Any]:
     report = evaluate(song).to_dict()
     return {
         "input_path": str(path),
-        "input_label": _short_label(raw_input, path.name or report_origin),
-        "case_id": _stable_case_id(str(path)),
+        "input_label": explicit_case_label or _short_label(raw_input, path.name or report_origin),
+        "explicit_case_label": explicit_case_label,
+        "case_id": _stable_case_id(str(path), explicit_label=explicit_case_label),
         "report_origin": report_origin,
         "resolved_audio_path": str(analyzed_path),
         "render_manifest_path": str(render_manifest_path) if render_manifest_path else None,
@@ -960,6 +1248,170 @@ def _stable_closed_loop_output_root(song_a: str, song_b: str, references: list[s
     return (Path("runs") / "closed_loop" / f"{song_a_slug}__{song_b_slug}__{digest}").resolve()
 
 
+def _slugify_stem(path_str: str, fallback: str) -> str:
+    stem = Path(path_str).expanduser().stem.lower()
+    slug = ''.join(ch if ch.isalnum() else '_' for ch in stem).strip('_')
+    return slug or fallback
+
+
+
+def _stable_auto_shortlist_output_root(song_a: str, song_b: str, *, batch_size: int, shortlist: int, variant_mode: str) -> Path:
+    resolved = [
+        str(Path(song_a).expanduser().resolve()),
+        str(Path(song_b).expanduser().resolve()),
+        str(int(batch_size)),
+        str(int(shortlist)),
+        str(variant_mode or "safe"),
+    ]
+    digest = hashlib.sha1("||".join(resolved).encode("utf-8")).hexdigest()[:10]
+    song_a_slug = _slugify_stem(song_a, "song_a")
+    song_b_slug = _slugify_stem(song_b, "song_b")
+    return (Path("runs") / "auto_shortlist" / f"{song_a_slug}__{song_b_slug}__{digest}").resolve()
+
+
+def _listener_policy_snapshot() -> dict[str, Any]:
+    return {
+        "policy_version": AUTO_SHORTLIST_SCHEMA_VERSION,
+        "weighted_components": dict(LISTENER_AGENT_COMPONENT_WEIGHTS),
+        "critical_rank_targets": dict(LISTENER_AGENT_CRITICAL_RANK_TARGETS),
+        "imbalance_penalty_scale": LISTENER_AGENT_RANK_PENALTY_SCALE,
+        "hard_reject_component_floors": dict(LISTENER_AGENT_HARD_REJECT_COMPONENT_FLOORS),
+        "survivor_minimums": dict(LISTENER_AGENT_SURVIVOR_MINIMUMS),
+    }
+
+
+@lru_cache(maxsize=1)
+def _feedback_learning_snapshot() -> dict[str, Any]:
+    feedback_root = (Path(__file__).resolve().parent / "data" / "human_feedback").resolve()
+    snapshot_path = feedback_root / "learning_snapshot.json"
+    try:
+        if snapshot_path.exists():
+            return json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    try:
+        payload = build_feedback_learning_summary(feedback_root, limit=5000)
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        return payload
+    except Exception:
+        return {
+            "schema_version": "0.1.0",
+            "summary": {"render_event_count": 0, "pairwise_event_count": 0},
+            "derived_priors": {
+                "medley_rejection_pressure": 0.0,
+                "groove_rejection_pressure": 0.0,
+                "transition_rejection_pressure": 0.0,
+                "payoff_upgrade_pressure": 0.0,
+                "backbone_reward_pressure": 0.0,
+            },
+            "timestamped_moments": [],
+        }
+
+
+
+def _vault_memory_dir() -> Path | None:
+    env = os.environ.get("VOCALFUSION_VAULT") or os.environ.get("VF_VAULT_PATH")
+    candidates: list[Path] = []
+    if env:
+        candidates.append(Path(env).expanduser().resolve())
+    repo_root = Path(__file__).resolve().parent
+    if len(repo_root.parents) >= 2:
+        candidates.append((repo_root.parents[1] / "VocalFusionVault").resolve())
+    for candidate in candidates:
+        memory_dir = candidate / "memory"
+        if memory_dir.exists() and memory_dir.is_dir():
+            return memory_dir
+    return None
+
+
+
+def _append_auto_shortlist_memory_log(report: dict[str, Any]) -> Path | None:
+    memory_dir = _vault_memory_dir()
+    if memory_dir is None:
+        return None
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().astimezone()
+    path = memory_dir / f"{stamp.strftime('%Y-%m-%d')}.md"
+    if not path.exists():
+        path.write_text(f"# {stamp.strftime('%Y-%m-%d')}\n\n", encoding="utf-8")
+
+    job = dict(report.get("job") or {})
+    counts = (((report.get("listener_agent_report") or {}).get("counts") or {}))
+    summary = list(report.get("summary") or [])
+    lines = [
+        "",
+        f"## Fusion run — {stamp.isoformat(timespec='seconds')}",
+        f"- Inputs: `{Path(str(job.get('song_a') or '')).name}` + `{Path(str(job.get('song_b') or '')).name}`",
+        f"- Output root: `{job.get('output_root')}`",
+        f"- Candidate batch: {job.get('batch_size')} | shortlist target: {job.get('shortlist')} | variant mode: `{job.get('variant_mode')}`",
+        f"- Listen/gate counts: survivors={counts.get('survivors', 0)}, borderline={counts.get('borderline', 0)}, rejected={counts.get('rejected', 0)}",
+        "- Listen basis: overall score + component scores (structure, groove, energy arc, transition, coherence, mix sanity, song-likeness) + gate verdict + hard/soft fail reasons.",
+    ]
+    if summary:
+        lines.append("- Summary:")
+        lines.extend(f"  - {item}" for item in summary)
+    lines.append("- Candidate results:")
+    for row in report.get("candidates") or []:
+        component_scores = dict(row.get("component_scores") or {})
+        component_blob = ", ".join(f"{key}={value}" for key, value in sorted(component_scores.items())) or "no component scores"
+        reasons = "; ".join((row.get("hard_fail_reasons") or [])[:2] or (row.get("top_reasons") or [])[:2]) or "n/a"
+        lines.append(
+            f"  - {row.get('candidate_id')}: decision={row.get('decision')} overall={row.get('overall_score')} rank={row.get('listener_rank')} verdict={row.get('verdict')} | components: {component_blob} | reasons: {reasons}"
+        )
+    pruning = dict(report.get("pruning") or {})
+    if pruning:
+        lines.append(
+            f"- Pruning: enabled={pruning.get('enabled')} deleted={pruning.get('deleted_candidate_count', 0)} kept={pruning.get('kept_candidate_ids', [])}"
+        )
+    path.open("a", encoding="utf-8").write("\n".join(lines) + "\n")
+    return path
+
+
+
+def _apply_feedback_learning_bias(result: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _feedback_learning_snapshot()
+    priors = dict(snapshot.get("derived_priors") or {})
+    song_metrics = (((report.get("song_likeness") or {}).get("details") or {}).get("aggregate_metrics") or {})
+    groove_score = float(((report.get("groove") or {}).get("score", 0.0)) or 0.0)
+    transition_score = float(((report.get("transition") or {}).get("score", 0.0)) or 0.0)
+    energy_arc_score = float(((report.get("energy_arc") or {}).get("score", 0.0)) or 0.0)
+
+    medley_pressure = float(priors.get("medley_rejection_pressure", 0.0) or 0.0)
+    groove_pressure = float(priors.get("groove_rejection_pressure", 0.0) or 0.0)
+    transition_pressure = float(priors.get("transition_rejection_pressure", 0.0) or 0.0)
+    payoff_pressure = float(priors.get("payoff_upgrade_pressure", 0.0) or 0.0)
+    backbone_pressure = float(priors.get("backbone_reward_pressure", 0.0) or 0.0)
+
+    medley_risk = float(song_metrics.get("full_mix_medley_risk", 0.0) or 0.0)
+    backbone_continuity = float(song_metrics.get("backbone_continuity", 0.5) or 0.5)
+    groove_gap = max(0.0, min(1.0, (68.0 - groove_score) / 22.0))
+    transition_gap = max(0.0, min(1.0, (68.0 - transition_score) / 22.0))
+    payoff_gap = max(0.0, min(1.0, (66.0 - energy_arc_score) / 24.0))
+
+    penalty = 8.0 * medley_pressure * medley_risk + 6.5 * groove_pressure * groove_gap + 5.0 * transition_pressure * transition_gap + 4.5 * payoff_pressure * payoff_gap
+    bonus = 5.0 * backbone_pressure * backbone_continuity
+    adjusted_rank = round(float(result.get("listener_rank", 0.0)) + bonus - penalty, 1)
+
+    result["base_listener_rank"] = result.get("listener_rank")
+    result["listener_rank"] = adjusted_rank
+    result["feedback_learning"] = {
+        "derived_priors": priors,
+        "penalty": round(penalty, 3),
+        "bonus": round(bonus, 3),
+        "adjusted_listener_rank": adjusted_rank,
+        "signals": {
+            "medley_risk": round(medley_risk, 3),
+            "backbone_continuity": round(backbone_continuity, 3),
+            "groove_gap": round(groove_gap, 3),
+            "transition_gap": round(transition_gap, 3),
+            "payoff_gap": round(payoff_gap, 3),
+        },
+    }
+    return result
+
+
+
 def _listener_component_score(report: dict[str, Any], key: str) -> float:
     if key == "overall_score":
         return float(report.get("overall_score") or 0.0)
@@ -1157,7 +1609,7 @@ def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
     listener_rank = rank_diagnostics["final_rank"]
 
     strengths, weaknesses = _report_strengths_and_weaknesses(report, limit=3)
-    return {
+    result = {
         "label": item.get("input_label"),
         "case_id": item.get("case_id"),
         "input_path": item.get("input_path"),
@@ -1167,7 +1619,9 @@ def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
         "overall_score": round(overall, 1),
         "verdict": verdict,
         "gate_status": gate_status,
+        "raw_gating_status": gate_status,
         "decision": decision,
+        "gate_lane": decision,
         "listener_rank": listener_rank,
         "acceptance_checks": acceptance_checks,
         "hard_fail_reasons": hard_fail_reasons,
@@ -1186,14 +1640,17 @@ def _listener_agent_case_assessment(item: dict[str, Any]) -> dict[str, Any]:
             for key in LISTENER_AGENT_COMPONENT_WEIGHTS
             if key != "overall_score"
         },
+        "metadata": dict(item.get("metadata") or {}),
     }
+    return _apply_feedback_learning_bias(result, report)
 
 
-def _build_listener_agent_report(inputs: list[str], shortlist: int = 3) -> dict[str, Any]:
-    if not inputs:
-        raise CliError("listener-agent requires at least one input")
-
-    resolved = [_resolve_compare_input(path) for path in inputs]
+def _build_listener_agent_report_from_resolved(
+    resolved: list[dict[str, Any]],
+    *,
+    inputs: list[str],
+    shortlist: int = 3,
+) -> dict[str, Any]:
     assessments = [_listener_agent_case_assessment(item) for item in resolved]
     label_counts: dict[str, int] = {}
     for row in assessments:
@@ -1248,6 +1705,7 @@ def _build_listener_agent_report(inputs: list[str], shortlist: int = 3) -> dict[
         "schema_version": "0.1.0",
         "listener_agent": {
             "purpose": "Reject non-song outputs and only recommend promising survivors for human listening.",
+            "policy_version": _listener_policy_snapshot()["policy_version"],
             "ranking_policy": {
                 "weighted_components": dict(LISTENER_AGENT_COMPONENT_WEIGHTS),
                 "critical_rank_targets": dict(LISTENER_AGENT_CRITICAL_RANK_TARGETS),
@@ -1288,6 +1746,14 @@ def _build_listener_agent_report(inputs: list[str], shortlist: int = 3) -> dict[
     }
 
 
+
+def _build_listener_agent_report(inputs: list[str], shortlist: int = 3) -> dict[str, Any]:
+    if not inputs:
+        raise CliError("listener-agent requires at least one input")
+    resolved = [_resolve_compare_input(path) for path in inputs]
+    return _build_listener_agent_report_from_resolved(resolved, inputs=inputs, shortlist=shortlist)
+
+
 def listener_agent(inputs: list[str], output: Optional[str], shortlist: int = 3) -> int:
     report = _build_listener_agent_report(inputs, shortlist=shortlist)
     resolved_output = _resolve_output_path(
@@ -1313,6 +1779,345 @@ def listener_agent(inputs: list[str], output: Optional[str], shortlist: int = 3)
     return 0
 
 
+
+def _evaluate_auto_shortlist_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    run_dir = str(candidate["outdir"])
+    resolved = _resolve_compare_input(run_dir)
+    listen_report_path = Path(run_dir) / "listen_report.json"
+    _write_json(listen_report_path, resolved["report"])
+    resolved["metadata"] = {
+        "candidate_id": candidate.get("candidate_id"),
+        "variant_config": candidate.get("variant_config") or {},
+        "run_dir": run_dir,
+        "arrangement_plan_path": candidate.get("arrangement_plan_path"),
+        "listen_report_path": str(listen_report_path),
+    }
+    assessment = _listener_agent_case_assessment(resolved)
+    candidate.update(
+        {
+            "listen_report_path": str(listen_report_path),
+            "listen_report": resolved["report"],
+            "assessment": assessment,
+        }
+    )
+    return candidate
+
+
+
+def _build_auto_shortlist_report(
+    *,
+    song_a: str,
+    song_b: str,
+    output_root: Path,
+    batch_size: int,
+    shortlist: int,
+    variant_mode: str,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    resolved_inputs = []
+    for candidate in candidates:
+        listen_path = str(candidate.get("listen_report_path") or candidate["outdir"])
+        resolved = _resolve_compare_input(f"{candidate['candidate_id']}={listen_path}")
+        resolved["metadata"] = {
+            "candidate_id": candidate.get("candidate_id"),
+            "variant_config": candidate.get("variant_config") or {},
+            "run_dir": candidate.get("outdir"),
+            "arrangement_plan_path": candidate.get("arrangement_plan_path"),
+            "listen_report_path": candidate.get("listen_report_path"),
+        }
+        resolved_inputs.append(resolved)
+
+    listener_report = _build_listener_agent_report_from_resolved(
+        resolved_inputs,
+        inputs=[str(candidate.get("outdir")) for candidate in candidates],
+        shortlist=shortlist,
+    )
+    survivors = list(listener_report.get("survivors") or [])
+    borderlines = list(listener_report.get("borderline") or [])
+    pairwise_pool = survivors or borderlines[: max(shortlist, 0)]
+    pairwise_inputs = [f"{row['label']}={row['metadata'].get('listen_report_path') or row['input_path']}" for row in pairwise_pool]
+    pairwise_benchmark = _build_listen_benchmark(pairwise_inputs) if len(pairwise_inputs) >= 2 else None
+
+    ranking_index: dict[str, dict[str, Any]] = {}
+    if pairwise_benchmark:
+        ranking_index = {str(row["label"]): row for row in pairwise_benchmark.get("ranking") or []}
+
+    candidate_index = {str(candidate["candidate_id"]): candidate for candidate in candidates}
+    recommended_shortlist: list[dict[str, Any]] = []
+    if survivors:
+        ranked_survivors = list(survivors)
+        if ranking_index:
+            ranked_survivors.sort(
+                key=lambda row: (
+                    -int((ranking_index.get(str(row["label"])) or {}).get("wins", 0)),
+                    -float((ranking_index.get(str(row["label"])) or {}).get("net_score_delta", 0.0)),
+                    -float(row.get("listener_rank", 0.0)),
+                    row.get("label") or "",
+                )
+            )
+        for rank, row in enumerate(ranked_survivors[: max(shortlist, 0)], start=1):
+            meta = dict(row.get("metadata") or {})
+            recommended_shortlist.append(
+                {
+                    "rank": rank,
+                    "candidate_id": meta.get("candidate_id") or row.get("label"),
+                    "label": row.get("label"),
+                    "decision": row.get("decision"),
+                    "listener_rank": row.get("listener_rank"),
+                    "overall_score": row.get("overall_score"),
+                    "verdict": row.get("verdict"),
+                    "run_dir": meta.get("run_dir") or row.get("input_path"),
+                    "audio_path": row.get("resolved_audio_path"),
+                    "listen_report_path": meta.get("listen_report_path") or row.get("input_path"),
+                    "variant_config": meta.get("variant_config") or {},
+                    "pairwise": ranking_index.get(str(row.get("label"))),
+                    "top_reasons": row.get("top_reasons") or [],
+                    "top_fixes": row.get("top_fixes") or [],
+                }
+            )
+
+    closest_misses: list[dict[str, Any]] = []
+    if not recommended_shortlist and borderlines:
+        for row in borderlines[: max(shortlist, 0)]:
+            meta = dict(row.get("metadata") or {})
+            closest_misses.append(
+                {
+                    "candidate_id": meta.get("candidate_id") or row.get("label"),
+                    "label": row.get("label"),
+                    "decision": row.get("decision"),
+                    "listener_rank": row.get("listener_rank"),
+                    "overall_score": row.get("overall_score"),
+                    "verdict": row.get("verdict"),
+                    "run_dir": meta.get("run_dir") or row.get("input_path"),
+                    "audio_path": row.get("resolved_audio_path"),
+                    "listen_report_path": meta.get("listen_report_path") or row.get("input_path"),
+                    "variant_config": meta.get("variant_config") or {},
+                    "top_reasons": row.get("top_reasons") or [],
+                    "top_fixes": row.get("top_fixes") or [],
+                }
+            )
+
+    summary = [
+        f"Generated {len(candidates)} candidate renders for automatic shortlist evaluation.",
+        f"Listener gate result: {listener_report['counts']['survivors']} survivors, {listener_report['counts']['borderline']} borderline, {listener_report['counts']['rejected']} rejected.",
+    ]
+    if recommended_shortlist:
+        summary.append(
+            f"Shortlisted {len(recommended_shortlist)} survivor(s) for human review; top winner is {recommended_shortlist[0]['candidate_id']}."
+        )
+    else:
+        summary.append("No candidates survived the automatic gate.")
+    if pairwise_benchmark:
+        summary.append(
+            f"Pairwise ranking winner in review pool: {pairwise_benchmark.get('winner')} across {len(pairwise_benchmark.get('comparisons') or [])} comparisons."
+        )
+
+    candidate_rows = []
+    for candidate in candidates:
+        assessment = dict(candidate.get("assessment") or {})
+        candidate_rows.append(
+            {
+                "candidate_id": candidate.get("candidate_id"),
+                "run_dir": candidate.get("outdir"),
+                "render_manifest_path": candidate.get("render_manifest_path"),
+                "arrangement_plan_path": candidate.get("arrangement_plan_path"),
+                "audio_path": candidate.get("master_mp3_path") or candidate.get("master_wav_path"),
+                "raw_audio_path": candidate.get("master_wav_path"),
+                "listen_report_path": candidate.get("listen_report_path"),
+                "variant_config": candidate.get("variant_config") or {},
+                "decision": assessment.get("decision"),
+                "gate_status": assessment.get("gate_status"),
+                "listener_rank": assessment.get("listener_rank"),
+                "base_listener_rank": assessment.get("base_listener_rank"),
+                "overall_score": assessment.get("overall_score"),
+                "verdict": assessment.get("verdict"),
+                "hard_fail_reasons": assessment.get("hard_fail_reasons") or [],
+                "top_reasons": assessment.get("top_reasons") or [],
+                "top_fixes": assessment.get("top_fixes") or [],
+                "component_scores": assessment.get("component_scores") or {},
+                "feedback_learning": assessment.get("feedback_learning") or {},
+            }
+        )
+
+    return {
+        "schema_version": AUTO_SHORTLIST_SCHEMA_VERSION,
+        "job": {
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "song_a": song_a,
+            "song_b": song_b,
+            "output_root": str(output_root),
+            "batch_size": int(batch_size),
+            "shortlist": int(shortlist),
+            "selection_policy": "survivor_then_pairwise_v1",
+            "pairwise_pool_policy": "survivors_only_else_borderline_fallback",
+            "variant_mode": variant_mode,
+            "gate_version": AUTO_SHORTLIST_SCHEMA_VERSION,
+            "policy_version": _listener_policy_snapshot()["policy_version"],
+        },
+        "policy_snapshot": _listener_policy_snapshot(),
+        "feedback_learning": _feedback_learning_snapshot(),
+        "listener_agent_report": listener_report,
+        "candidates": candidate_rows,
+        "gated_groups": {
+            "survivors": [str(row.get("metadata", {}).get("candidate_id") or row.get("label")) for row in survivors],
+            "borderline": [str(row.get("metadata", {}).get("candidate_id") or row.get("label")) for row in borderlines],
+            "rejected": [str(row.get("metadata", {}).get("candidate_id") or row.get("label")) for row in listener_report.get("rejected") or []],
+        },
+        "pairwise_pool": {
+            "candidate_ids": [str(row.get("metadata", {}).get("candidate_id") or row.get("label")) for row in pairwise_pool],
+            "benchmark": pairwise_benchmark,
+            "winner": pairwise_benchmark.get("winner") if pairwise_benchmark else (recommended_shortlist[0]["candidate_id"] if recommended_shortlist else None),
+        },
+        "recommended_shortlist": recommended_shortlist,
+        "closest_misses": closest_misses,
+        "pruning": {
+            "enabled": False,
+            "kept_candidate_ids": [row["candidate_id"] for row in recommended_shortlist],
+            "deleted_candidate_ids": [],
+            "deleted_candidate_count": 0,
+        },
+        "summary": summary,
+    }
+
+
+
+def _apply_auto_shortlist_pruning(
+    output_root: Path,
+    report: dict[str, Any],
+    *,
+    delete_non_survivors: bool,
+) -> dict[str, Any]:
+    pruning = dict(report.get("pruning") or {})
+    pruning["enabled"] = bool(delete_non_survivors)
+    if not delete_non_survivors:
+        report["pruning"] = pruning
+        return report
+
+    keep_ids = {str(row.get("candidate_id")) for row in report.get("recommended_shortlist") or [] if row.get("candidate_id")}
+    deleted_ids: list[str] = []
+    candidate_rows = list(report.get("candidates") or [])
+    for row in candidate_rows:
+        candidate_id = str(row.get("candidate_id") or "")
+        run_dir_value = row.get("run_dir")
+        if not candidate_id or candidate_id in keep_ids or not run_dir_value:
+            continue
+        run_dir = Path(str(run_dir_value)).expanduser().resolve()
+        try:
+            run_dir.relative_to(output_root.resolve())
+        except ValueError:
+            continue
+        if run_dir.exists() and run_dir.is_dir():
+            shutil.rmtree(run_dir, ignore_errors=True)
+        deleted_ids.append(candidate_id)
+        row["artifacts_pruned"] = True
+        row["audio_path"] = None
+        row["raw_audio_path"] = None
+        row["listen_report_path"] = None
+        row["render_manifest_path"] = None
+        row["arrangement_plan_path"] = None
+
+    for collection_key in ("closest_misses",):
+        for row in list(report.get(collection_key) or []):
+            if str(row.get("candidate_id") or "") in deleted_ids:
+                row["artifacts_pruned"] = True
+                row["audio_path"] = None
+                row["listen_report_path"] = None
+
+    pruning.update(
+        {
+            "kept_candidate_ids": sorted(keep_ids),
+            "deleted_candidate_ids": deleted_ids,
+            "deleted_candidate_count": len(deleted_ids),
+        }
+    )
+    report["pruning"] = pruning
+    if deleted_ids:
+        report.setdefault("summary", []).append(
+            f"Pruned {len(deleted_ids)} non-survivor candidate run(s) after gating so only shortlist survivors remain on disk."
+        )
+    return report
+
+
+
+def auto_shortlist_fusion(
+    track1: str,
+    track2: str,
+    output_root: Optional[str],
+    *,
+    batch_size: int = AUTO_SHORTLIST_DEFAULT_BATCH_SIZE,
+    shortlist: int = AUTO_SHORTLIST_DEFAULT_SHORTLIST,
+    variant_mode: str = "safe",
+    delete_non_survivors: bool = True,
+) -> int:
+    analyze_audio = _get_analyze_audio_file()
+    _, build_arrangement_plan = _get_planner_functions()
+    track1_path = _resolve_existing_audio_path(track1, "track1")
+    track2_path = _resolve_existing_audio_path(track2, "track2")
+    batch_size = max(1, min(int(batch_size), AUTO_SHORTLIST_MAX_BATCH_SIZE))
+    shortlist = max(1, int(shortlist))
+    resolved_output_root = _resolve_output_path(
+        output_root,
+        default_path=_stable_auto_shortlist_output_root(track1_path, track2_path, batch_size=batch_size, shortlist=shortlist, variant_mode=variant_mode),
+        default_filename="auto_shortlist_report.json",
+    )
+    output_root_path = resolved_output_root.parent if resolved_output_root.suffix else Path(resolved_output_root)
+    output_root_path.mkdir(parents=True, exist_ok=True)
+
+    song_a = analyze_audio(track1_path)
+    song_b = analyze_audio(track2_path)
+    base_plan = build_arrangement_plan(song_a, song_b)
+    variant_configs = _build_auto_shortlist_variant_configs(base_plan, batch_size, variant_mode=variant_mode)
+
+    candidates: list[dict[str, Any]] = []
+    seen_signatures: set[str] = set()
+    for index, variant in enumerate(variant_configs, start=1):
+        candidate_id = f"candidate_{index:03d}"
+        signature = json.dumps(variant.get("swaps") or [], sort_keys=True)
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        run_dir = output_root_path / candidate_id
+        candidate = _render_fusion_candidate(song_a, song_b, base_plan, run_dir, candidate_id=candidate_id, variant_config=variant)
+        candidates.append(_evaluate_auto_shortlist_candidate(candidate))
+
+    report = _build_auto_shortlist_report(
+        song_a=track1_path,
+        song_b=track2_path,
+        output_root=output_root_path,
+        batch_size=batch_size,
+        shortlist=shortlist,
+        variant_mode=variant_mode,
+        candidates=candidates,
+    )
+    report = _apply_auto_shortlist_pruning(output_root_path, report, delete_non_survivors=delete_non_survivors)
+    report_path = output_root_path / "auto_shortlist_report.json"
+    _write_json(report_path, report)
+    memory_path = _append_auto_shortlist_memory_log(report)
+    print(f"Wrote auto-shortlist report: {report_path}")
+    if memory_path is not None:
+        print(f"Appended fusion memory log: {memory_path}")
+    if report["recommended_shortlist"]:
+        winner = report["recommended_shortlist"][0]
+        print(f"Top survivor: {winner['candidate_id']} (overall={winner['overall_score']:.1f}, rank={winner['listener_rank']:.1f})")
+    else:
+        print("No survivors cleared the automatic gate.")
+    for line in report.get("summary") or []:
+        print(f"- {line}")
+    return 0
+
+
+
+def distill_feedback_learning(output: Optional[str] = None) -> int:
+    feedback_root = (Path(__file__).resolve().parent / "data" / "human_feedback").resolve()
+    output_path = Path(output).expanduser().resolve() if output else (feedback_root / "learning_snapshot.json")
+    payload = write_feedback_learning_summary(feedback_root, output_path, limit=5000)
+    _feedback_learning_snapshot.cache_clear()
+    print(f"Wrote feedback learning snapshot: {output_path}")
+    print(json.dumps(payload.get("derived_priors") or {}, indent=2, sort_keys=True))
+    return 0
+
+
+
 def closed_loop(
     song_a: str,
     song_b: str,
@@ -1324,6 +2129,8 @@ def closed_loop(
     min_improvement: float = 0.5,
     change_command: Optional[str] = None,
     test_command: Optional[str] = None,
+    change_dispatch: Optional[dict[str, Any]] = None,
+    test_dispatch: Optional[dict[str, Any]] = None,
     target_score: float = 99.0,
 ) -> int:
     song_a_path = _resolve_existing_audio_path(song_a, "song_a")
@@ -1356,6 +2163,8 @@ def closed_loop(
             min_improvement=min_improvement,
             change_command=change_command,
             test_command=test_command,
+            change_dispatch=change_dispatch,
+            test_dispatch=test_dispatch,
             target_score=target_score,
         )
     except LoopError as exc:
@@ -1427,6 +2236,7 @@ Suggested first checkpoint:
   python3 ai_dj.py compare-listen left.json right.json --output runs/checkpoint/listen_compare.json
   python3 ai_dj.py benchmark-listen runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listen_benchmark.json
   python3 ai_dj.py listener-agent runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listener_agent.json
+  python3 ai_dj.py auto-shortlist-fusion song_a.wav song_b.wav --output runs/auto_shortlist/demo --batch-size 4 --shortlist 2
   python3 ai_dj.py closed-loop song_a.wav song_b.wav ref_a.wav ref_b.wav --output runs/closed_loop/demo --max-iterations 2
   python3 ai_dj.py prototype song_a.wav song_b.wav --output-dir runs/prototype-001
   python3 ai_dj.py fusion song_a.wav song_b.wav --output runs/render-prototype
@@ -1464,6 +2274,18 @@ Suggested first checkpoint:
     listener_agent_parser.add_argument("--shortlist", type=int, default=3, help="Maximum number of survivors to recommend for human review")
     listener_agent_parser.add_argument("--output", "-o", help="Path to output listener-agent JSON")
 
+    auto_shortlist_parser = subparsers.add_parser("auto-shortlist-fusion", help="Render several candidate fusions, gate them automatically, and only keep survivors for human listening")
+    auto_shortlist_parser.add_argument("track1", help="Path to first track")
+    auto_shortlist_parser.add_argument("track2", help="Path to second track")
+    auto_shortlist_parser.add_argument("--output", "-o", help="Output directory (or report path inside one) for shortlist artifacts")
+    auto_shortlist_parser.add_argument("--batch-size", type=int, default=AUTO_SHORTLIST_DEFAULT_BATCH_SIZE, help="How many candidate variants to generate")
+    auto_shortlist_parser.add_argument("--shortlist", type=int, default=AUTO_SHORTLIST_DEFAULT_SHORTLIST, help="Maximum number of survivors to surface for human review")
+    auto_shortlist_parser.add_argument("--variant-mode", default="safe", help="Variant generation mode (currently: safe)")
+    auto_shortlist_parser.add_argument("--keep-non-survivors", action="store_true", help="Do not delete rejected/non-shortlisted candidate run folders after gating")
+
+    feedback_learning_parser = subparsers.add_parser("distill-feedback-learning", help="Distill stored human feedback into a stable learning snapshot used by shortlist ranking")
+    feedback_learning_parser.add_argument("--output", "-o", help="Output JSON path for the distilled learning snapshot")
+
     closed_loop_parser = subparsers.add_parser("closed-loop", help="Run a bounded listener-driven improvement loop for one fusion pair")
     closed_loop_parser.add_argument("song_a", help="Path to parent song A")
     closed_loop_parser.add_argument("song_b", help="Path to parent song B")
@@ -1476,6 +2298,8 @@ Suggested first checkpoint:
     closed_loop_parser.add_argument("--target-score", type=float, default=99.0, help="Long-term aspirational target score for the feedback brief")
     closed_loop_parser.add_argument("--change-command", help="Optional direct command template used to change code between iterations")
     closed_loop_parser.add_argument("--test-command", help="Optional direct command template used to validate changes between iterations")
+    closed_loop_parser.add_argument("--change-dispatch", help="Optional JSON dispatch spec for the change step")
+    closed_loop_parser.add_argument("--test-dispatch", help="Optional JSON dispatch spec for the test step")
 
     fus_parser = subparsers.add_parser("fusion", help="Render a first-pass fused audio prototype")
     fus_parser.add_argument("track1", help="Path to first track")
@@ -1517,7 +2341,30 @@ Suggested first checkpoint:
             return benchmark_listen(args.inputs, args.output)
         if args.command == "listener-agent":
             return listener_agent(args.inputs, args.output, args.shortlist)
+        if args.command == "auto-shortlist-fusion":
+            return auto_shortlist_fusion(
+                args.track1,
+                args.track2,
+                args.output,
+                batch_size=args.batch_size,
+                shortlist=args.shortlist,
+                variant_mode=args.variant_mode,
+                delete_non_survivors=not bool(args.keep_non_survivors),
+            )
+        if args.command == "distill-feedback-learning":
+            return distill_feedback_learning(args.output)
         if args.command == "closed-loop":
+            change_dispatch = None
+            test_dispatch = None
+            if args.change_dispatch or args.test_dispatch:
+                try:
+                    from scripts.closed_loop_listener_runner import _read_dispatch_spec
+                except ModuleNotFoundError as exc:
+                    raise CliError(f"Unable to import closed-loop runner: {exc}") from exc
+                if args.change_dispatch:
+                    change_dispatch = _read_dispatch_spec(args.change_dispatch, label="change")
+                if args.test_dispatch:
+                    test_dispatch = _read_dispatch_spec(args.test_dispatch, label="test")
             return closed_loop(
                 args.song_a,
                 args.song_b,
@@ -1529,6 +2376,8 @@ Suggested first checkpoint:
                 args.min_improvement,
                 args.change_command,
                 args.test_command,
+                change_dispatch,
+                test_dispatch,
                 args.target_score,
             )
         if args.command == "doctor":
