@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.core.render.spectral import apply_spectral_carve, compute_vocal_presence_mask, _fit_mask_to_shape
+from src.core.render.spectral import apply_spectral_carve, compute_vocal_presence_mask, _fit_mask_to_shape, _smooth_mask_2d
 
 
 def test_compute_vocal_presence_mask_is_bounded_and_nonempty():
@@ -69,3 +69,13 @@ def test_fit_mask_to_shape_resamples_instead_of_repeating_tiles():
     time_trend = np.diff(fit.mean(axis=0))
     assert np.all(freq_trend >= -1e-4)
     assert np.all(time_trend >= -1e-4)
+
+
+def test_smooth_mask_2d_preserves_flat_mask_at_edges():
+    # Edge-preserving smoothing should keep a flat mask flat (no boundary droop).
+    flat = np.full((11, 13), 0.9, dtype=np.float32)
+    smoothed = _smooth_mask_2d(flat, freq_bins=5, time_frames=7)
+
+    assert smoothed.shape == flat.shape
+    assert np.isfinite(smoothed).all()
+    assert np.allclose(smoothed, flat, atol=1e-6)

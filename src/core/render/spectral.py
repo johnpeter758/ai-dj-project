@@ -34,18 +34,29 @@ def _fit_mask_to_shape(mask: np.ndarray, target_shape: tuple[int, int]) -> np.nd
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
+def _smooth_1d_edge_preserving(values: np.ndarray, window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float32)
+    if arr.size == 0 or window <= 1:
+        return arr.astype(np.float32, copy=False)
+
+    width = int(min(max(window, 1), arr.shape[0]))
+    pad_left = width // 2
+    pad_right = width - 1 - pad_left
+    padded = np.pad(arr, (pad_left, pad_right), mode='edge')
+    kernel = np.ones(width, dtype=np.float32) / np.float32(width)
+    return np.convolve(padded, kernel, mode='valid').astype(np.float32)
+
+
 def _smooth_mask_2d(mask: np.ndarray, freq_bins: int = 3, time_frames: int = 5) -> np.ndarray:
     out = mask.astype(np.float32, copy=True)
     if out.size == 0:
         return out
 
     if freq_bins > 1:
-        kernel_f = np.ones(freq_bins, dtype=np.float32) / np.float32(freq_bins)
-        out = np.apply_along_axis(lambda col: np.convolve(col, kernel_f, mode='same'), 0, out)
+        out = np.apply_along_axis(lambda col: _smooth_1d_edge_preserving(col, freq_bins), 0, out)
 
     if time_frames > 1:
-        kernel_t = np.ones(time_frames, dtype=np.float32) / np.float32(time_frames)
-        out = np.apply_along_axis(lambda row: np.convolve(row, kernel_t, mode='same'), 1, out)
+        out = np.apply_along_axis(lambda row: _smooth_1d_edge_preserving(row, time_frames), 1, out)
 
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
