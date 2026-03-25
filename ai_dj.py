@@ -430,6 +430,7 @@ def fusion(
     bpm: Optional[int],
     key: Optional[str],
     output: Optional[str],
+    arrangement_mode: str = "baseline",
 ) -> int:
     """Fuse two tracks together."""
     analyze_audio = _get_analyze_audio_file()
@@ -449,7 +450,7 @@ def fusion(
 
     song_a = analyze_audio(track1_path)
     song_b = analyze_audio(track2_path)
-    plan = build_arrangement_plan(song_a, song_b)
+    plan = build_arrangement_plan(song_a, song_b, arrangement_mode=arrangement_mode)
     result = _render_fusion_plan_candidate(song_a, song_b, plan, outdir)
     if genre or bpm or key:
         print("Note: v1 render currently ignores target genre/BPM/key overrides and uses analyzed parent timing.")
@@ -461,7 +462,7 @@ def fusion(
     return 0
 
 
-def prototype(song_a: str, song_b: str, output_dir: str, stems_dir: Optional[str] = None) -> int:
+def prototype(song_a: str, song_b: str, output_dir: str, stems_dir: Optional[str] = None, arrangement_mode: str = "baseline") -> int:
     """Run the first end-to-end prototype workflow for two songs."""
     analyze_audio = _get_analyze_audio_file()
     build_compatibility, build_arrangement_plan = _get_planner_functions()
@@ -481,7 +482,7 @@ def prototype(song_a: str, song_b: str, output_dir: str, stems_dir: Optional[str
     song_a_dna = song_a_obj.to_dict()
     song_b_dna = song_b_obj.to_dict()
     compatibility = build_compatibility(song_a_obj, song_b_obj).to_dict()
-    arrangement = build_arrangement_plan(song_a_obj, song_b_obj).to_dict()
+    arrangement = build_arrangement_plan(song_a_obj, song_b_obj, arrangement_mode=arrangement_mode).to_dict()
 
     paths = {
         "song_a_dna": outdir / "song_a_dna.json",
@@ -1053,7 +1054,7 @@ def _build_listen_comparison(left_input: str, right_input: str) -> dict[str, Any
     return _build_listen_comparison_from_resolved(left, right)
 
 
-def listen(track: str, output: Optional[str]) -> int:
+def listen(track: str, output: Optional[str], score_only: bool = False) -> int:
     analyze_audio = _get_analyze_audio_file()
     evaluate = _get_evaluate_song()
     track_path = _resolve_existing_audio_path(track, "track")
@@ -1064,8 +1065,12 @@ def listen(track: str, output: Optional[str]) -> int:
     if resolved_output:
         _write_json(resolved_output, report)
         print(f"Wrote listen report: {resolved_output}")
-    else:
+    elif not score_only:
         print(json.dumps(report, indent=2, sort_keys=True))
+
+    if score_only:
+        print(f"{float(report['overall_score']):.1f}")
+        return 0
 
     print(f"Track: {Path(track_path).name}")
     print(f"Overall score: {report['overall_score']}")
@@ -2048,6 +2053,7 @@ def auto_shortlist_fusion(
     shortlist: int = AUTO_SHORTLIST_DEFAULT_SHORTLIST,
     variant_mode: str = "safe",
     delete_non_survivors: bool = True,
+    arrangement_mode: str = "baseline",
 ) -> int:
     analyze_audio = _get_analyze_audio_file()
     _, build_arrangement_plan = _get_planner_functions()
@@ -2065,7 +2071,7 @@ def auto_shortlist_fusion(
 
     song_a = analyze_audio(track1_path)
     song_b = analyze_audio(track2_path)
-    base_plan = build_arrangement_plan(song_a, song_b)
+    base_plan = build_arrangement_plan(song_a, song_b, arrangement_mode=arrangement_mode)
     variant_configs = _build_auto_shortlist_variant_configs(base_plan, batch_size, variant_mode=variant_mode)
 
     candidates: list[dict[str, Any]] = []
@@ -2259,6 +2265,7 @@ Suggested first checkpoint:
     listen_parser = subparsers.add_parser("listen", help="Evaluate how musically strong/coherent a track appears")
     listen_parser.add_argument("track", help="Path to track file")
     listen_parser.add_argument("--output", "-o", help="Path to output JSON")
+    listen_parser.add_argument("--score-only", action="store_true", help="Print only the overall score (0-100) for quick scripting")
 
     compare_parser = subparsers.add_parser("compare-listen", help="Compare two listen reports, audio files, or rendered outputs")
     compare_parser.add_argument("left", help="Left input: listen JSON, audio file, render manifest JSON, or render output directory")
@@ -2281,6 +2288,7 @@ Suggested first checkpoint:
     auto_shortlist_parser.add_argument("--batch-size", type=int, default=AUTO_SHORTLIST_DEFAULT_BATCH_SIZE, help="How many candidate variants to generate")
     auto_shortlist_parser.add_argument("--shortlist", type=int, default=AUTO_SHORTLIST_DEFAULT_SHORTLIST, help="Maximum number of survivors to surface for human review")
     auto_shortlist_parser.add_argument("--variant-mode", default="safe", help="Variant generation mode (currently: safe)")
+    auto_shortlist_parser.add_argument("--arrangement-mode", default="baseline", choices=["baseline", "adaptive"], help="Arrangement planning mode")
     auto_shortlist_parser.add_argument("--keep-non-survivors", action="store_true", help="Do not delete rejected/non-shortlisted candidate run folders after gating")
 
     feedback_learning_parser = subparsers.add_parser("distill-feedback-learning", help="Distill stored human feedback into a stable learning snapshot used by shortlist ranking")
@@ -2308,12 +2316,14 @@ Suggested first checkpoint:
     fus_parser.add_argument("--bpm", "-b", type=int, help="Target BPM (accepted but not yet applied)")
     fus_parser.add_argument("--key", "-k", help="Target musical key")
     fus_parser.add_argument("--output", "-o", help="Output directory for render artifacts")
+    fus_parser.add_argument("--arrangement-mode", default="baseline", choices=["baseline", "adaptive"], help="Arrangement planning mode")
 
     proto_parser = subparsers.add_parser("prototype", help="Generate first-pass two-song prototype artifacts")
     proto_parser.add_argument("song_a", help="Path to parent song A")
     proto_parser.add_argument("song_b", help="Path to parent song B")
     proto_parser.add_argument("--output-dir", "-o", required=True, help="Directory to write prototype artifacts")
     proto_parser.add_argument("--stems-dir", help="Optional directory for stem outputs")
+    proto_parser.add_argument("--arrangement-mode", default="baseline", choices=["baseline", "adaptive"], help="Arrangement planning mode")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check whether local dependencies are installed")
     doctor_parser.add_argument("--output", "-o", help="Optional path to write dependency report JSON")
@@ -2330,11 +2340,11 @@ Suggested first checkpoint:
         if args.command == "analyze":
             return analyze(args.track, args.detailed, args.output)
         if args.command == "fusion":
-            return fusion(args.track1, args.track2, args.genre, args.bpm, args.key, args.output)
+            return fusion(args.track1, args.track2, args.genre, args.bpm, args.key, args.output, args.arrangement_mode)
         if args.command == "prototype":
-            return prototype(args.song_a, args.song_b, args.output_dir, args.stems_dir)
+            return prototype(args.song_a, args.song_b, args.output_dir, args.stems_dir, args.arrangement_mode)
         if args.command == "listen":
-            return listen(args.track, args.output)
+            return listen(args.track, args.output, args.score_only)
         if args.command == "compare-listen":
             return compare_listen(args.left, args.right, args.output)
         if args.command == "benchmark-listen":
@@ -2350,6 +2360,7 @@ Suggested first checkpoint:
                 shortlist=args.shortlist,
                 variant_mode=args.variant_mode,
                 delete_non_survivors=not bool(args.keep_non_survivors),
+                arrangement_mode=args.arrangement_mode,
             )
         if args.command == "distill-feedback-learning":
             return distill_feedback_learning(args.output)

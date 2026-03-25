@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import ai_dj
@@ -68,6 +69,20 @@ def test_listen_command_writes_json(monkeypatch, tmp_path: Path):
     assert 'mix_sanity' in payload
     assert 'song_likeness' in payload
     assert 'gating' in payload
+
+
+def test_listen_score_only_prints_numeric_overall_score(monkeypatch, tmp_path: Path, capsys):
+    audio = tmp_path / 'song.mp3'
+    audio.write_bytes(b'fake')
+
+    monkeypatch.setattr(ai_dj, 'analyze_audio_file', lambda path, stems_dir=None: DummySong(str(path)))
+
+    rc = ai_dj.listen(str(audio), None, score_only=True)
+    assert rc == 0
+
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert re.fullmatch(r"\d+\.\d", lines[0])
 
 
 def test_groove_score_penalizes_bar_level_pocket_collapse_even_when_beat_grid_is_regular():
