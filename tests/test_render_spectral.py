@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.core.render.spectral import apply_spectral_carve, compute_vocal_presence_mask
+from src.core.render.spectral import apply_spectral_carve, compute_vocal_presence_mask, _fit_mask_to_shape
 
 
 def test_compute_vocal_presence_mask_is_bounded_and_nonempty():
@@ -53,3 +53,19 @@ def test_apply_spectral_carve_handles_mask_shape_mismatch_without_nan():
 
     assert carved.shape == stereo.shape
     assert np.isfinite(carved).all()
+
+
+def test_fit_mask_to_shape_resamples_instead_of_repeating_tiles():
+    # A strict gradient should stay monotonic after resizing (tiling via np.resize breaks this).
+    mask = np.linspace(0.0, 1.0, 6, dtype=np.float32).reshape(3, 2)
+    fit = _fit_mask_to_shape(mask, (9, 7))
+
+    assert fit.shape == (9, 7)
+    assert np.isfinite(fit).all()
+    assert float(fit.min()) >= 0.0
+    assert float(fit.max()) <= 1.0
+
+    freq_trend = np.diff(fit.mean(axis=1))
+    time_trend = np.diff(fit.mean(axis=0))
+    assert np.all(freq_trend >= -1e-4)
+    assert np.all(time_trend >= -1e-4)
