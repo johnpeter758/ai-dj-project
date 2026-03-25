@@ -1108,6 +1108,21 @@ def test_build_role_prior_prefers_consistent_ramp_over_flashy_late_spike():
     assert candidate.label == "phrase_4_6"
 
 
+def test_infer_transition_mode_returns_none_without_previous_section():
+    song = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    chosen = _WindowSelection(
+        parent_id="A",
+        song=song,
+        candidate=_pick_candidate(song, target_position="early", bar_count=8, target_energy=0.32, role="intro"),
+        blended_error=0.08,
+        score_breakdown={},
+        section_label="intro",
+    )
+    spec = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.32, source_parent_preference="A", transition_in="blend", transition_out="blend")
+
+    assert _infer_transition_mode(spec, chosen, None, None) is None
+
+
 def test_infer_transition_mode_prefers_single_owner_handoff_for_cross_parent_build():
     song_a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
     song_b = make_song("b.wav", 128.0, "A", "minor", "8A", 6, 0.20)

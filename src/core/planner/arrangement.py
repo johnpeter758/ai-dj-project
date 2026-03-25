@@ -4339,7 +4339,9 @@ def _infer_transition_mode(
 ) -> str | None:
     if spec.transition_in is None:
         return None
-    if previous is None or previous.parent_id == chosen.parent_id:
+    if previous is None:
+        return None
+    if previous.parent_id == chosen.parent_id:
         return "same_parent_flow"
     if previous_label == "payoff" and spec.label in {"bridge", "outro"}:
         return "arrival_handoff"
