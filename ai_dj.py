@@ -551,7 +551,23 @@ def fusion(
                     }
                 )
 
-        winner = max(candidates, key=lambda item: item["selection_score"])
+        pass_candidates = [
+            item
+            for item in candidates
+            if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "pass"
+        ]
+        review_candidates = [
+            item
+            for item in candidates
+            if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "review"
+        ]
+
+        if pass_candidates:
+            winner = max(pass_candidates, key=lambda item: item["selection_score"])
+        elif review_candidates:
+            winner = max(review_candidates, key=lambda item: item["selection_score"])
+        else:
+            winner = max(candidates, key=lambda item: item["selection_score"])
         best = winner["result"]
 
         _copy_if_exists(best.get("raw_wav_path"), outdir / "child_raw.wav")
