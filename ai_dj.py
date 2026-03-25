@@ -473,6 +473,38 @@ def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -
     return round(float(score), 3)
 
 
+def _extract_transition_seam_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    transition = report.get("transition") or {}
+    details = transition.get("details") or {}
+    aggregate = details.get("aggregate_metrics") or {}
+    snapshot: dict[str, Any] = {
+        "transition_score": float(transition.get("score") or 0.0),
+    }
+    for key in (
+        "mean_seam_risk",
+        "max_seam_risk",
+        "mean_energy_jump",
+        "mean_spectral_jump",
+        "mean_onset_jump",
+        "avg_overlap_beats",
+    ):
+        if key in aggregate:
+            snapshot[key] = aggregate.get(key)
+    return snapshot
+
+
+def _candidate_meets_quality_floor(
+    report: dict[str, Any],
+    *,
+    min_song_likeness: float,
+    min_groove: float,
+) -> bool:
+    gate = str((report.get("gating") or {}).get("status") or "").strip().lower()
+    song_likeness = float((report.get("song_likeness") or {}).get("score") or 0.0)
+    groove = float((report.get("groove") or {}).get("score") or 0.0)
+    return gate == "pass" and song_likeness >= float(min_song_likeness) and groove >= float(min_groove)
+
+
 def _copy_if_exists(src: str | None, dst: Path) -> None:
     if not src:
         return
@@ -551,10 +583,22 @@ def fusion(
                     }
                 )
 
+        min_song_likeness = 55.0
+        min_groove = 60.0
+
         pass_candidates = [
             item
             for item in candidates
             if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "pass"
+        ]
+        floor_pass_candidates = [
+            item
+            for item in pass_candidates
+            if _candidate_meets_quality_floor(
+                item.get("listen_report") or {},
+                min_song_likeness=min_song_likeness,
+                min_groove=min_groove,
+            )
         ]
         review_candidates = [
             item
@@ -562,10 +606,16 @@ def fusion(
             if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "review"
         ]
 
-        if pass_candidates:
+        selection_policy = "fallback:any"
+        if floor_pass_candidates:
+            winner = max(floor_pass_candidates, key=lambda item: item["selection_score"])
+            selection_policy = "pass+floor"
+        elif pass_candidates:
             winner = max(pass_candidates, key=lambda item: item["selection_score"])
+            selection_policy = "pass-only"
         elif review_candidates:
             winner = max(review_candidates, key=lambda item: item["selection_score"])
+            selection_policy = "review-fallback"
         else:
             winner = max(candidates, key=lambda item: item["selection_score"])
         best = winner["result"]
@@ -578,6 +628,15 @@ def fusion(
 
         selection_payload = {
             "mode": "pro",
+            "selection_policy": {
+                "winner_policy": selection_policy,
+                "min_song_likeness": min_song_likeness,
+                "min_groove": min_groove,
+                "candidate_count": len(candidates),
+                "pass_count": len(pass_candidates),
+                "floor_pass_count": len(floor_pass_candidates),
+                "review_count": len(review_candidates),
+            },
             "winner": {
                 "arrangement_mode": winner["mode"],
                 "variant": winner.get("variant") or {},
@@ -588,6 +647,7 @@ def fusion(
                 "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                 "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
                 "gating_status": str(((winner["listen_report"] or {}).get("gating") or {}).get("status") or ""),
+                "seam_snapshot": _extract_transition_seam_snapshot(winner["listen_report"] or {}),
                 "parent_balance": winner["parent_balance"],
                 "candidate_dir": str(Path(best.get("master_wav_path") or "").parent),
             },
@@ -602,6 +662,7 @@ def fusion(
                     "transition": float(((item["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                     "mix_sanity": float(((item["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
                     "gating_status": str(((item["listen_report"] or {}).get("gating") or {}).get("status") or ""),
+                    "seam_snapshot": _extract_transition_seam_snapshot(item["listen_report"] or {}),
                     "parent_balance": item["parent_balance"],
                     "listen_report_path": item["listen_report_path"],
                     "candidate_dir": str(Path(item["result"].get("master_wav_path") or "").parent),
@@ -624,6 +685,7 @@ def fusion(
         print("Render outputs (pro mode):")
         print(f"  candidates evaluated: {len(candidates)}")
         print(f"  winner mode: {winner['mode']}")
+        print(f"  winner policy: {selection_policy}")
         print(f"  winner selection score: {winner['selection_score']}")
         print(f"  winner overall score: {(winner['listen_report'] or {}).get('overall_score')}")
         print(f"  winner parent balance: {winner['parent_balance']}")
