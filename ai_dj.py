@@ -505,6 +505,50 @@ def _candidate_meets_quality_floor(
     return gate == "pass" and song_likeness >= float(min_song_likeness) and groove >= float(min_groove)
 
 
+def _select_pro_fusion_winner(
+    candidates: list[dict[str, Any]],
+    *,
+    min_song_likeness: float,
+    min_groove: float,
+) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
+    pass_candidates = [
+        item
+        for item in candidates
+        if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "pass"
+    ]
+    floor_pass_candidates = [
+        item
+        for item in pass_candidates
+        if _candidate_meets_quality_floor(
+            item.get("listen_report") or {},
+            min_song_likeness=min_song_likeness,
+            min_groove=min_groove,
+        )
+    ]
+    review_candidates = [
+        item
+        for item in candidates
+        if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "review"
+    ]
+
+    counts = {
+        "candidate_count": len(candidates),
+        "pass_count": len(pass_candidates),
+        "floor_pass_count": len(floor_pass_candidates),
+        "review_count": len(review_candidates),
+    }
+
+    if floor_pass_candidates:
+        winner = max(floor_pass_candidates, key=lambda item: item["selection_score"])
+        return winner, "pass+floor", counts
+
+    if pass_candidates:
+        return None, "hard-fail:pass-below-floor", counts
+    if review_candidates:
+        return None, "hard-fail:no-pass", counts
+    return None, "hard-fail:all-reject", counts
+
+
 def _copy_if_exists(src: str | None, dst: Path) -> None:
     if not src:
         return
@@ -586,45 +630,11 @@ def fusion(
         min_song_likeness = 55.0
         min_groove = 60.0
 
-        pass_candidates = [
-            item
-            for item in candidates
-            if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "pass"
-        ]
-        floor_pass_candidates = [
-            item
-            for item in pass_candidates
-            if _candidate_meets_quality_floor(
-                item.get("listen_report") or {},
-                min_song_likeness=min_song_likeness,
-                min_groove=min_groove,
-            )
-        ]
-        review_candidates = [
-            item
-            for item in candidates
-            if str(((item.get("listen_report") or {}).get("gating") or {}).get("status") or "").strip().lower() == "review"
-        ]
-
-        selection_policy = "fallback:any"
-        if floor_pass_candidates:
-            winner = max(floor_pass_candidates, key=lambda item: item["selection_score"])
-            selection_policy = "pass+floor"
-        elif pass_candidates:
-            winner = max(pass_candidates, key=lambda item: item["selection_score"])
-            selection_policy = "pass-only"
-        elif review_candidates:
-            winner = max(review_candidates, key=lambda item: item["selection_score"])
-            selection_policy = "review-fallback"
-        else:
-            winner = max(candidates, key=lambda item: item["selection_score"])
-        best = winner["result"]
-
-        _copy_if_exists(best.get("raw_wav_path"), outdir / "child_raw.wav")
-        _copy_if_exists(best.get("master_wav_path"), outdir / "child_master.wav")
-        _copy_if_exists(best.get("master_mp3_path"), outdir / "child_master.mp3")
-        _copy_if_exists(best.get("render_manifest_path"), outdir / "render_manifest.json")
-        _copy_if_exists(best.get("arrangement_plan_path"), outdir / "arrangement_plan.json")
+        winner, selection_policy, selection_counts = _select_pro_fusion_winner(
+            candidates,
+            min_song_likeness=min_song_likeness,
+            min_groove=min_groove,
+        )
 
         selection_payload = {
             "mode": "pro",
@@ -632,25 +642,10 @@ def fusion(
                 "winner_policy": selection_policy,
                 "min_song_likeness": min_song_likeness,
                 "min_groove": min_groove,
-                "candidate_count": len(candidates),
-                "pass_count": len(pass_candidates),
-                "floor_pass_count": len(floor_pass_candidates),
-                "review_count": len(review_candidates),
+                **selection_counts,
             },
-            "winner": {
-                "arrangement_mode": winner["mode"],
-                "variant": winner.get("variant") or {},
-                "selection_score": winner["selection_score"],
-                "overall_score": float((winner["listen_report"] or {}).get("overall_score") or 0.0),
-                "song_likeness": float(((winner["listen_report"] or {}).get("song_likeness") or {}).get("score") or 0.0),
-                "groove": float(((winner["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
-                "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
-                "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
-                "gating_status": str(((winner["listen_report"] or {}).get("gating") or {}).get("status") or ""),
-                "seam_snapshot": _extract_transition_seam_snapshot(winner["listen_report"] or {}),
-                "parent_balance": winner["parent_balance"],
-                "candidate_dir": str(Path(best.get("master_wav_path") or "").parent),
-            },
+            "winner": None,
+            "promotion_blocked": winner is None,
             "candidates": [
                 {
                     "arrangement_mode": item["mode"],
@@ -677,6 +672,28 @@ def fusion(
                 "arrangement_plan": str(outdir / "arrangement_plan.json"),
             },
         }
+
+        if winner is not None:
+            best = winner["result"]
+            _copy_if_exists(best.get("raw_wav_path"), outdir / "child_raw.wav")
+            _copy_if_exists(best.get("master_wav_path"), outdir / "child_master.wav")
+            _copy_if_exists(best.get("master_mp3_path"), outdir / "child_master.mp3")
+            _copy_if_exists(best.get("render_manifest_path"), outdir / "render_manifest.json")
+            _copy_if_exists(best.get("arrangement_plan_path"), outdir / "arrangement_plan.json")
+            selection_payload["winner"] = {
+                "arrangement_mode": winner["mode"],
+                "variant": winner.get("variant") or {},
+                "selection_score": winner["selection_score"],
+                "overall_score": float((winner["listen_report"] or {}).get("overall_score") or 0.0),
+                "song_likeness": float(((winner["listen_report"] or {}).get("song_likeness") or {}).get("score") or 0.0),
+                "groove": float(((winner["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
+                "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
+                "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                "gating_status": str(((winner["listen_report"] or {}).get("gating") or {}).get("status") or ""),
+                "seam_snapshot": _extract_transition_seam_snapshot(winner["listen_report"] or {}),
+                "parent_balance": winner["parent_balance"],
+                "candidate_dir": str(Path(best.get("master_wav_path") or "").parent),
+            }
         selection_path = outdir / "fusion_selection.json"
         _write_json(selection_path, selection_payload)
 
@@ -684,8 +701,14 @@ def fusion(
             print("Note: v1 render currently ignores target genre/BPM/key overrides and uses analyzed parent timing.")
         print("Render outputs (pro mode):")
         print(f"  candidates evaluated: {len(candidates)}")
-        print(f"  winner mode: {winner['mode']}")
         print(f"  winner policy: {selection_policy}")
+        if winner is None:
+            print("  promotion blocked: no candidate met hard pass+quality floors")
+            print(f"  required floors: song_likeness >= {min_song_likeness:.1f}, groove >= {min_groove:.1f}, gate=pass")
+            print(f"  selection report: {selection_path}")
+            return 2
+
+        print(f"  winner mode: {winner['mode']}")
         print(f"  winner selection score: {winner['selection_score']}")
         print(f"  winner overall score: {(winner['listen_report'] or {}).get('overall_score')}")
         print(f"  winner parent balance: {winner['parent_balance']}")
