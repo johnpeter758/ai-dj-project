@@ -721,6 +721,35 @@ def test_resolve_render_plan_caps_same_parent_flow_blend_to_verse_at_two_beats(t
 
 
 
+def test_resolve_render_plan_caps_backbone_flow_overlap(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='intro', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='verse', start_bar=4, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='blend', transition_mode='backbone_flow'),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[1].overlap_beats_max == 1.0
+    assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend'))
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
+    assert 'transition_mode=backbone_flow capped overlap from 8.0 to 1.0 beat' in joined
+
+
+
 def test_resolve_render_plan_caps_late_payoff_handoff_blend_overlap(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'
@@ -864,6 +893,27 @@ def test_apply_transition_sonics_highpasses_outgoing_tail_low_end_on_same_parent
     shaped_low_projection = np.abs(np.mean(tail * carrier))
     raw_low_projection = np.abs(np.mean(raw_tail * carrier))
     assert shaped_low_projection < raw_low_projection * 0.85
+
+
+
+def test_apply_transition_sonics_backbone_flow_highpasses_outgoing_tail_more_than_same_parent_flow():
+    sr = 44100
+    seconds = 4.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    low = np.sin(2 * np.pi * 60.0 * t)
+    mids = 0.5 * np.sin(2 * np.pi * 1200.0 * t)
+    segment = np.vstack([low + mids, low + mids]).astype(np.float32)
+
+    same_parent = _apply_transition_sonics(segment, sr, fade_in_sec=0.0, fade_out_sec=1.0, transition_type='blend', transition_mode='same_parent_flow')
+    backbone = _apply_transition_sonics(segment, sr, fade_in_sec=0.0, fade_out_sec=1.0, transition_type='blend', transition_mode='backbone_flow')
+
+    tail_same = same_parent[0, -int(0.2 * sr):]
+    tail_backbone = backbone[0, -int(0.2 * sr):]
+    tail_t = t[: tail_same.size]
+    carrier = np.sin(2 * np.pi * 60.0 * tail_t)
+    same_projection = np.abs(np.mean(tail_same * carrier))
+    backbone_projection = np.abs(np.mean(tail_backbone * carrier))
+    assert backbone_projection < same_projection * 0.9
 
 
 
@@ -1042,6 +1092,24 @@ def test_overlap_carve_settings_prioritize_lead_handoffs_over_filtered_support()
     assert lead_db > filtered_db
     assert lead_lo <= filtered_lo
     assert lead_hi > filtered_hi
+
+
+
+def test_overlap_carve_settings_make_backbone_flow_more_conservative_than_same_parent_flow():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    work = Dummy(vocal_state='none', role='filtered_support')
+    same_parent_section = Dummy(transition_mode='same_parent_flow')
+    backbone_section = Dummy(transition_mode='backbone_flow')
+
+    same_db, same_lo, same_hi = _overlap_carve_settings(work, same_parent_section)
+    back_db, back_lo, back_hi = _overlap_carve_settings(work, backbone_section)
+
+    assert back_db < same_db
+    assert back_lo == same_lo
+    assert back_hi < same_hi
 
 
 

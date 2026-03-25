@@ -77,6 +77,13 @@ def _transition_filter_profile(
         outgoing_lowpass_end = 20000.0
         outgoing_highpass_start *= 0.35
         outgoing_highpass_end = min(max(outgoing_highpass_end * 0.35, 45.0), 85.0)
+    elif transition_mode == "backbone_flow":
+        incoming_start *= 0.12
+        incoming_end = min(incoming_end, 16.0)
+        outgoing_lowpass_start = 20000.0
+        outgoing_lowpass_end = 20000.0
+        outgoing_highpass_start *= 0.45
+        outgoing_highpass_end = min(max(outgoing_highpass_end * 0.45, 60.0), 95.0)
     elif transition_mode in {"arrival_handoff", "single_owner_handoff"}:
         incoming_start *= 1.15
         outgoing_lowpass_end *= 0.6
@@ -445,6 +452,9 @@ def _overlap_carve_settings(work, section) -> tuple[float, float, float]:
     elif transition_mode == 'same_parent_flow':
         carve_db *= 0.7
         carve_hi_hz = min(carve_hi_hz, 4200.0)
+    elif transition_mode == 'backbone_flow':
+        carve_db *= 0.6
+        carve_hi_hz = min(carve_hi_hz, 3600.0)
 
     return float(carve_db), float(carve_lo_hz), float(carve_hi_hz)
 
@@ -468,6 +478,8 @@ def _adaptive_overlap_carve_db(work, section, vocal_mask: np.ndarray, base_carve
         scaled_carve += 0.25 + 0.65 * intensity
     elif transition_mode == 'same_parent_flow':
         scaled_carve *= 0.92
+    elif transition_mode == 'backbone_flow':
+        scaled_carve *= 0.85
 
     if dense_presence < 0.1 and mask_mean < 0.2:
         scaled_carve *= 0.8
@@ -503,6 +515,10 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
         cleanup_gain_db = -0.2
         highpass_hz = 70.0
         recover_curve_exp = 1.05
+    elif section.transition_mode == "backbone_flow":
+        cleanup_gain_db = -0.5
+        highpass_hz = 95.0
+        recover_curve_exp = 1.1
     elif section.allowed_overlap:
         cleanup_gain_db = -0.75
         highpass_hz = 125.0

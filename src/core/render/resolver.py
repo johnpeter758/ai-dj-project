@@ -130,17 +130,25 @@ def _cap_same_parent_flow_overlap(
     previous_label: str | None,
     current_label: str | None,
 ) -> tuple[float, str | None]:
-    if cross_parent_handoff or transition_mode != "same_parent_flow":
+    if cross_parent_handoff or transition_mode not in {"same_parent_flow", "backbone_flow"}:
         return overlap_beats, None
 
     prev = (previous_label or "").strip().lower()
     curr = (current_label or "").strip().lower()
-    cap = {
-        "blend": 2.0,
-        "lift": 2.0,
-        "swap": 1.0,
-        "drop": 1.0,
-    }.get(transition_in)
+    if transition_mode == "backbone_flow":
+        cap = {
+            "blend": 1.0,
+            "lift": 1.0,
+            "swap": 0.5,
+            "drop": 0.5,
+        }.get(transition_in)
+    else:
+        cap = {
+            "blend": 2.0,
+            "lift": 2.0,
+            "swap": 1.0,
+            "drop": 1.0,
+        }.get(transition_in)
     if cap is None:
         return overlap_beats, None
 
@@ -156,7 +164,7 @@ def _cap_same_parent_flow_overlap(
     if math.isclose(cap, 0.5, rel_tol=0.0, abs_tol=1e-9):
         beat_label = "beats"
     return cap, (
-        f"transition_mode=same_parent_flow capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} "
+        f"transition_mode={transition_mode} capped overlap from {overlap_beats:.1f} to {cap:.1f} {beat_label} "
         f"to reduce same-source seam crowding and protect groove clarity"
     )
 
@@ -215,7 +223,9 @@ def _resolve_incoming_gain_db(
     prev = (previous_label or "").strip().lower()
     curr = (current_label or "").strip().lower()
 
-    if overlap_beats >= 4.0 and transition_mode == "same_parent_flow":
+    if overlap_beats >= 2.0 and transition_mode == "backbone_flow":
+        gain_db -= 1.0
+    elif overlap_beats >= 4.0 and transition_mode == "same_parent_flow":
         gain_db -= 0.75
     elif overlap_beats >= 4.0 and transition_in in {"blend", "lift"}:
         gain_db -= 0.5

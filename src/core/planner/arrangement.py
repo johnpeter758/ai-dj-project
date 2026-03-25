@@ -4956,7 +4956,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
         'Per-section diagnostics now include a structured multi-candidate shortlist plus the best cross-parent alternate so guard-driven picks and near-miss alternates stay machine-readable downstream.',
         'Major child sections can now schedule filtered donor support from the best safe cross-parent alternate so the render can build integrated two-parent sections instead of only section-to-section handoffs.',
         'Stretch and bar-grid fit are now evaluated against the backbone parent tempo so donor phrases are judged on the child-song grid instead of each source parent silently keeping its own clock.',
-        'For same-parent backbone continuity, diagnostics now flag backbone_flow candidates even though render still uses same_parent_flow until a dedicated low-overlap backbone treatment is wired end-to-end.',
+        'For same-parent backbone continuity, diagnostics can emit backbone_flow and the renderer now applies a dedicated low-overlap/low-end-protect treatment so backbone handoffs stay cleaner than generic same_parent_flow.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',
         *selection_notes,
     ]
