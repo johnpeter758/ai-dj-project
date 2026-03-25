@@ -137,8 +137,11 @@ def _midi_to_hz(m: int) -> float:
     return 440.0 * (2.0 ** ((m - 69) / 12.0))
 
 
-def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 42) -> dict[str, Any]:
+def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 42, style_brief: str = "") -> dict[str, Any]:
     random.seed(seed)
+    brief = (style_brief or "").lower()
+    chant_focus = any(token in brief for token in ("chant", "vocal", "hook"))
+    shuffle_focus = any(token in brief for token in ("shuffle", "shuffling", "swing", "thumper", "tech house"))
 
     sr = 44100
     bpm = float(profile.tempo_bpm)
@@ -167,16 +170,16 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
     def section_gain(bar_idx: int) -> dict[str, float]:
         # 0-15 intro, 16-39 groove A, 40-47 break, 48-71 drop, 72-87 groove B, 88-95 outro
         if bar_idx < 16:
-            return {"kick": 1.0, "clap": 0.35, "hat": 0.55, "bass": 0.0, "stab": 0.10, "fx": 0.25}
+            return {"kick": 1.0, "clap": 0.30, "hat": 0.58, "bass": 0.0, "stab": 0.08, "fx": 0.28, "vocal": 0.12}
         if bar_idx < 40:
-            return {"kick": 1.0, "clap": 0.72, "hat": 0.82, "bass": 0.85, "stab": 0.26, "fx": 0.30}
+            return {"kick": 1.0, "clap": 0.74, "hat": 0.88, "bass": 0.96, "stab": 0.28, "fx": 0.30, "vocal": 0.36}
         if bar_idx < 48:
-            return {"kick": 0.5, "clap": 0.35, "hat": 0.42, "bass": 0.35, "stab": 0.20, "fx": 0.55}
+            return {"kick": 0.46, "clap": 0.30, "hat": 0.46, "bass": 0.34, "stab": 0.18, "fx": 0.58, "vocal": 0.46}
         if bar_idx < 72:
-            return {"kick": 1.0, "clap": 0.86, "hat": 0.98, "bass": 1.0, "stab": 0.44, "fx": 0.35}
+            return {"kick": 1.0, "clap": 0.90, "hat": 1.0, "bass": 1.0, "stab": 0.40, "fx": 0.36, "vocal": 0.54}
         if bar_idx < 88:
-            return {"kick": 1.0, "clap": 0.78, "hat": 0.88, "bass": 0.92, "stab": 0.33, "fx": 0.32}
-        return {"kick": 0.8, "clap": 0.42, "hat": 0.46, "bass": 0.3, "stab": 0.16, "fx": 0.22}
+            return {"kick": 1.0, "clap": 0.80, "hat": 0.90, "bass": 0.94, "stab": 0.32, "fx": 0.32, "vocal": 0.40}
+        return {"kick": 0.78, "clap": 0.40, "hat": 0.48, "bass": 0.30, "stab": 0.14, "fx": 0.22, "vocal": 0.10}
 
     def kick_fn(amp: float = 1.0):
         def fn(t: float) -> float:
@@ -255,38 +258,62 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
 
         return fn
 
+    def chant_hit_fn(amp: float = 1.0, vowel_bias: float = 0.0):
+        # synthetic chant-like stab (vocal-inspired, no copied melody/lyrics)
+        base_f = 180.0 + 18.0 * vowel_bias
+        form1 = 700.0 + 80.0 * vowel_bias
+        form2 = 1400.0 + 120.0 * vowel_bias
+
+        def fn(t: float) -> float:
+            if t > 0.24:
+                return 0.0
+            env = math.exp(-t * 14.0)
+            pitch = math.sin(2 * math.pi * base_f * t)
+            f1 = math.sin(2 * math.pi * form1 * t)
+            f2 = math.sin(2 * math.pi * form2 * t)
+            grit = (random.random() * 2.0 - 1.0) * 0.05
+            return amp * env * (0.56 * pitch + 0.30 * f1 + 0.22 * f2 + grit)
+
+        return fn
+
     # Drums
     for beat in range(beats_total):
         bar = beat // 4
         g = section_gain(bar)
         t0 = beat * spb
-        add(t0, 0.24, kick_fn(0.96 * g["kick"]), pan=0.0)
+        add(t0, 0.24, kick_fn(0.98 * g["kick"]), pan=0.0)
+        # thumper ghost kick for shuffle drive
+        if g["kick"] > 0.7 and (shuffle_focus or bar >= 16) and beat % 2 == 0:
+            add(t0 + 0.74 * spb, 0.16, kick_fn(0.33 * g["kick"]), pan=0.0)
         if beat % 4 in (1, 3):
-            add(t0 + 0.002, 0.15, clap_fn(0.63 * g["clap"]), pan=0.0)
+            add(t0 + 0.002, 0.15, clap_fn(0.65 * g["clap"]), pan=0.0)
 
+    swing = 0.07 if shuffle_focus else 0.035
     for step in range(beats_total * 2):
         beat_pos = step * 0.5
         bar = int(beat_pos // 4)
         g = section_gain(bar)
         t0 = beat_pos * spb
         if step % 2 == 1:
-            add(t0, 0.07, hat_fn(0.60 * g["hat"]), pan=0.2)
-        if g["hat"] > 0.75 and random.random() < 0.20:
-            add(t0 + 0.25 * spb, 0.05, hat_fn(0.35 * g["hat"]), pan=-0.2)
+            t_hat = t0 + swing * spb
+            add(t_hat, 0.07, hat_fn(0.62 * g["hat"]), pan=0.22)
+        if g["hat"] > 0.72 and random.random() < 0.22:
+            add(t0 + (0.23 + swing * 0.35) * spb, 0.05, hat_fn(0.38 * g["hat"]), pan=-0.2)
 
-    # Bass pattern
-    pattern = [33, 33, 36, 33, 40, 33, 36, 31]
+    # Bass pattern (heavier, syncopated, hooky)
+    pattern = [33, 33, 36, 33, 40, 38, 36, 31]
+    syncopation = [0.0, 0.03, 0.0, 0.05, 0.0, 0.02, 0.0, 0.06]
     for bar in range(bars):
         g = section_gain(bar)
         if g["bass"] <= 0.01:
             continue
         bar_start = bar * 4 * spb
         for i, midi in enumerate(pattern):
-            t0 = bar_start + (i * 0.5) * spb
-            amp = (0.34 + 0.08 * profile.energy_hint) * g["bass"]
-            if i in (4, 7):
-                amp *= 1.08
-            add(t0, 0.45, bass_note(_midi_to_hz(midi), amp), pan=0.0)
+            t0 = bar_start + (i * 0.5 + syncopation[i]) * spb
+            amp = (0.40 + 0.10 * profile.energy_hint) * g["bass"]
+            if i in (4, 5, 7):
+                amp *= 1.12
+            add(t0, 0.46, bass_note(_midi_to_hz(midi), amp), pan=0.0)
 
     # Stabs
     chord_roots = [45, 48, 43, 40]
@@ -304,6 +331,21 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
             add(t0, 0.35, stab_note(base, amp), pan=pan)
             add(t0, 0.35, stab_note(base * 1.26, amp * 0.82), pan=pan * 0.9)
             add(t0, 0.35, stab_note(base * 1.50, amp * 0.72), pan=pan * 0.8)
+
+    # Chanted vocal hook (synthetic chant stabs)
+    for bar in range(bars):
+        g = section_gain(bar)
+        if g["vocal"] <= 0.01:
+            continue
+        bar_start = bar * 4 * spb
+        if 18 <= bar <= 87:
+            chant_pattern = [0.5, 1.25, 2.0, 2.75]
+            for idx, hit in enumerate(chant_pattern):
+                if (idx == 0 and random.random() < 0.06):
+                    continue
+                amp = (0.18 + (0.06 if chant_focus else 0.0)) * g["vocal"]
+                pan = -0.12 if idx % 2 == 0 else 0.12
+                add(bar_start + hit * spb, 0.24, chant_hit_fn(amp, vowel_bias=(idx - 1.5) * 0.4), pan=pan)
 
     # FX risers
     for bar in [15, 39, 47, 71, 87]:
@@ -343,6 +385,8 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
         "duration_seconds": round(float(duration_sec), 3),
         "bpm": round(float(bpm), 3),
         "channels": 2,
+        "shuffle_focus": bool(shuffle_focus),
+        "chant_focus": bool(chant_focus),
     }
 
 
@@ -369,6 +413,7 @@ def main() -> int:
     parser.add_argument("--output-dir", default="/Users/johnpeter/Music/AI_DJ_Output", help="Output folder")
     parser.add_argument("--name", default="club_style_draft_v1", help="Output base filename")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--style-brief", default="", help="Optional text brief to bias groove/arrangement choices")
     args = parser.parse_args()
 
     references_dir = Path(args.references_dir).expanduser().resolve()
@@ -382,13 +427,14 @@ def main() -> int:
     profile_path = output_dir / f"{args.name}_style_profile.json"
     report_path = output_dir / f"{args.name}_generation_report.json"
 
-    synth_info = synthesize_original_track(profile, wav_path, seed=int(args.seed))
+    synth_info = synthesize_original_track(profile, wav_path, seed=int(args.seed), style_brief=str(args.style_brief or ""))
     wav_to_mp3(wav_path, mp3_path)
 
     profile_payload = profile.to_dict()
     profile_path.write_text(json.dumps(profile_payload, indent=2, sort_keys=True), encoding="utf-8")
 
     report_payload = {
+        "style_brief": str(args.style_brief or ""),
         "profile": profile_payload,
         "synthesis": synth_info,
         "references_debug": debug,
