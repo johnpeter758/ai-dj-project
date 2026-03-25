@@ -7,15 +7,18 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import traceback
+import uuid
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, jsonify, request, render_template, send_file, send_from_directory
 
 from scripts.build_listen_gate_spec import SpecBuildError, build_spec
 from scripts.reference_input_normalizer import ReferenceInputError, normalize_reference_inputs
 from src.core.analysis import analyze_audio_file
+from src.core.evaluation.listen import evaluate_song
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
 from src.feedback_learning import build_feedback_learning_summary, write_feedback_learning_summary
 from src.human_feedback import HumanFeedbackStore
@@ -34,6 +37,9 @@ MEMORY_DIR = VAULT_DIR / "memory"
 HUMAN_FEEDBACK_DIR = BASE_DIR / "data" / "human_feedback"
 SIMPLE_FUSE_ADVANCED_TIMEOUT_SECONDS = 180
 SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS = 3600
+SIMPLE_FUSE_JOB_TTL_SECONDS = 24 * 60 * 60
+_SIMPLE_FUSE_JOBS: dict[str, dict] = {}
+_SIMPLE_FUSE_LOCK = threading.Lock()
 
 
 def _split_labeled_path(raw: str) -> tuple[str | None, str]:
@@ -78,6 +84,50 @@ def resolve_song_path(song_id: str) -> Path | None:
         if song["id"] == song_id:
             return Path(song["absolute_path"])
     return None
+
+
+def _component_score(report: dict, key: str) -> float:
+    try:
+        return float((report.get(key) or {}).get("score") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _chart_calibrated_score(report: dict) -> float:
+    """Heavier commercial calibration: reward chart-like traits, punish rough mixes hard."""
+    overall = float(report.get("overall_score") or 0.0)
+    song_likeness = _component_score(report, "song_likeness")
+    mix_sanity = _component_score(report, "mix_sanity")
+    structure = _component_score(report, "structure")
+    coherence = _component_score(report, "coherence")
+    groove = _component_score(report, "groove")
+    energy_arc = _component_score(report, "energy_arc")
+    transition = _component_score(report, "transition")
+
+    score = overall
+
+    # Upside: aggressively reward commercial-readability cues.
+    score += max(0.0, song_likeness - 75.0) * 0.35
+    score += max(0.0, mix_sanity - 72.0) * 0.20
+    score += max(0.0, structure - 75.0) * 0.15
+    score += max(0.0, coherence - 75.0) * 0.10
+    score += max(0.0, energy_arc - 70.0) * 0.10
+    score += max(0.0, transition - 65.0) * 0.05
+    score += max(0.0, groove - 60.0) * 0.05
+
+    # Downside: heavily punish low-quality amateur-ish output.
+    score -= max(0.0, 45.0 - groove) * 0.55
+    score -= max(0.0, 45.0 - mix_sanity) * 0.45
+    score -= max(0.0, 42.0 - song_likeness) * 0.60
+    score -= max(0.0, 40.0 - overall) * 0.40
+
+    # Bonus / malus anchors for practical chart-like calibration.
+    if song_likeness >= 85.0 and mix_sanity >= 80.0 and structure >= 85.0:
+        score += 6.0
+    if groove < 35.0 and mix_sanity < 40.0:
+        score -= 12.0
+
+    return round(max(0.0, min(100.0, score)), 1)
 
 
 def _run_git(*args: str) -> str:
@@ -191,6 +241,123 @@ def _load_json_file(path: Path) -> dict | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _set_simple_fuse_job(job_id: str, **patch) -> dict:
+    with _SIMPLE_FUSE_LOCK:
+        current = dict(_SIMPLE_FUSE_JOBS.get(job_id) or {})
+        current.update(patch)
+        current.setdefault("job_id", job_id)
+        current["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _SIMPLE_FUSE_JOBS[job_id] = current
+        return dict(current)
+
+
+def _get_simple_fuse_job(job_id: str) -> dict | None:
+    with _SIMPLE_FUSE_LOCK:
+        job = _SIMPLE_FUSE_JOBS.get(job_id)
+        return dict(job) if job else None
+
+
+def _prune_simple_fuse_jobs() -> None:
+    cutoff = datetime.now().timestamp() - SIMPLE_FUSE_JOB_TTL_SECONDS
+    with _SIMPLE_FUSE_LOCK:
+        stale = []
+        for job_id, payload in _SIMPLE_FUSE_JOBS.items():
+            try:
+                updated = datetime.fromisoformat(payload.get("updated_at", "1970-01-01T00:00:00")).timestamp()
+            except Exception:
+                updated = 0
+            if updated < cutoff:
+                stale.append(job_id)
+        for job_id in stale:
+            _SIMPLE_FUSE_JOBS.pop(job_id, None)
+
+
+def _run_simple_fuse_job(job_id: str, song_a_path: Path, song_b_path: Path, run_id: str, outdir: Path, fusion_dir: Path) -> None:
+    direct_cmd = [
+        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
+        str(BASE_DIR / "ai_dj.py"),
+        "fusion",
+        str(song_a_path),
+        str(song_b_path),
+        "--output",
+        str(fusion_dir),
+    ]
+    _set_simple_fuse_job(
+        job_id,
+        status="running",
+        progress=25,
+        message="Baseline-first fuse started. Planning and rendering one direct baseline output.",
+        stage="fusion",
+        product_mode="baseline_first",
+        product_label="Baseline-first simple fuse",
+    )
+    try:
+        proc = subprocess.run(
+            direct_cmd,
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        _set_simple_fuse_job(
+            job_id,
+            status="error",
+            progress=100,
+            message="Deterministic fusion timed out.",
+            error="Fuse failed: deterministic fusion timed out.",
+            stage="failed",
+        )
+        return
+
+    if proc.returncode != 0:
+        _set_simple_fuse_job(
+            job_id,
+            status="error",
+            progress=100,
+            message="Deterministic fusion failed.",
+            error="Fuse failed: deterministic fusion did not complete successfully.",
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            stage="failed",
+        )
+        return
+
+    try:
+        result = _promote_direct_fusion_output(
+            run_id=run_id,
+            output_dir=outdir,
+            fusion_dir=fusion_dir,
+            fallback_reason="Finished. Returning the direct deterministic fuse result.",
+            report_path=None,
+        )
+    except FileNotFoundError as exc:
+        _set_simple_fuse_job(
+            job_id,
+            status="error",
+            progress=100,
+            message="Fusion finished but no playable audio artifact was found.",
+            error=str(exc),
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            stage="failed",
+        )
+        return
+
+    _set_simple_fuse_job(
+        job_id,
+        status="done",
+        progress=100,
+        message="Fusion complete. Direct playable output ready.",
+        stage="complete",
+        output_dir=str(outdir),
+        result=result,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+        share_url=f"/share/{job_id}",
+    )
 
 
 def _find_latest_json(predicate) -> tuple[Path, dict] | None:
@@ -429,6 +596,70 @@ def _latest_closed_loop_result() -> dict | None:
     return result
 
 
+def _product_flow_summary() -> dict:
+    return {
+        "mode": "baseline_first",
+        "label": "Baseline-first simple fuse",
+        "headline": "Ship one fast baseline output first, then use the critic loop to decide what to improve next.",
+        "delivery_contract": "The simple product path returns one surfaced playable baseline file instead of waiting on a larger candidate batch.",
+        "baseline_path": "direct deterministic fusion",
+        "status_url": "/status",
+    }
+
+
+def _critic_loop_summary(*, latest_eval: dict | None, latest_compare: dict | None, latest_benchmark: dict | None, latest_listener_agent: dict | None, latest_closed_loop: dict | None, latest_auto_shortlist: dict | None) -> dict:
+    status = "idle"
+    headline = "No critic-loop results yet."
+    decision = "Awaiting listen/eval artifacts."
+    next_focus = None
+
+    if latest_listener_agent:
+        rejected = int(latest_listener_agent.get("rejected_count") or 0)
+        survivors = int(latest_listener_agent.get("recommended_count") or 0)
+        if survivors > 0:
+            status = "survivor_found"
+            headline = f"Listener gate kept {survivors} candidate(s) for human review."
+            decision = f"Top survivor: {latest_listener_agent.get('winner') or 'unnamed candidate'}."
+        elif rejected > 0:
+            status = "needs_work"
+            headline = "Listener gate rejected or held back the latest candidates."
+            decision = latest_listener_agent.get("top_reject_reason") or "No candidate cleared the listener gate."
+
+    if latest_closed_loop:
+        best = latest_closed_loop.get("best_iteration") or {}
+        top_intervention = latest_closed_loop.get("best_top_intervention") or {}
+        if best.get("iteration"):
+            headline = f"Critic loop best iteration: #{best.get('iteration')} at overall {best.get('candidate_overall_score', '—')}."
+        if top_intervention.get("component"):
+            next_focus = f"Top intervention target: {top_intervention.get('component')}"
+            if top_intervention.get("problem"):
+                next_focus += f" — {top_intervention.get('problem')}"
+        if latest_closed_loop.get("stop_reason"):
+            decision = f"Loop stop reason: {latest_closed_loop.get('stop_reason')}"
+
+    if latest_auto_shortlist and latest_auto_shortlist.get("winner"):
+        decision = f"Latest ranked winner: {latest_auto_shortlist.get('winner')}"
+    elif latest_benchmark and latest_benchmark.get("winner"):
+        decision = f"Latest benchmark winner: {latest_benchmark.get('winner')}"
+    elif latest_compare and latest_compare.get("overall_winner"):
+        decision = f"Latest compare winner: {latest_compare.get('overall_winner')}"
+    elif latest_eval and latest_eval.get("verdict"):
+        decision = f"Latest listen verdict: {latest_eval.get('verdict')}"
+
+    return {
+        "status": status,
+        "headline": headline,
+        "decision": decision,
+        "next_focus": next_focus,
+        "latest_listener_gate_winner": (latest_listener_agent or {}).get("winner"),
+        "latest_listener_gate_reject_reason": (latest_listener_agent or {}).get("top_reject_reason"),
+        "latest_closed_loop_stop_reason": (latest_closed_loop or {}).get("stop_reason"),
+        "latest_benchmark_winner": (latest_benchmark or {}).get("winner"),
+        "latest_compare_winner": (latest_compare or {}).get("overall_winner"),
+        "latest_listen_verdict": (latest_eval or {}).get("verdict"),
+    }
+
+
 def _recent_render_inputs(limit: int = 4) -> list[str]:
     manifests = sorted(
         [
@@ -575,12 +806,25 @@ def _promote_direct_fusion_output(*, run_id: str, output_dir: Path, fusion_dir: 
     if source_audio.resolve() != promoted_audio.resolve():
         shutil.copy2(source_audio, promoted_audio)
 
+    product_flow = _product_flow_summary()
+    critic_loop = _critic_loop_summary(
+        latest_eval=_latest_evaluator_result(),
+        latest_compare=_latest_compare_listen_result(),
+        latest_benchmark=_latest_benchmark_listen_result(),
+        latest_listener_agent=_latest_listener_agent_result(),
+        latest_closed_loop=_latest_closed_loop_result(),
+        latest_auto_shortlist=_latest_auto_shortlist_result(),
+    )
+
     result_payload = {
         "run_id": run_id,
         "delivery_mode": "deterministic_fallback",
         "selection_source": "direct_fusion",
         "selected_candidate_id": "direct_fusion",
         "selected_candidate_label": "deterministic fusion fallback",
+        "product_mode": product_flow["mode"],
+        "product_label": product_flow["label"],
+        "product_headline": product_flow["headline"],
         "audio_path": str(promoted_audio),
         "audio_url": f"/api/artifact?path={promoted_audio}",
         "source_audio_path": str(source_audio),
@@ -588,9 +832,10 @@ def _promote_direct_fusion_output(*, run_id: str, output_dir: Path, fusion_dir: 
         "top_reasons": [],
         "top_fixes": [],
         "summary": [fallback_reason],
-        "message": "Finished. The advanced fuse path did not deliver a playable result, so this output came from the deterministic fallback fuse path.",
+        "message": "Finished. The baseline-first fuse path returned one playable output immediately; critic-loop diagnostics stay visible on the status/share surfaces.",
         "fallback_reason": fallback_reason,
         "fallback_run_dir": str(fusion_dir),
+        "critic_loop": critic_loop,
     }
     result_path = output_dir / "fuse_result.json"
     result_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -819,6 +1064,15 @@ def _workloop_status() -> dict:
     latest_run = _latest_run_summary()
     active_sprint = _active_sprint_status()
     changed = _changed_files()
+    product_flow = _product_flow_summary()
+    critic_loop = _critic_loop_summary(
+        latest_eval=latest_eval,
+        latest_compare=latest_compare,
+        latest_benchmark=latest_benchmark,
+        latest_listener_agent=latest_listener_agent,
+        latest_closed_loop=latest_closed_loop,
+        latest_auto_shortlist=latest_auto_shortlist,
+    )
     workloop_viz = _build_workloop_visualization(
         latest_commit=latest_commit,
         latest_manifest=latest_manifest,
@@ -836,7 +1090,9 @@ def _workloop_status() -> dict:
         "current_task": task["summary"],
         "task_source": task["source"],
         "recent_progress_notes": task["details"],
-        "currently_working_on": "planner/evaluator quality, regression safety, and usable local checkpoints",
+        "currently_working_on": "baseline-first delivery plus critic-loop decisions/results that map back to the next quality improvement",
+        "product_flow": product_flow,
+        "critic_loop": critic_loop,
         "latest_changed_files": changed,
         "latest_commit": latest_commit,
         "last_artifact": latest_artifact,
@@ -867,6 +1123,11 @@ def index():
     return send_from_directory(TEMPLATES_DIR, "simple_fuse.html")
 
 
+@app.route("/song-rater")
+def song_rater_page():
+    return send_from_directory(TEMPLATES_DIR, "song_rater.html")
+
+
 @app.route("/debug")
 def debug_index():
     return send_from_directory(TEMPLATES_DIR, "prototype_debug.html")
@@ -891,6 +1152,123 @@ def list_songs():
 @app.route("/api/health")
 def health():
     return jsonify({"status": "healthy"})
+
+
+@app.route("/api/rate-song", methods=["POST"])
+def api_rate_song():
+    song = request.files.get("song")
+    if song is None:
+        return jsonify({"status": "error", "error": "One audio file is required."}), 400
+
+    allowed = {".mp3", ".wav", ".flac", ".m4a", ".aac"}
+    ext = Path(song.filename or "song").suffix.lower()
+    if ext not in allowed:
+        return jsonify({"status": "error", "error": "Only MP3/WAV/FLAC/M4A/AAC files are supported."}), 400
+
+    run_id = f"song_rating_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    upload_dir = UPLOADS_DIR / run_id
+    report_dir = RUNS_DIR / "song_ratings" / run_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    song_path = upload_dir / f"song{ext}"
+    song.save(song_path)
+
+    try:
+        dna = analyze_audio_file(str(song_path))
+        report = evaluate_song(dna).to_dict()
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": f"Song rating failed: {exc}"}), 500
+
+    overall_score = round(float(report.get("overall_score") or 0.0), 1)
+    chart_calibrated_score = _chart_calibrated_score(report)
+    report["chart_calibrated_score"] = chart_calibrated_score
+
+    report_path = report_dir / "listen_report.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+    return jsonify(
+        {
+            "status": "success",
+            "song_name": Path(song.filename or "song").name,
+            "overall_score": overall_score,
+            "chart_calibrated_score": chart_calibrated_score,
+            "verdict": report.get("verdict"),
+            "components": {key: report.get(key, {}) for key in ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity", "song_likeness")},
+            "report_path": str(report_path),
+            "run_id": run_id,
+        }
+    )
+
+
+@app.route("/fuse", methods=["POST"])
+def start_simple_fuse_job():
+    song_a = request.files.get("song_a")
+    song_b = request.files.get("song_b")
+
+    if song_a is None or song_b is None:
+        return jsonify({"status": "error", "error": "Two audio files are required."}), 400
+
+    allowed = {".mp3", ".wav", ".flac", ".m4a", ".aac"}
+    ext_a = Path(song_a.filename or "song_a").suffix.lower()
+    ext_b = Path(song_b.filename or "song_b").suffix.lower()
+    if ext_a not in allowed or ext_b not in allowed:
+        return jsonify({"status": "error", "error": "Only common audio files like MP3/WAV/FLAC/M4A/AAC are supported."}), 400
+
+    _prune_simple_fuse_jobs()
+    job_id = uuid.uuid4().hex[:8]
+    run_id = f"simple_fuse_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    outdir = RUNS_DIR / run_id
+    upload_dir = UPLOADS_DIR / run_id
+    fusion_dir = outdir / "fusion"
+    outdir.mkdir(parents=True, exist_ok=True)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    fusion_dir.mkdir(parents=True, exist_ok=True)
+
+    song_a_path = upload_dir / f"song_a{ext_a}"
+    song_b_path = upload_dir / f"song_b{ext_b}"
+    song_a.save(song_a_path)
+    song_b.save(song_b_path)
+
+    _set_simple_fuse_job(
+        job_id,
+        status="running",
+        progress=10,
+        message="Uploads received. Queueing baseline-first direct fusion job.",
+        stage="uploaded",
+        run_id=run_id,
+        output_dir=str(outdir),
+        song_a_name=Path(song_a.filename or "song_a").name,
+        song_b_name=Path(song_b.filename or "song_b").name,
+        product_mode="baseline_first",
+        product_label="Baseline-first simple fuse",
+    )
+
+    worker = threading.Thread(
+        target=_run_simple_fuse_job,
+        args=(job_id, song_a_path, song_b_path, run_id, outdir, fusion_dir),
+        daemon=True,
+    )
+    worker.start()
+    return jsonify({"status": "accepted", "job_id": job_id, "status_url": f"/status/{job_id}", "share_url": f"/share/{job_id}"})
+
+
+@app.route("/status/<job_id>")
+def simple_fuse_job_status(job_id: str):
+    job = _get_simple_fuse_job(job_id)
+    if not job:
+        return jsonify({"status": "error", "error": "Unknown job"}), 404
+    return jsonify(job)
+
+
+@app.route("/share/<job_id>")
+def simple_fuse_share(job_id: str):
+    job = _get_simple_fuse_job(job_id)
+    if not job or job.get("status") != "done":
+        return "Share link not ready or invalid.", 404
+    result = job.get("result") or {}
+    return render_template("simple_fuse_share.html", job=job, result=result)
 
 
 @app.route("/api/status")
@@ -1520,75 +1898,15 @@ def fuse_upload():
     run_id = f"simple_fuse_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     outdir = RUNS_DIR / run_id
     upload_dir = UPLOADS_DIR / run_id
-    advanced_dir = outdir / "advanced_batch"
-    direct_fusion_dir = outdir / "deterministic_fallback"
+    direct_fusion_dir = outdir / "fusion"
     outdir.mkdir(parents=True, exist_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    advanced_dir.mkdir(parents=True, exist_ok=True)
     direct_fusion_dir.mkdir(parents=True, exist_ok=True)
 
     song_a_path = upload_dir / f"song_a{ext_a}"
     song_b_path = upload_dir / f"song_b{ext_b}"
     song_a.save(song_a_path)
     song_b.save(song_b_path)
-
-    report_path = advanced_dir / "auto_shortlist_report.json"
-    advanced_cmd = [
-        str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
-        str(BASE_DIR / "ai_dj.py"),
-        "auto-shortlist-fusion",
-        str(song_a_path),
-        str(song_b_path),
-        "--output",
-        str(advanced_dir),
-        "--batch-size",
-        "4",
-        "--shortlist",
-        "1",
-        "--variant-mode",
-        "safe",
-        "--keep-non-survivors",
-    ]
-
-    advanced_stdout = ""
-    advanced_stderr = ""
-    advanced_report = None
-    fallback_reason = None
-
-    try:
-        advanced_proc = subprocess.run(
-            advanced_cmd,
-            cwd=str(BASE_DIR),
-            capture_output=True,
-            text=True,
-            timeout=SIMPLE_FUSE_ADVANCED_TIMEOUT_SECONDS,
-        )
-        advanced_stdout = advanced_proc.stdout
-        advanced_stderr = advanced_proc.stderr
-        if advanced_proc.returncode == 0:
-            advanced_report = _load_json_file(report_path)
-            if isinstance(advanced_report, dict):
-                try:
-                    result = _promote_fuse_candidate_output(run_id=run_id, output_dir=outdir, report_path=report_path, report=advanced_report)
-                    return jsonify(
-                        {
-                            "status": "success",
-                            "run_id": run_id,
-                            "output_dir": str(outdir),
-                            "report_path": str(report_path),
-                            "report": advanced_report,
-                            "result": result,
-                            "stdout": advanced_stdout,
-                        }
-                    )
-                except FileNotFoundError:
-                    fallback_reason = "Advanced fuse completed, but no playable shortlist candidate could be promoted."
-            else:
-                fallback_reason = "Advanced fuse completed, but did not produce a readable shortlist report."
-        else:
-            fallback_reason = "Advanced fuse failed, so the endpoint is dropping to deterministic fallback fusion."
-    except subprocess.TimeoutExpired:
-        fallback_reason = "Advanced fuse timed out, so the endpoint is dropping to deterministic fallback fusion."
 
     direct_cmd = [
         str(PROJECT_PYTHON if PROJECT_PYTHON.exists() else "python3"),
@@ -1612,13 +1930,9 @@ def fuse_upload():
         return jsonify(
             {
                 "status": "error",
-                "error": "Fuse failed: advanced path timed out and deterministic fallback also timed out.",
+                "error": "Fuse failed: deterministic fusion timed out.",
                 "run_id": run_id,
                 "output_dir": str(outdir),
-                "report_path": str(report_path),
-                "report": advanced_report,
-                "stdout": advanced_stdout,
-                "stderr": advanced_stderr,
             }
         ), 500
 
@@ -1626,13 +1940,11 @@ def fuse_upload():
         return jsonify(
             {
                 "status": "error",
-                "error": "Fuse failed: advanced path did not deliver a playable result and deterministic fallback failed too.",
+                "error": "Fuse failed: deterministic fusion did not complete successfully.",
                 "run_id": run_id,
                 "output_dir": str(outdir),
-                "report_path": str(report_path),
-                "report": advanced_report,
-                "stdout": (advanced_stdout or "") + ("\n" if advanced_stdout and direct_proc.stdout else "") + direct_proc.stdout,
-                "stderr": (advanced_stderr or "") + ("\n" if advanced_stderr and direct_proc.stderr else "") + direct_proc.stderr,
+                "stdout": direct_proc.stdout,
+                "stderr": direct_proc.stderr,
             }
         ), 500
 
@@ -1641,8 +1953,8 @@ def fuse_upload():
             run_id=run_id,
             output_dir=outdir,
             fusion_dir=direct_fusion_dir,
-            fallback_reason=fallback_reason or "Advanced fuse did not deliver a result, so deterministic fallback was used.",
-            report_path=report_path if report_path.exists() else None,
+            fallback_reason="Finished. Returning the direct deterministic fuse result.",
+            report_path=None,
         )
     except FileNotFoundError as exc:
         return jsonify(
@@ -1651,10 +1963,8 @@ def fuse_upload():
                 "error": str(exc),
                 "run_id": run_id,
                 "output_dir": str(outdir),
-                "report_path": str(report_path),
-                "report": advanced_report,
-                "stdout": (advanced_stdout or "") + ("\n" if advanced_stdout and direct_proc.stdout else "") + direct_proc.stdout,
-                "stderr": (advanced_stderr or "") + ("\n" if advanced_stderr and direct_proc.stderr else "") + direct_proc.stderr,
+                "stdout": direct_proc.stdout,
+                "stderr": direct_proc.stderr,
             }
         ), 500
 
@@ -1663,10 +1973,10 @@ def fuse_upload():
             "status": "success",
             "run_id": run_id,
             "output_dir": str(outdir),
-            "report_path": str(report_path) if report_path.exists() else None,
-            "report": advanced_report,
+            "report_path": None,
+            "report": None,
             "result": result,
-            "stdout": (advanced_stdout or "") + ("\n" if advanced_stdout and direct_proc.stdout else "") + direct_proc.stdout,
+            "stdout": direct_proc.stdout,
         }
     )
 

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VocalFusion · Song Rater</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0f1a;
+      --panel: #121a2b;
+      --panel-2: #162138;
+      --text: #ecf2ff;
+      --muted: #97a8cc;
+      --accent: #6dd4ff;
+      --good: #60d394;
+      --warn: #ffd166;
+      --bad: #ff6b6b;
+      --border: rgba(255,255,255,0.08);
+    }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at 20% -10%, #17335c 0%, var(--bg) 48%, #070b14 100%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+      backdrop-filter: blur(8px);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    input[type="file"] {
+      flex: 1;
+      min-width: 240px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      color: var(--text);
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      background: linear-gradient(90deg, #62ccff, #7ef2cb);
+      color: #05111f;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .muted { color: var(--muted); }
+    .result {
+      margin-top: 18px;
+      display: none;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+      padding: 16px;
+    }
+    .scores {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .score-box {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .score-label { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .score-value { font-size: 1.35rem; font-weight: 800; margin-top: 4px; }
+    .big {
+      font-size: 2.8rem;
+      font-weight: 900;
+      line-height: 1;
+      margin-top: 8px;
+      color: var(--accent);
+    }
+    .status { margin-top: 10px; min-height: 1.2em; color: var(--muted); }
+    .error { color: var(--bad); }
+    .tip { margin-top: 14px; font-size: 0.92rem; color: var(--muted); }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>🎧 Song Rater</h1>
+    <p>Upload any MP3 and get a <strong>0–100 score</strong>. Includes a chart-calibrated rating tuned so polished, chart-style songs tend to land in the 90s.</p>
+
+    <form id="rateForm">
+      <div class="row">
+        <input id="songFile" type="file" name="song" accept=".mp3,.wav,.flac,.m4a,.aac,audio/*" required />
+        <button id="rateBtn" type="submit">Rate Song</button>
+      </div>
+    </form>
+
+    <div id="status" class="status"></div>
+
+    <section id="result" class="result">
+      <div class="muted" id="songName"></div>
+      <div class="big" id="chartScore">—</div>
+      <div class="muted">Chart-calibrated score /100</div>
+
+      <div class="scores">
+        <div class="score-box">
+          <div class="score-label">Overall</div>
+          <div id="overall" class="score-value">—</div>
+        </div>
+        <div class="score-box">
+          <div class="score-label">Groove</div>
+          <div id="groove" class="score-value">—</div>
+        </div>
+        <div class="score-box">
+          <div class="score-label">Song-likeness</div>
+          <div id="songLikeness" class="score-value">—</div>
+        </div>
+        <div class="score-box">
+          <div class="score-label">Mix sanity</div>
+          <div id="mixSanity" class="score-value">—</div>
+        </div>
+      </div>
+
+      <div class="tip" id="verdict"></div>
+      <div class="tip" id="reportPath"></div>
+    </section>
+
+    <p class="tip">Need fusion? <a href="/">Go back to simple fuse UI</a>.</p>
+  </main>
+
+  <script>
+    const form = document.getElementById('rateForm');
+    const fileInput = document.getElementById('songFile');
+    const btn = document.getElementById('rateBtn');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+
+    const songNameEl = document.getElementById('songName');
+    const chartScoreEl = document.getElementById('chartScore');
+    const overallEl = document.getElementById('overall');
+    const grooveEl = document.getElementById('groove');
+    const songLikenessEl = document.getElementById('songLikeness');
+    const mixSanityEl = document.getElementById('mixSanity');
+    const verdictEl = document.getElementById('verdict');
+    const reportPathEl = document.getElementById('reportPath');
+
+    function scoreColor(v) {
+      if (v >= 85) return 'var(--good)';
+      if (v >= 60) return 'var(--warn)';
+      return 'var(--bad)';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        statusEl.textContent = 'Pick a file first.';
+        statusEl.classList.add('error');
+        return;
+      }
+
+      btn.disabled = true;
+      statusEl.classList.remove('error');
+      statusEl.textContent = 'Analyzing song…';
+      resultEl.style.display = 'none';
+
+      try {
+        const fd = new FormData();
+        fd.append('song', file);
+        const res = await fetch('/api/rate-song', { method: 'POST', body: fd });
+        const payload = await res.json();
+
+        if (!res.ok || payload.status !== 'success') {
+          throw new Error(payload.error || 'Rating failed');
+        }
+
+        const chartScore = Number(payload.chart_calibrated_score || 0);
+        const overallScore = Number(payload.overall_score || 0);
+        const groove = Number((payload.components?.groove || {}).score || 0);
+        const songLikeness = Number((payload.components?.song_likeness || {}).score || 0);
+        const mixSanity = Number((payload.components?.mix_sanity || {}).score || 0);
+
+        songNameEl.textContent = `Song: ${payload.song_name || file.name}`;
+        chartScoreEl.textContent = chartScore.toFixed(1);
+        chartScoreEl.style.color = scoreColor(chartScore);
+
+        overallEl.textContent = overallScore.toFixed(1);
+        overallEl.style.color = scoreColor(overallScore);
+
+        grooveEl.textContent = groove.toFixed(1);
+        grooveEl.style.color = scoreColor(groove);
+
+        songLikenessEl.textContent = songLikeness.toFixed(1);
+        songLikenessEl.style.color = scoreColor(songLikeness);
+
+        mixSanityEl.textContent = mixSanity.toFixed(1);
+        mixSanityEl.style.color = scoreColor(mixSanity);
+
+        verdictEl.textContent = `Verdict: ${payload.verdict || 'unknown'}`;
+        reportPathEl.textContent = `Report saved: ${payload.report_path || 'n/a'}`;
+
+        resultEl.style.display = 'block';
+        statusEl.textContent = 'Done.';
+      } catch (err) {
+        statusEl.textContent = err?.message || 'Something went wrong.';
+        statusEl.classList.add('error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

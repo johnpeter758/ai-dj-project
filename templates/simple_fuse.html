@@ -39,7 +39,7 @@
   <div class="wrap">
     <div class="card">
       <h1>VocalFusion</h1>
-      <p class="muted">Upload two MP3 files, press <strong>Fuse</strong>, and get one playable output file back. The backend still does analysis, planning, rendering, shortlist ranking, and listener checks behind the scenes.</p>
+      <p class="muted">Upload two MP3 files, press <strong>Fuse</strong>, and get one playable output file back. The simple product flow is now <strong>baseline-first</strong>: ship one fast deterministic baseline before any heavier critic-loop iteration.</p>
       <form id="fuseForm" style="margin-top:18px;">
         <p><strong>Song A (MP3)</strong></p>
         <input id="songA" name="song_a" type="file" accept=".mp3,audio/mpeg" required />
@@ -49,7 +49,7 @@
       </form>
       <div id="progress" class="progress"><div class="progress-bar"></div></div>
       <p id="status" class="muted" style="margin-top:14px;"><span id="spinner" class="spinner"></span><span id="statusText">Waiting for two MP3 files.</span></p>
-      <p class="muted" style="margin-top:12px;">Need diagnostics too? Open the <a href="/status">status board</a> for Latest benchmark-listen, listener-agent, and closed-loop summaries.</p>
+      <p class="muted" style="margin-top:12px;">Baseline-first means the first job returns one surfaced playable file. The <a href="/status">status board</a> keeps the critic loop visible with Latest benchmark-listen, listener-gate, and closed-loop decisions. Need single-track scoring? Open <a href="/song-rater">Song Rater</a>.</p>
     </div>
     <div id="results"></div>
   </div>
@@ -59,34 +59,36 @@
     const statusText = document.getElementById('statusText');
     const spinner = document.getElementById('spinner');
     const progress = document.getElementById('progress');
+    const progressBar = progress.querySelector('.progress-bar');
     const results = document.getElementById('results');
+    let activeJobId = null;
+    let pollTimer = null;
 
     function esc(s){return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')}
+    function setProgress(pct){ progressBar.style.width = `${Math.max(6, Math.min(100, Number(pct||0)))}%`; }
 
     function renderSuccess(data) {
       const result = data.result || {};
-      const deliveryMode = result.delivery_mode || 'unknown';
-      const pillClass = deliveryMode === 'survivor' ? 'ok' : 'warn';
-      const pillLabel = deliveryMode === 'survivor' ? 'Approved winner' : 'Best fallback';
       return `
         <div class="card">
           <h2>Your fused output is ready</h2>
-          <p><span class="pill ${pillClass}">${esc(pillLabel)}</span></p>
+          <p><span class="pill ok">Baseline-first output ready</span></p>
           <p>${esc(result.message || 'One playable result has been prepared.')}</p>
+          ${result.critic_loop ? `<p class="muted"><strong>Critic loop:</strong> ${esc(result.critic_loop.headline || '')}${result.critic_loop.decision ? ` · ${esc(result.critic_loop.decision)}` : ''}</p>` : ''}
           <audio controls style="width:100%; margin-top:12px;">
             <source src="${esc(result.audio_url || '')}">
             Your browser does not support audio playback.
           </audio>
           <div class="actions">
             <a href="${esc(result.audio_url || '#')}" download><span class="action">Download audio</span></a>
-            <a href="/api/artifact?path=${encodeURIComponent(data.report_path || '')}"><span class="action">Download report</span></a>
+            <a href="${esc(data.share_url || '#')}" target="_blank" rel="noopener noreferrer"><span class="action">Open share page</span></a>
           </div>
           <details>
             <summary>Run details</summary>
             <p><strong>Run:</strong> <span class="mono">${esc(data.run_id || '')}</span></p>
             <p><strong>Folder:</strong> <span class="mono">${esc(data.output_dir || '')}</span></p>
-            <p><strong>Chosen candidate:</strong> <span class="mono">${esc(result.selected_candidate_id || 'unknown')}</span></p>
-            <p><strong>Candidate source:</strong> <span class="mono">${esc(result.selection_source || 'unknown')}</span></p>
+            <p><strong>Chosen output:</strong> <span class="mono">${esc(result.selected_candidate_id || 'direct_fusion')}</span></p>
+            <p><strong>Source:</strong> <span class="mono">${esc(result.selection_source || 'direct_fusion')}</span></p>
             <div class="mono">${esc(data.stdout || '')}</div>
           </details>
         </div>`;
@@ -101,31 +103,66 @@
         </div>`;
     }
 
+    async function pollJob(jobId) {
+      const res = await fetch(`/status/${encodeURIComponent(jobId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unknown status error');
+      setProgress(data.progress || 0);
+      statusText.textContent = data.message || 'Fusion running…';
+      if (data.status === 'done') {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        btn.disabled = false;
+        spinner.classList.remove('active');
+        progress.classList.remove('active');
+        statusText.innerHTML = '<span class="ok">Fuse complete: baseline-first playable output ready.</span>';
+        results.innerHTML = renderSuccess(data);
+      } else if (data.status === 'error') {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        btn.disabled = false;
+        spinner.classList.remove('active');
+        progress.classList.remove('active');
+        statusText.innerHTML = '<span class="err">Fuse failed.</span>';
+        results.innerHTML = renderError(data);
+      }
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(form);
       btn.disabled = true;
       spinner.classList.add('active');
       progress.classList.add('active');
+      setProgress(8);
       results.innerHTML = '';
-      statusText.textContent = 'Fusing… analyzing songs, planning the arrangement, rendering candidates, and promoting one playable result.';
+      statusText.textContent = 'Fusing… uploading songs and starting one baseline-first direct job.';
       try {
-        const res = await fetch('/api/fuse-upload', { method:'POST', body:fd });
+        const res = await fetch('/fuse', { method:'POST', body:fd });
         const data = await res.json();
-        if (data.status !== 'success') {
+        if (!res.ok) {
           statusText.innerHTML = '<span class="err">Fuse failed.</span>';
           results.innerHTML = renderError(data);
-        } else {
-          const result = data.result || {};
-          statusText.innerHTML = result.delivery_mode === 'survivor'
-            ? '<span class="ok">Fuse complete: final playable output ready.</span>'
-            : '<span class="warn">Fuse complete: returning the best playable fallback from this batch.</span>';
-          results.innerHTML = renderSuccess(data);
+          btn.disabled = false;
+          spinner.classList.remove('active');
+          progress.classList.remove('active');
+          return;
         }
+        activeJobId = data.job_id;
+        if (pollTimer) clearInterval(pollTimer);
+        await pollJob(activeJobId);
+        pollTimer = setInterval(() => pollJob(activeJobId).catch((err) => {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          btn.disabled = false;
+          spinner.classList.remove('active');
+          progress.classList.remove('active');
+          statusText.innerHTML = '<span class="err">Fuse failed.</span>';
+          results.innerHTML = renderError({ error: err.message || String(err) });
+        }), 1500);
       } catch (err) {
         statusText.innerHTML = '<span class="err">Fuse failed.</span>';
         results.innerHTML = renderError({ error: err.message || String(err) });
-      } finally {
         btn.disabled = false;
         spinner.classList.remove('active');
         progress.classList.remove('active');

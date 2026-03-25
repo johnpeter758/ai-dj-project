@@ -19,7 +19,66 @@ def test_index_route_serves_main_ui():
     response = client.get('/')
     assert response.status_code == 200
     assert b'VocalFusion' in response.data
+    assert b'baseline-first' in response.data
+    assert b'critic loop' in response.data.lower()
     assert b'Latest benchmark-listen' in response.data
+
+
+def test_song_rater_route_serves_ui():
+    client = app.test_client()
+    response = client.get('/song-rater')
+    assert response.status_code == 200
+    assert b'Song Rater' in response.data
+    assert b'chart-calibrated' in response.data
+
+
+def test_rate_song_api_returns_scores(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, 'RUNS_DIR', tmp_path / 'runs')
+    monkeypatch.setattr(server, 'UPLOADS_DIR', tmp_path / 'runs' / 'ui_uploads')
+
+    fake_report = {
+        'overall_score': 88.2,
+        'verdict': 'promising',
+        'structure': {'score': 92.0},
+        'groove': {'score': 84.0},
+        'energy_arc': {'score': 87.0},
+        'transition': {'score': 82.0},
+        'coherence': {'score': 91.0},
+        'mix_sanity': {'score': 90.0},
+        'song_likeness': {'score': 94.0},
+    }
+
+    monkeypatch.setattr(server, 'analyze_audio_file', lambda _path: object())
+    monkeypatch.setattr(server, 'evaluate_song', lambda _song: SimpleNamespace(to_dict=lambda: fake_report))
+
+    client = app.test_client()
+    response = client.post(
+        '/api/rate-song',
+        data={'song': (io.BytesIO(b'fake-audio'), 'hit.mp3')},
+        content_type='multipart/form-data',
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['status'] == 'success'
+    assert payload['song_name'] == 'hit.mp3'
+    assert payload['overall_score'] == 88.2
+    assert payload['chart_calibrated_score'] >= payload['overall_score']
+    assert payload['components']['song_likeness']['score'] == 94.0
+    assert 'song_ratings' in payload['report_path']
+
+
+def test_rate_song_api_rejects_non_audio_extension():
+    client = app.test_client()
+    response = client.post(
+        '/api/rate-song',
+        data={'song': (io.BytesIO(b'not-audio'), 'notes.txt')},
+        content_type='multipart/form-data',
+    )
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload['status'] == 'error'
+    assert 'supported' in payload['error']
 
 
 def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_path, monkeypatch):
@@ -162,6 +221,8 @@ def test_status_includes_listen_compare_benchmark_and_manifest_summaries(tmp_pat
 
     payload = server._workloop_status()
 
+    assert payload['product_flow']['mode'] == 'baseline_first'
+    assert payload['critic_loop']['decision'] == 'Latest benchmark winner: fusion_case'
     assert payload['latest_evaluator_result']['overall_score'] == 78.0
     assert payload['latest_compare_listen_result']['overall_winner'] == 'left'
     assert payload['latest_compare_listen_result']['biggest_component_delta']['component'] == 'groove'
@@ -196,6 +257,8 @@ def test_status_page_mentions_closed_loop_summary_card():
     response = client.get('/status')
     assert response.status_code == 200
     assert b'Latest closed-loop' in response.data
+    assert b'Product flow' in response.data
+    assert b'Critic-loop decision' in response.data
 
 
 def test_listener_agent_api_runs_on_recent_render_outputs(tmp_path, monkeypatch):
@@ -739,127 +802,94 @@ def test_auto_shortlist_fusion_api_returns_survivors(tmp_path, monkeypatch):
 
 
 
-def test_fuse_upload_api_promotes_top_survivor_to_single_playable_output(tmp_path, monkeypatch):
+def test_fuse_route_starts_async_job_and_status_route_reports_completion(tmp_path, monkeypatch):
     runs_dir = tmp_path / 'runs'
     uploads_dir = runs_dir / 'ui_uploads'
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
     monkeypatch.setattr(server, 'UPLOADS_DIR', uploads_dir)
+    server._SIMPLE_FUSE_JOBS.clear()
 
+    class ImmediateThread:
+        def __init__(self, target=None, args=None, daemon=None):
+            self.target = target
+            self.args = args or ()
+        def start(self):
+            self.target(*self.args)
+
+    calls = []
     def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
-        assert 'auto-shortlist-fusion' in cmd
-        assert '--keep-non-survivors' in cmd
+        calls.append((cmd, timeout))
         outdir = Path(cmd[cmd.index('--output') + 1])
         outdir.mkdir(parents=True, exist_ok=True)
-        survivor_dir = outdir / 'candidate_001'
-        survivor_dir.mkdir(parents=True, exist_ok=True)
-        audio = survivor_dir / 'child_master.wav'
-        audio.write_bytes(b'fake-wave')
-        report = {
-            'summary': ['Generated 4 candidates.', 'Shortlisted 1 survivor for human review.'],
-            'recommended_shortlist': [
-                {
-                    'candidate_id': 'candidate_001',
-                    'label': 'candidate_001',
-                    'decision': 'survivor',
-                    'listener_rank': 80.0,
-                    'overall_score': 78.0,
-                    'verdict': 'promising',
-                    'run_dir': str(survivor_dir),
-                    'audio_path': str(audio),
-                    'top_reasons': ['good output'],
-                    'top_fixes': [],
-                }
-            ],
-            'closest_misses': [],
-            'candidates': [],
-        }
-        (outdir / 'auto_shortlist_report.json').write_text(json.dumps(report), encoding='utf-8')
-        return SimpleNamespace(returncode=0, stdout='fuse ok', stderr='')
+        audio = outdir / 'child_master.wav'
+        audio.write_bytes(b'direct-wave')
+        (outdir / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(audio)}}), encoding='utf-8')
+        return SimpleNamespace(returncode=0, stdout='direct ok', stderr='')
 
+    monkeypatch.setattr(server.threading, 'Thread', ImmediateThread)
     monkeypatch.setattr(server.subprocess, 'run', fake_run)
 
     client = app.test_client()
-    response = client.post(
-        '/api/fuse-upload',
-        data={
-            'song_a': (io.BytesIO(b'aaa'), 'song_a.mp3'),
-            'song_b': (io.BytesIO(b'bbb'), 'song_b.mp3'),
-        },
-        content_type='multipart/form-data',
-    )
+    response = client.post('/fuse', data={
+        'song_a': (io.BytesIO(b'aaa'), 'song_a.mp3'),
+        'song_b': (io.BytesIO(b'bbb'), 'song_b.mp3'),
+    }, content_type='multipart/form-data')
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload['status'] == 'success'
-    assert payload['result']['delivery_mode'] == 'survivor'
-    assert payload['result']['selected_candidate_id'] == 'candidate_001'
-    promoted = Path(payload['result']['audio_path'])
-    assert promoted.exists()
-    assert promoted.read_bytes() == b'fake-wave'
-    assert payload['result']['audio_url'].startswith('/api/artifact?path=')
+    assert payload['status'] == 'accepted'
+    job_id = payload['job_id']
+
+    status_response = client.get(f'/status/{job_id}')
+    assert status_response.status_code == 200
+    job = status_response.get_json()
+    assert job['status'] == 'done'
+    assert job['progress'] == 100
+    assert job['product_mode'] == 'baseline_first'
+    assert job['result']['selected_candidate_id'] == 'direct_fusion'
+    assert job['result']['product_mode'] == 'baseline_first'
+    assert 'critic_loop' in job['result']
+    assert job['share_url'] == f'/share/{job_id}'
+    assert len(calls) == 1
+    assert calls[0][1] == server.SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS
 
 
 
-def test_fuse_upload_api_returns_best_playable_fallback_when_no_survivor_exists(tmp_path, monkeypatch):
+def test_share_route_renders_completed_simple_fuse_job(tmp_path, monkeypatch):
     runs_dir = tmp_path / 'runs'
-    uploads_dir = runs_dir / 'ui_uploads'
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
-    monkeypatch.setattr(server, 'UPLOADS_DIR', uploads_dir)
-
-    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
-        outdir = Path(cmd[cmd.index('--output') + 1])
-        outdir.mkdir(parents=True, exist_ok=True)
-        miss_dir = outdir / 'candidate_002'
-        miss_dir.mkdir(parents=True, exist_ok=True)
-        audio = miss_dir / 'child_master.wav'
-        audio.write_bytes(b'fallback-wave')
-        report = {
-            'summary': ['Generated 4 candidates.', 'No candidates survived the automatic gate.'],
-            'recommended_shortlist': [],
-            'closest_misses': [
-                {
-                    'candidate_id': 'candidate_002',
-                    'label': 'candidate_002',
-                    'decision': 'borderline',
-                    'listener_rank': 59.0,
-                    'overall_score': 59.0,
-                    'verdict': 'mixed',
-                    'run_dir': str(miss_dir),
-                    'audio_path': str(audio),
-                    'top_reasons': ['groove grid is not stable enough'],
-                    'top_fixes': ['make it feel more like one song'],
-                }
-            ],
-            'candidates': [],
-        }
-        (outdir / 'auto_shortlist_report.json').write_text(json.dumps(report), encoding='utf-8')
-        return SimpleNamespace(returncode=0, stdout='fuse ok', stderr='')
-
-    monkeypatch.setattr(server.subprocess, 'run', fake_run)
-
-    client = app.test_client()
-    response = client.post(
-        '/api/fuse-upload',
-        data={
-            'song_a': (io.BytesIO(b'aaa'), 'song_a.mp3'),
-            'song_b': (io.BytesIO(b'bbb'), 'song_b.mp3'),
+    server._SIMPLE_FUSE_JOBS.clear()
+    job_id = 'job12345'
+    audio = runs_dir / 'demo' / 'fused_output.wav'
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b'wave')
+    server._set_simple_fuse_job(
+        job_id,
+        status='done',
+        run_id='simple_fuse_20260319_000000',
+        output_dir=str(audio.parent),
+        result={
+            'audio_url': f'/api/artifact?path={audio}',
+            'selected_candidate_id': 'direct_fusion',
+            'critic_loop': {
+                'headline': 'Critic loop best iteration: #2 at overall 81.0.',
+                'decision': 'Latest benchmark winner: baseline_case',
+                'next_focus': 'Top intervention target: song_likeness',
+            },
         },
-        content_type='multipart/form-data',
     )
 
+    client = app.test_client()
+    response = client.get(f'/share/{job_id}')
     assert response.status_code == 200
-    payload = response.get_json()
-    assert payload['status'] == 'success'
-    assert payload['result']['delivery_mode'] == 'fallback'
-    assert payload['result']['selection_source'] == 'closest_miss'
-    assert payload['result']['selected_candidate_id'] == 'candidate_002'
-    promoted = Path(payload['result']['audio_path'])
-    assert promoted.exists()
-    assert promoted.read_bytes() == b'fallback-wave'
+    assert b'VocalFusion Share' in response.data
+    assert b'Baseline-first output ready' in response.data
+    assert b'Critic loop best iteration' in response.data
+    assert b'direct_fusion' in response.data
 
 
 
-def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_fails(tmp_path, monkeypatch):
+def test_fuse_upload_api_runs_direct_deterministic_fusion_and_promotes_single_output(tmp_path, monkeypatch):
     runs_dir = tmp_path / 'runs'
     uploads_dir = runs_dir / 'ui_uploads'
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
@@ -868,11 +898,10 @@ def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_fails(
 
     def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
         calls.append((cmd, timeout))
+        assert 'fusion' in cmd
+        assert 'auto-shortlist-fusion' not in cmd
         outdir = Path(cmd[cmd.index('--output') + 1])
         outdir.mkdir(parents=True, exist_ok=True)
-        if 'auto-shortlist-fusion' in cmd:
-            return SimpleNamespace(returncode=2, stdout='advanced fail', stderr='advanced bad')
-        assert 'fusion' in cmd
         audio = outdir / 'child_master.wav'
         audio.write_bytes(b'direct-wave')
         (outdir / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(audio)}}), encoding='utf-8')
@@ -896,21 +925,78 @@ def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_fails(
     assert payload['result']['delivery_mode'] == 'deterministic_fallback'
     assert payload['result']['selection_source'] == 'direct_fusion'
     assert payload['result']['selected_candidate_id'] == 'direct_fusion'
-    assert 'advanced fail' in payload['stdout']
-    assert 'direct ok' in payload['stdout']
+    assert payload['result']['product_mode'] == 'baseline_first'
+    assert 'critic_loop' in payload['result']
+    assert payload['report_path'] is None
+    assert payload['report'] is None
     promoted = Path(payload['result']['audio_path'])
     assert promoted.exists()
     assert promoted.read_bytes() == b'direct-wave'
-    assert any('auto-shortlist-fusion' in call for call, _ in calls)
-    assert any('fusion' in call for call, _ in calls)
-    advanced_timeout = next(timeout for call, timeout in calls if 'auto-shortlist-fusion' in call)
-    direct_timeout = next(timeout for call, timeout in calls if 'fusion' in call)
-    assert advanced_timeout == server.SIMPLE_FUSE_ADVANCED_TIMEOUT_SECONDS
-    assert direct_timeout == server.SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS
+    assert len(calls) == 1
+    assert calls[0][1] == server.SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS
 
 
 
-def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_times_out(tmp_path, monkeypatch):
+def test_fuse_upload_api_returns_error_if_direct_deterministic_fusion_fails(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    uploads_dir = runs_dir / 'ui_uploads'
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+    monkeypatch.setattr(server, 'UPLOADS_DIR', uploads_dir)
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        assert 'fusion' in cmd
+        return SimpleNamespace(returncode=2, stdout='direct bad', stderr='planner exploded')
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    client = app.test_client()
+    response = client.post(
+        '/api/fuse-upload',
+        data={
+            'song_a': (io.BytesIO(b'aaa'), 'song_a.mp3'),
+            'song_b': (io.BytesIO(b'bbb'), 'song_b.mp3'),
+        },
+        content_type='multipart/form-data',
+    )
+
+    assert response.status_code == 500
+    payload = response.get_json()
+    assert payload['status'] == 'error'
+    assert 'deterministic fusion did not complete successfully' in payload['error']
+    assert payload['stdout'] == 'direct bad'
+    assert payload['stderr'] == 'planner exploded'
+
+
+
+def test_fuse_upload_api_returns_error_if_direct_deterministic_fusion_times_out(tmp_path, monkeypatch):
+    runs_dir = tmp_path / 'runs'
+    uploads_dir = runs_dir / 'ui_uploads'
+    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
+    monkeypatch.setattr(server, 'UPLOADS_DIR', uploads_dir)
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        raise server.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(server.subprocess, 'run', fake_run)
+
+    client = app.test_client()
+    response = client.post(
+        '/api/fuse-upload',
+        data={
+            'song_a': (io.BytesIO(b'aaa'), 'song_a.mp3'),
+            'song_b': (io.BytesIO(b'bbb'), 'song_b.mp3'),
+        },
+        content_type='multipart/form-data',
+    )
+
+    assert response.status_code == 500
+    payload = response.get_json()
+    assert payload['status'] == 'error'
+    assert 'deterministic fusion timed out' in payload['error']
+
+
+
+def test_fuse_upload_api_returns_error_if_direct_output_is_missing(tmp_path, monkeypatch):
     runs_dir = tmp_path / 'runs'
     uploads_dir = runs_dir / 'ui_uploads'
     monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
@@ -919,11 +1005,6 @@ def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_times_
     def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
         outdir = Path(cmd[cmd.index('--output') + 1])
         outdir.mkdir(parents=True, exist_ok=True)
-        if 'auto-shortlist-fusion' in cmd:
-            raise server.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
-        audio = outdir / 'child_master.wav'
-        audio.write_bytes(b'direct-after-timeout')
-        (outdir / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(audio)}}), encoding='utf-8')
         return SimpleNamespace(returncode=0, stdout='direct ok', stderr='')
 
     monkeypatch.setattr(server.subprocess, 'run', fake_run)
@@ -938,63 +1019,10 @@ def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_times_
         content_type='multipart/form-data',
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 500
     payload = response.get_json()
-    assert payload['status'] == 'success'
-    assert payload['result']['delivery_mode'] == 'deterministic_fallback'
-    assert payload['result']['selection_source'] == 'direct_fusion'
-    assert 'timed out' in payload['result']['fallback_reason']
-    promoted = Path(payload['result']['audio_path'])
-    assert promoted.exists()
-    assert promoted.read_bytes() == b'direct-after-timeout'
-
-
-
-def test_fuse_upload_api_drops_to_deterministic_fallback_if_advanced_path_has_no_playable_audio(tmp_path, monkeypatch):
-    runs_dir = tmp_path / 'runs'
-    uploads_dir = runs_dir / 'ui_uploads'
-    monkeypatch.setattr(server, 'RUNS_DIR', runs_dir)
-    monkeypatch.setattr(server, 'UPLOADS_DIR', uploads_dir)
-
-    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
-        outdir = Path(cmd[cmd.index('--output') + 1])
-        outdir.mkdir(parents=True, exist_ok=True)
-        if 'auto-shortlist-fusion' in cmd:
-            report = {
-                'summary': ['Generated 4 candidates.', 'No playable shortlist candidate could be promoted.'],
-                'recommended_shortlist': [],
-                'closest_misses': [],
-                'candidates': [],
-            }
-            (outdir / 'auto_shortlist_report.json').write_text(json.dumps(report), encoding='utf-8')
-            return SimpleNamespace(returncode=0, stdout='advanced empty', stderr='')
-        audio = outdir / 'child_master.wav'
-        audio.write_bytes(b'direct-from-empty')
-        (outdir / 'render_manifest.json').write_text(json.dumps({'outputs': {'master_wav': str(audio)}}), encoding='utf-8')
-        return SimpleNamespace(returncode=0, stdout='direct ok', stderr='')
-
-    monkeypatch.setattr(server.subprocess, 'run', fake_run)
-
-    client = app.test_client()
-    response = client.post(
-        '/api/fuse-upload',
-        data={
-            'song_a': (io.BytesIO(b'aaa'), 'song_a.mp3'),
-            'song_b': (io.BytesIO(b'bbb'), 'song_b.mp3'),
-        },
-        content_type='multipart/form-data',
-    )
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload['status'] == 'success'
-    assert payload['result']['delivery_mode'] == 'deterministic_fallback'
-    assert payload['result']['selection_source'] == 'direct_fusion'
-    assert payload['result']['fallback_reason']
-    promoted = Path(payload['result']['audio_path'])
-    assert promoted.exists()
-    assert promoted.read_bytes() == b'direct-from-empty'
-
+    assert payload['status'] == 'error'
+    assert 'playable audio artifact' in payload['error']
 
 
 def test_status_includes_latest_auto_shortlist_summary(tmp_path, monkeypatch):
