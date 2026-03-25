@@ -4,7 +4,8 @@ import pytest
 
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionCandidate, _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _backbone_selection_guard_reason, _boundary_confidence, _build_section_program, _build_selection_shortlist_diagnostics, _choose_backbone_parent, _choose_with_major_section_balance_guard, _collect_parent_candidates, _enumerate_section_choices, _hard_groove_candidate_pool, _infer_transition_mode, _phrase_window_candidates, _pick_candidate, _planner_listen_feedback, _planner_seam_risk, _selection_backbone_continuity_penalty, _selection_opening_continuity_penalty
+from src.core.planner.arrangement import _SectionCandidate, _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _backbone_selection_guard_reason, _baseline_mini_arc_metrics, _boundary_confidence, _build_section_program, _build_selection_shortlist_diagnostics, _choose_backbone_parent, _choose_support_recipe, _choose_with_major_section_balance_guard, _collect_parent_candidates, _enumerate_section_choices, _hard_groove_candidate_pool, _hard_outro_release_candidate_pool, _infer_transition_mode, _outro_release_candidate_metrics, _phrase_window_candidates, _pick_candidate, _planner_listen_feedback, _planner_seam_risk, _resolve_baseline_donor_mini_arc, _selection_backbone_continuity_penalty, _selection_opening_continuity_penalty, _support_gain_db_for_recipe
+from src.core.planner.compatibility import baseline_hard_key_pass, baseline_pair_admissibility, key_semitone_distance, tempo_ratio
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -65,6 +66,153 @@ def test_build_stub_arrangement_plan_returns_sections():
     assert any("multi-candidate shortlist" in note for note in plan["planning_notes"])
 
 
+def test_compatibility_helpers_expose_conservative_tempo_key_and_pair_admissibility():
+    a = make_song("helper_a.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    b = make_song("helper_b.wav", 140.0, "B", "minor", "10A", 5, 0.14)
+
+    assert tempo_ratio(a, b) == pytest.approx(140.0 / 128.0, rel=1e-6)
+    assert key_semitone_distance(a, b) == 2
+    assert baseline_hard_key_pass(a, b) is True
+
+    admissibility = baseline_pair_admissibility(a, b)
+    assert admissibility["admissible"] is True
+    assert admissibility["hard_key_pass"] is True
+    assert admissibility["key_distance_semitones"] == 2
+    assert admissibility["tempo_ratio"] == pytest.approx(1.094, rel=1e-3)
+    assert admissibility["reasons"] == []
+
+
+
+def test_compatibility_helpers_reject_bad_pairs_with_explicit_tempo_and_key_reasons():
+    a = make_song("reject_a.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    b = make_song("reject_b.wav", 146.0, "F", "major", "7B", 5, 0.14)
+
+    admissibility = baseline_pair_admissibility(a, b)
+
+    assert admissibility["admissible"] is False
+    assert admissibility["hard_key_pass"] is False
+    assert admissibility["tempo_ratio"] == pytest.approx(1.141, rel=1e-3)
+    assert admissibility["key_distance_semitones"] == 4
+    assert any("tempo ratio" in reason for reason in admissibility["reasons"])
+    assert any("key distance 4 semitones" in reason for reason in admissibility["reasons"])
+
+
+
+def test_build_stub_arrangement_plan_baseline_mode_keeps_one_contiguous_donor_block_and_disables_support_layers():
+    a = make_song("baseline_a.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    b = make_song("baseline_b.wav", 130.0, "B", "minor", "10A", 5, 0.14)
+    a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
+    b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
+    a.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0]
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.26, 0.30, 0.44, 0.48, 0.58, 0.52]
+    b.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0]
+    b.energy["beat_rms"] = [0.09, 0.11, 0.22, 0.28, 0.42, 0.48, 0.64, 0.70, 0.78, 0.74]
+
+    plan = build_stub_arrangement_plan(a, b, arrangement_mode="baseline").to_dict()
+
+    assert plan["planning_diagnostics"]["arrangement_mode"] == "baseline"
+    assert plan["planning_diagnostics"]["baseline_admissibility"]["admissible"] is True
+    assert [section["label"] for section in plan["sections"]] == ["intro", "verse", "build", "payoff", "outro"]
+
+    donor_sections = [section for section in plan["sections"] if section["source_parent"] == plan["planning_diagnostics"]["backbone_plan"]["donor_parent"]]
+    assert [section["label"] for section in donor_sections] == ["build", "payoff"]
+    assert all(section["support_parent"] is None for section in plan["sections"])
+    assert all(section["transition_mode"] != "crossfade_support" for section in plan["sections"])
+    assert all(section["child_section_recipe"]["policy_id"] == "section_recipe_v1_baseline" for section in plan["planning_diagnostics"]["selected_sections"])
+
+
+
+def test_build_stub_arrangement_plan_baseline_mode_falls_back_to_backbone_only_when_pair_is_not_hard_admissible():
+    a = make_song("inadmissible_a.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    b = make_song("inadmissible_b.wav", 146.0, "F", "major", "7B", 5, 0.14)
+    a.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
+    b.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
+
+    plan = build_stub_arrangement_plan(a, b, arrangement_mode="baseline").to_dict()
+    diagnostics = plan["planning_diagnostics"]
+    backbone_parent = diagnostics["backbone_plan"]["backbone_parent"]
+
+    assert diagnostics["arrangement_mode"] == "baseline"
+    assert diagnostics["baseline_admissibility"]["admissible"] is False
+    assert all(section["source_parent"] == backbone_parent for section in plan["sections"])
+    assert [section["label"] for section in plan["sections"]] == ["intro", "verse", "payoff", "outro"]
+    assert any("Baseline admissibility failed" in note for note in plan["planning_notes"])
+
+
+
+def test_baseline_mini_arc_metrics_flags_rewound_underpowered_payoff_as_illegitimate():
+    song = make_song("donor.wav", 128.0, "A", "minor", "8A", 6, 0.14)
+    build = _WindowSelection(
+        parent_id="B",
+        song=song,
+        candidate=_SectionCandidate("phrase_4_6", 32.0, 48.0, 16.0, 40.0, 0.62, "phrase_window"),
+        blended_error=0.34,
+        score_breakdown={"seam_risk": 0.22, "transition_viability": 0.18},
+        section_label="build",
+    )
+    payoff = _WindowSelection(
+        parent_id="B",
+        song=song,
+        candidate=_SectionCandidate("phrase_2_4", 16.0, 32.0, 16.0, 24.0, 0.58, "phrase_window"),
+        blended_error=0.40,
+        score_breakdown={
+            "seam_risk": 0.54,
+            "transition_viability": 0.46,
+            "final_payoff_delivery": 0.48,
+            "payoff_hit": 0.34,
+            "payoff_sustained_conviction": 0.40,
+        },
+        section_label="payoff",
+    )
+
+    metrics = _baseline_mini_arc_metrics(build, payoff)
+
+    assert metrics["backward_gap_seconds"] > 0.0
+    assert metrics["energy_lift"] < 0.0
+    assert metrics["legitimacy_penalty"] > 0.95
+    assert metrics["legitimate"] is False
+
+
+
+def test_resolve_baseline_donor_mini_arc_falls_back_to_backbone_when_no_legitimate_donor_pair_exists():
+    song_a = make_song("backbone.wav", 128.0, "A", "minor", "8A", 6, 0.12)
+    song_b = make_song("donor.wav", 128.0, "A", "minor", "8A", 6, 0.14)
+    section_specs = [
+        _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A"),
+        _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A"),
+        _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="B"),
+        _SectionSpec(label="payoff", start_bar=24, bar_count=8, target_energy=0.78, source_parent_preference="B"),
+        _SectionSpec(label="outro", start_bar=32, bar_count=8, target_energy=0.34, source_parent_preference="A"),
+    ]
+    chosen = [
+        _WindowSelection(parent_id="A", song=song_a, candidate=_SectionCandidate("phrase_0_2", 0.0, 16.0, 16.0, 8.0, 0.22, "phrase_window"), blended_error=0.12, score_breakdown={}, section_label="intro"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=_SectionCandidate("phrase_2_4", 16.0, 32.0, 16.0, 24.0, 0.38, "phrase_window"), blended_error=0.18, score_breakdown={}, section_label="verse"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=_SectionCandidate("phrase_4_6", 32.0, 48.0, 16.0, 40.0, 0.64, "phrase_window"), blended_error=0.20, score_breakdown={"seam_risk": 0.24, "transition_viability": 0.18}, section_label="build"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=_SectionCandidate("phrase_1_3", 8.0, 24.0, 16.0, 16.0, 0.56, "phrase_window"), blended_error=0.22, score_breakdown={"seam_risk": 0.58, "transition_viability": 0.48, "final_payoff_delivery": 0.52, "payoff_hit": 0.38, "payoff_sustained_conviction": 0.42}, section_label="payoff"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=_SectionCandidate("phrase_4_6", 32.0, 48.0, 16.0, 40.0, 0.30, "phrase_window"), blended_error=0.16, score_breakdown={}, section_label="outro"),
+    ]
+    ranked = [
+        [chosen[0]],
+        [chosen[1]],
+        [chosen[2], _WindowSelection(parent_id="A", song=song_a, candidate=_SectionCandidate("phrase_3_5", 24.0, 40.0, 16.0, 32.0, 0.54, "phrase_window"), blended_error=0.28, score_breakdown={"seam_risk": 0.20, "transition_viability": 0.16}, section_label="build")],
+        [chosen[3], _WindowSelection(parent_id="A", song=song_a, candidate=_SectionCandidate("phrase_4_6", 32.0, 48.0, 16.0, 40.0, 0.76, "phrase_window"), blended_error=0.26, score_breakdown={"seam_risk": 0.22, "transition_viability": 0.18, "final_payoff_delivery": 0.08, "payoff_hit": 0.08, "payoff_sustained_conviction": 0.12}, section_label="payoff")],
+        [chosen[4]],
+    ]
+
+    updated, notes, diagnostics = _resolve_baseline_donor_mini_arc(
+        section_specs,
+        chosen,
+        ranked,
+        backbone_parent="A",
+        donor_parent="B",
+    )
+
+    assert updated[2].parent_id == "A"
+    assert updated[3].parent_id == "A"
+    assert diagnostics["status"] == "fallback_backbone_only"
+    assert any("fell back to backbone-owned feature sections" in note for note in notes)
+
+
 def test_build_selection_shortlist_diagnostics_keeps_guarded_pick_visible_when_it_falls_outside_top_k():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
@@ -87,6 +235,183 @@ def test_build_selection_shortlist_diagnostics_keeps_guarded_pick_visible_when_i
     assert diagnostics["candidate_shortlist"][-1]["role"] == "backbone"
     assert diagnostics["cross_parent_best_alternate"]["rank"] == 1
     assert diagnostics["cross_parent_best_alternate"]["parent_id"] == "B"
+
+
+def test_choose_support_recipe_falls_back_to_later_ranked_safe_cross_parent_window():
+    a = make_song("support_choice_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("support_choice_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="payoff", start_bar=16, bar_count=8, target_energy=0.78, source_parent_preference="A", transition_in="lift")
+    chosen = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_6_8", 48.0, 64.0, 16.0, 56.0, 0.84, "phrase_window"),
+        blended_error=0.32,
+        score_breakdown={"stretch_ratio": 1.0},
+        section_label="payoff",
+    )
+    shortlist_diagnostics = {
+        "cross_parent_best_alternate": {
+            "rank": 1,
+            "parent_id": "B",
+            "window_label": "phrase_10_12",
+            "planner_error": 0.44,
+            "error_delta_vs_selected": 0.12,
+            "score_breakdown": {
+                "stretch_ratio": 1.04,
+                "stretch_gate": 0.0,
+                "seam_risk": 0.36,
+                "transition_viability": 0.42,
+                "seam_foreground_collision": 0.71,
+            },
+        },
+        "candidate_shortlist": [
+            {
+                "rank": 1,
+                "parent_id": "B",
+                "window_label": "phrase_10_12",
+                "planner_error": 0.44,
+                "error_delta_vs_selected": 0.12,
+                "score_breakdown": {
+                    "stretch_ratio": 1.04,
+                    "stretch_gate": 0.0,
+                    "seam_risk": 0.36,
+                    "transition_viability": 0.42,
+                    "seam_foreground_collision": 0.71,
+                },
+            },
+            {
+                "rank": 2,
+                "parent_id": "B",
+                "window_label": "phrase_12_14",
+                "planner_error": 0.53,
+                "error_delta_vs_selected": 0.21,
+                "score_breakdown": {
+                    "stretch_ratio": 1.06,
+                    "stretch_gate": 0.0,
+                    "seam_risk": 0.41,
+                    "transition_viability": 0.46,
+                    "seam_foreground_collision": 0.28,
+                },
+            },
+        ],
+    }
+
+    recipe = _choose_support_recipe(spec, chosen, shortlist_diagnostics, backbone_parent="A")
+
+    assert recipe is not None
+    assert recipe["parent_id"] == "B"
+    assert recipe["window_label"] == "phrase_12_14"
+    assert recipe["mode"] == "foreground_counterlayer"
+    assert recipe["error_delta_vs_selected"] == pytest.approx(0.21)
+
+
+
+def test_choose_support_recipe_rejects_candidate_when_real_seam_foreground_collision_is_too_high():
+    a = make_song("support_collision_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("support_collision_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="build", start_bar=8, bar_count=8, target_energy=0.62, source_parent_preference="B", transition_in="blend")
+    chosen = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_SectionCandidate("phrase_4_6", 32.0, 48.0, 16.0, 40.0, 0.61, "phrase_window"),
+        blended_error=0.28,
+        score_breakdown={"stretch_ratio": 1.0},
+        section_label="build",
+    )
+    shortlist_diagnostics = {
+        "cross_parent_best_alternate": {
+            "rank": 1,
+            "parent_id": "A",
+            "window_label": "phrase_2_4",
+            "planner_error": 0.39,
+            "error_delta_vs_selected": 0.11,
+            "score_breakdown": {
+                "stretch_ratio": 1.03,
+                "stretch_gate": 0.0,
+                "seam_risk": 0.34,
+                "transition_viability": 0.40,
+                "seam_foreground_collision": 0.73,
+                "foreground_collision": 0.04,
+            },
+        },
+        "candidate_shortlist": [],
+    }
+
+    recipe = _choose_support_recipe(spec, chosen, shortlist_diagnostics, backbone_parent="B")
+
+    assert recipe is None
+
+
+
+def test_support_gain_db_for_recipe_gets_louder_for_close_safe_payoff_counterlayers_and_stays_conservative_for_verse():
+    payoff_spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference="A", transition_in="drop")
+    verse_spec = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
+
+    hot_payoff_gain = _support_gain_db_for_recipe(
+        payoff_spec,
+        support_mode="foreground_counterlayer",
+        error_delta=0.11,
+        seam_risk=0.34,
+        foreground_collision=0.18,
+    )
+    cautious_payoff_gain = _support_gain_db_for_recipe(
+        payoff_spec,
+        support_mode="foreground_counterlayer",
+        error_delta=0.33,
+        seam_risk=0.54,
+        foreground_collision=0.38,
+    )
+    verse_gain = _support_gain_db_for_recipe(
+        verse_spec,
+        support_mode="filtered_counterlayer",
+        error_delta=0.10,
+        seam_risk=0.30,
+        foreground_collision=0.12,
+    )
+
+    assert hot_payoff_gain == -6.0
+    assert cautious_payoff_gain == -7.15
+    assert verse_gain == -9.0
+    assert hot_payoff_gain > cautious_payoff_gain > verse_gain
+
+
+
+def test_choose_support_recipe_uses_dynamic_gain_for_close_safe_payoff_support():
+    a = make_song("support_gain_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("support_gain_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference="A", transition_in="drop")
+    chosen = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_8_10", 64.0, 80.0, 16.0, 72.0, 0.86, "phrase_window"),
+        blended_error=0.26,
+        score_breakdown={"stretch_ratio": 1.0},
+        section_label="payoff",
+    )
+    shortlist_diagnostics = {
+        "cross_parent_best_alternate": {
+            "rank": 1,
+            "parent_id": "B",
+            "window_label": "phrase_10_12",
+            "planner_error": 0.35,
+            "error_delta_vs_selected": 0.09,
+            "score_breakdown": {
+                "stretch_ratio": 1.02,
+                "stretch_gate": 0.0,
+                "seam_risk": 0.36,
+                "transition_viability": 0.44,
+                "seam_foreground_collision": 0.22,
+            },
+        },
+        "candidate_shortlist": [],
+    }
+
+    recipe = _choose_support_recipe(spec, chosen, shortlist_diagnostics, backbone_parent="A")
+
+    assert recipe is not None
+    assert recipe["mode"] == "foreground_counterlayer"
+    assert recipe["gain_db"] == -6.0
+
 
 
 def test_choose_with_major_section_balance_guard_prefers_readable_preferred_parent_intro_when_close():
@@ -144,6 +469,223 @@ def test_choose_with_major_section_balance_guard_prefers_readable_preferred_pare
     assert chosen == preferred_alt
     assert note is not None
     assert "intro backbone-preference guard" in note
+
+
+
+def test_choose_with_major_section_balance_guard_switches_to_preferred_intro_when_top_opening_is_only_locally_plausible_pseudo_opening():
+    a = make_song("intro_authenticity_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("intro_authenticity_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A", transition_out="lift")
+
+    donor_top = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_SectionCandidate("phrase_1_3", 8.0, 16.0, 8.0, 12.0, 0.28, "phrase_window"),
+        blended_error=2.72,
+        score_breakdown={
+            "parent_preference": 1.0,
+            "intro_identity": 0.68,
+            "fake_intro_risk": 0.42,
+            "opening_followthrough": 0.33,
+            "opening_followthrough_identity_gap": 0.25,
+            "opening_followthrough_lane_gap": 0.18,
+            "opening_joint_identity_gap": 0.12,
+            "opening_joint_lane_gap": 0.10,
+            "stretch_ratio": 1.01,
+            "stretch_gate": 0.0,
+            "section_identity": 0.29,
+            "shape_intro_hotspot": 0.24,
+            "listen_groove_confidence": 0.80,
+        },
+        section_label="intro",
+    )
+    preferred_alt = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_0_2", 0.0, 8.0, 8.0, 4.0, 0.22, "opening_lane"),
+        blended_error=3.25,
+        score_breakdown={
+            "parent_preference": 0.0,
+            "intro_identity": 0.72,
+            "fake_intro_risk": 0.16,
+            "opening_followthrough": 0.16,
+            "opening_followthrough_identity_gap": 0.11,
+            "opening_followthrough_lane_gap": 0.06,
+            "opening_joint_identity_gap": 0.03,
+            "opening_joint_lane_gap": 0.05,
+            "stretch_ratio": 1.00,
+            "stretch_gate": 0.0,
+            "section_identity": 0.18,
+            "shape_intro_hotspot": 0.14,
+            "listen_groove_confidence": 0.82,
+        },
+        section_label="intro",
+    )
+
+    chosen, note = _choose_with_major_section_balance_guard(spec, [donor_top, preferred_alt], prior_selections=[])
+
+    assert chosen == preferred_alt
+    assert note is not None
+    assert "pseudo-opening" in note
+
+
+
+def test_choose_with_major_section_balance_guard_switches_backbone_verse_when_donor_intro_would_hand_off_into_late_pseudo_verse():
+    a = make_song("donor_intro_backbone_verse_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("donor_intro_backbone_verse_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
+
+    prior_intro = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_SectionCandidate("phrase_1_3_trim_tail", 0.0, 16.0, 16.0, 8.0, 0.20, "phrase_trim"),
+        blended_error=2.9,
+        score_breakdown={"intro_identity": 0.68},
+        section_label="intro",
+    )
+    late_backbone_top = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_25_27_trim_tail", 176.0, 190.0, 14.0, 183.0, 0.24, "phrase_trim"),
+        blended_error=5.10,
+        score_breakdown={
+            "early_verse_readability_gap": 0.44,
+            "early_verse_position_gap": 0.52,
+            "early_verse_payoff_risk": 0.36,
+            "opening_joint_identity_gap": 0.42,
+            "opening_joint_lane_gap": 0.40,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.01,
+            "listen_groove_confidence": 0.90,
+        },
+        section_label="verse",
+    )
+    readable_backbone_alt = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_3_5_trim_tail", 24.0, 38.0, 14.0, 31.0, 0.22, "phrase_trim"),
+        blended_error=5.78,
+        score_breakdown={
+            "early_verse_readability_gap": 0.14,
+            "early_verse_position_gap": 0.08,
+            "early_verse_payoff_risk": 0.18,
+            "opening_joint_identity_gap": 0.16,
+            "opening_joint_lane_gap": 0.14,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.02,
+            "listen_groove_confidence": 0.86,
+        },
+        section_label="verse",
+    )
+
+    chosen, note = _choose_with_major_section_balance_guard(spec, [late_backbone_top, readable_backbone_alt], prior_selections=[prior_intro])
+
+    assert chosen == readable_backbone_alt
+    assert note is not None
+    assert "donor-intro opening-lane verse guard" in note
+
+
+
+def test_choose_with_major_section_balance_guard_replaces_weak_early_payoff_when_safe_late_sustained_alternate_exists():
+    a = make_song("late_payoff_guard_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("late_payoff_guard_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+
+    weak_early_top = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_2_4", 16.0, 32.0, 16.0, 24.0, 0.79, "phrase_window"),
+        blended_error=4.10,
+        score_breakdown={
+            "final_payoff_delivery": 0.29,
+            "payoff_hit": 0.70,
+            "payoff_sustained_conviction": 0.72,
+            "payoff_early_position_gap": 0.10,
+            "payoff_early_start_gap": 0.08,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.01,
+            "listen_groove_confidence": 0.82,
+            "seam_risk": 0.28,
+            "transition_viability": 0.24,
+        },
+        section_label="payoff",
+    )
+    late_sustained_alt = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_SectionCandidate("phrase_4_8", 32.0, 64.0, 32.0, 48.0, 0.88, "phrase_window"),
+        blended_error=4.64,
+        score_breakdown={
+            "final_payoff_delivery": 0.05,
+            "payoff_hit": 0.86,
+            "payoff_sustained_conviction": 0.89,
+            "payoff_early_position_gap": 0.0,
+            "payoff_early_start_gap": 0.0,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.03,
+            "listen_groove_confidence": 0.80,
+            "seam_risk": 0.30,
+            "transition_viability": 0.27,
+        },
+        section_label="payoff",
+    )
+
+    chosen, note = _choose_with_major_section_balance_guard(spec, [weak_early_top, late_sustained_alt], prior_selections=[])
+
+    assert chosen == late_sustained_alt
+    assert note is not None
+    assert "late-payoff legitimacy guard" in note
+
+
+
+def test_choose_with_major_section_balance_guard_keeps_top_payoff_when_late_alternate_is_not_safe_enough():
+    a = make_song("late_payoff_guard_keep_a.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    b = make_song("late_payoff_guard_keep_b.wav", 128.0, "A", "minor", "8A", 4, 0.11)
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+
+    weak_early_top = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_2_4", 16.0, 32.0, 16.0, 24.0, 0.79, "phrase_window"),
+        blended_error=4.10,
+        score_breakdown={
+            "final_payoff_delivery": 0.29,
+            "payoff_hit": 0.70,
+            "payoff_sustained_conviction": 0.72,
+            "payoff_early_position_gap": 0.10,
+            "payoff_early_start_gap": 0.08,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.01,
+            "listen_groove_confidence": 0.82,
+            "seam_risk": 0.28,
+            "transition_viability": 0.24,
+        },
+        section_label="payoff",
+    )
+    unsafe_late_alt = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_SectionCandidate("phrase_4_8", 32.0, 64.0, 32.0, 48.0, 0.88, "phrase_window"),
+        blended_error=4.62,
+        score_breakdown={
+            "final_payoff_delivery": 0.05,
+            "payoff_hit": 0.86,
+            "payoff_sustained_conviction": 0.89,
+            "payoff_early_position_gap": 0.0,
+            "payoff_early_start_gap": 0.0,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.16,
+            "listen_groove_confidence": 0.80,
+            "seam_risk": 0.30,
+            "transition_viability": 0.27,
+        },
+        section_label="payoff",
+    )
+
+    chosen, note = _choose_with_major_section_balance_guard(spec, [weak_early_top, unsafe_late_alt], prior_selections=[])
+
+    assert chosen == weak_early_top
+    assert note is None
 
 
 
@@ -1363,6 +1905,95 @@ def test_enumerate_section_choices_penalizes_snapping_back_to_majority_parent_af
 
 
 
+def test_section_level_authenticity_guard_extends_single_major_cameo_into_contiguous_donor_cluster_when_safe():
+    intro = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A")
+    verse = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
+    build = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="A", transition_in="blend", transition_out="swap")
+    payoff = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    bridge = _SectionSpec(label="bridge", start_bar=40, bar_count=8, target_energy=0.52, source_parent_preference="A", transition_in="swap", transition_out="lift")
+    outro = _SectionSpec(label="outro", start_bar=48, bar_count=8, target_energy=0.34, source_parent_preference="A", transition_in="blend")
+
+    song_a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+    song_b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.21)
+    a_candidate = _pick_candidate(song_a, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+    b_candidate = _pick_candidate(song_b, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+
+    chosen = [
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.40, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.20, "transition_viability": 0.18, "role_prior": 0.14, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="intro"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.52, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.24, "transition_viability": 0.20, "role_prior": 0.18, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="verse"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.60, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.26, "transition_viability": 0.22, "role_prior": 0.20, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="build"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.72, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.24, "role_prior": 0.22, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="payoff"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.74, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.24, "role_prior": 0.22, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="bridge"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.44, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.22, "transition_viability": 0.18, "role_prior": 0.16, "groove_continuity": 0.0, "listen_groove_confidence": 0.83}, section_label="outro"),
+    ]
+
+    ranked = [
+        [chosen[0]],
+        [chosen[1]],
+        [chosen[2]],
+        [chosen[3]],
+        [
+            chosen[4],
+            _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.90, score_breakdown={"stretch_ratio": 1.01, "stretch_gate": 0.0, "seam_risk": 0.32, "transition_viability": 0.26, "role_prior": 0.25, "groove_continuity": 0.0, "listen_groove_confidence": 0.80}, section_label="bridge"),
+        ],
+        [chosen[5]],
+    ]
+
+    updated, notes = _apply_section_level_authenticity_guard(
+        [intro, verse, build, payoff, bridge, outro],
+        chosen,
+        ranked,
+    )
+
+    major_updated = [selection for selection in updated if selection.section_label in {"verse", "build", "payoff", "bridge"}]
+    assert [selection.parent_id for selection in major_updated] == ["A", "A", "B", "B"]
+    assert any("single-major cameo rebound" in note for note in notes)
+
+
+
+def test_section_level_authenticity_guard_does_not_force_cameo_extension_when_only_safe_alternate_is_too_seam_risky():
+    intro = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A")
+    verse = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
+    build = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="A", transition_in="blend", transition_out="swap")
+    payoff = _SectionSpec(label="payoff", start_bar=24, bar_count=16, target_energy=0.86, source_parent_preference=None, transition_in="drop", transition_out="blend")
+    bridge = _SectionSpec(label="bridge", start_bar=40, bar_count=8, target_energy=0.52, source_parent_preference="A", transition_in="swap", transition_out="lift")
+
+    song_a = make_song("a.wav", 128.0, "A", "minor", "8A", 7, 0.22)
+    song_b = make_song("b.wav", 128.0, "A", "minor", "8A", 7, 0.21)
+    a_candidate = _pick_candidate(song_a, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+    b_candidate = _pick_candidate(song_b, target_position="late", bar_count=16, target_energy=0.86, role="payoff")
+
+    chosen = [
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.40, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.20, "transition_viability": 0.18, "role_prior": 0.14, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="intro"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.52, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.24, "transition_viability": 0.20, "role_prior": 0.18, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="verse"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.60, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.26, "transition_viability": 0.22, "role_prior": 0.20, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="build"),
+        _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.72, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.24, "role_prior": 0.22, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="payoff"),
+        _WindowSelection(parent_id="A", song=song_a, candidate=a_candidate, blended_error=0.74, score_breakdown={"stretch_ratio": 1.0, "stretch_gate": 0.0, "seam_risk": 0.28, "transition_viability": 0.24, "role_prior": 0.22, "groove_continuity": 0.0, "listen_groove_confidence": 0.82}, section_label="bridge"),
+    ]
+
+    ranked = [
+        [chosen[0]],
+        [chosen[1]],
+        [chosen[2]],
+        [chosen[3]],
+        [
+            chosen[4],
+            _WindowSelection(parent_id="B", song=song_b, candidate=b_candidate, blended_error=0.82, score_breakdown={"stretch_ratio": 1.01, "stretch_gate": 0.0, "seam_risk": 0.70, "transition_viability": 0.26, "role_prior": 0.25, "groove_continuity": 0.0, "listen_groove_confidence": 0.80}, section_label="bridge"),
+        ],
+    ]
+
+    updated, notes = _apply_section_level_authenticity_guard(
+        [intro, verse, build, payoff, bridge],
+        chosen,
+        ranked,
+    )
+
+    major_updated = [selection for selection in updated if selection.section_label in {"verse", "build", "payoff", "bridge"}]
+    assert [selection.parent_id for selection in major_updated] == ["A", "A", "B", "A"]
+    assert notes == []
+
+
+
 def test_section_level_authenticity_guard_breaks_major_section_monopoly_even_when_intro_outro_already_use_both_parents():
     intro = _SectionSpec(label="intro", start_bar=0, bar_count=8, target_energy=0.24, source_parent_preference="A")
     verse = _SectionSpec(label="verse", start_bar=8, bar_count=8, target_energy=0.42, source_parent_preference="A", transition_in="blend")
@@ -1723,6 +2354,39 @@ def test_bridge_selection_hard_shortlists_real_reset_when_clear_post_payoff_rese
 
 
 
+def test_bridge_selection_filters_plateaued_pseudo_reset_when_real_release_bridge_exists():
+    a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+
+    for song in (a, b):
+        song.duration_seconds = 64.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+        song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+
+    a.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.18, 0.24, 0.28, 0.34, 0.38, 0.44, 0.48, 0.42, 0.38, 0.54, 0.58, 0.22, 0.18]
+    b.energy["beat_rms"] = [0.10, 0.12, 0.18, 0.22, 0.32, 0.36, 0.48, 0.52, 0.92, 0.94, 0.74, 0.74, 0.90, 0.92, 0.24, 0.20]
+
+    previous = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=next(candidate for candidate in _phrase_window_candidates(b, 16) if candidate.label == "phrase_4_8"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="payoff",
+    )
+
+    spec = _SectionSpec(label="bridge", start_bar=40, bar_count=8, target_energy=0.50, source_parent_preference="A", transition_in="swap", transition_out="lift")
+    ranked = _enumerate_section_choices(spec, a, b, previous, prior_selections=[previous])
+
+    assert any(item.parent_id == "B" and item.candidate.label == "phrase_6_8" for item in ranked)
+    assert not any(item.parent_id == "B" and item.candidate.label == "phrase_5_7" for item in ranked)
+
+    release_b = next(item for item in ranked if item.parent_id == "B" and item.candidate.label == "phrase_6_8")
+    assert release_b.score_breakdown["bridge_release_gap"] < 0.16
+
+
+
 def test_final_payoff_delivery_prefers_post_bridge_window_that_finishes_strong_without_rewinding():
     a = make_song("a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
     b = make_song("b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
@@ -1881,6 +2545,111 @@ def test_outro_selection_penalizes_early_source_window_even_if_it_is_safe():
     assert early_pick.score_breakdown["source_role_too_early_gap"] > 0.0
     assert early_pick.score_breakdown["source_role_position"] > late_pick.score_breakdown["source_role_position"]
     assert late_pick.blended_error < early_pick.blended_error
+
+
+def test_outro_release_candidate_metrics_flags_fake_still_climaxing_outro_after_payoff():
+    song = make_song("outro_release.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    song.duration_seconds = 64.0
+    song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+    song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+    song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+    song.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.30, 0.34, 0.46, 0.52, 0.90, 0.94, 0.92, 0.90, 0.84, 0.86, 0.88, 0.90]
+
+    previous_payoff = _WindowSelection(
+        parent_id="A",
+        song=song,
+        candidate=next(candidate for candidate in _phrase_window_candidates(song, 16) if candidate.label == "phrase_4_8"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="payoff",
+    )
+    fake_outro = next(candidate for candidate in _phrase_window_candidates(song, 8) if candidate.label == "phrase_6_8")
+    spec = _SectionSpec(label="outro", start_bar=56, bar_count=8, target_energy=0.30, source_parent_preference="A", transition_in="blend")
+    _, features_map, _ = _collect_parent_candidates(song, "late", spec.bar_count, spec.target_energy, spec.label)
+
+    metrics = _outro_release_candidate_metrics(spec, fake_outro, features_map[fake_outro.label], previous_payoff)
+
+    assert metrics["still_climaxing_risk"] > 0.22
+    assert metrics["energy_release_gap"] > 0.10
+    assert metrics["hard_block"] == 1.0
+
+
+def test_hard_outro_release_candidate_pool_prefers_real_closing_lane_after_payoff():
+    song = make_song("outro_pool.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    song.duration_seconds = 64.0
+    song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0]
+    song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0]
+    song.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0, 58.0, 62.0]
+    song.energy["beat_rms"] = [0.08, 0.10, 0.16, 0.20, 0.30, 0.34, 0.46, 0.52, 0.90, 0.94, 0.74, 0.70, 0.62, 0.54, 0.22, 0.18]
+
+    previous_payoff = _WindowSelection(
+        parent_id="A",
+        song=song,
+        candidate=next(candidate for candidate in _phrase_window_candidates(song, 16) if candidate.label == "phrase_4_8"),
+        blended_error=0.0,
+        score_breakdown={},
+        section_label="payoff",
+    )
+    spec = _SectionSpec(label="outro", start_bar=56, bar_count=8, target_energy=0.30, source_parent_preference="A", transition_in="blend")
+    candidates, features_map, _ = _collect_parent_candidates(song, "late", spec.bar_count, spec.target_energy, spec.label)
+    metrics_map = {
+        candidate.label: _outro_release_candidate_metrics(spec, candidate, features_map[candidate.label], previous_payoff)
+        for candidate in candidates
+    }
+
+    pool = _hard_outro_release_candidate_pool(spec, candidates, metrics_map)
+
+    assert "phrase_6_8" in pool
+    assert "phrase_5_7" not in pool
+
+
+def test_choose_with_major_section_balance_guard_switches_to_safer_outro_release_when_top_pick_still_climaxes():
+    a = make_song("outro_guard_a.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    b = make_song("outro_guard_b.wav", 128.0, "A", "minor", "8A", 8, 0.20)
+    spec = _SectionSpec(label="outro", start_bar=56, bar_count=8, target_energy=0.30, source_parent_preference="A", transition_in="blend")
+
+    fake_top = _WindowSelection(
+        parent_id="A",
+        song=a,
+        candidate=_SectionCandidate("phrase_5_7", 40.0, 56.0, 16.0, 48.0, 0.74, "phrase_window"),
+        blended_error=3.90,
+        score_breakdown={
+            "outro_release_gap": 0.14,
+            "outro_closing_lane_gap": 0.18,
+            "outro_still_climaxing_risk": 0.34,
+            "outro_identity_gap": 0.16,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.02,
+            "listen_groove_confidence": 0.78,
+            "seam_risk": 0.28,
+            "transition_viability": 0.24,
+        },
+        section_label="outro",
+    )
+    safe_alt = _WindowSelection(
+        parent_id="B",
+        song=b,
+        candidate=_SectionCandidate("phrase_6_8", 48.0, 64.0, 16.0, 56.0, 0.22, "phrase_window"),
+        blended_error=4.34,
+        score_breakdown={
+            "outro_release_gap": 0.02,
+            "outro_closing_lane_gap": 0.04,
+            "outro_still_climaxing_risk": 0.04,
+            "outro_identity_gap": 0.08,
+            "stretch_gate": 0.0,
+            "stretch_ratio": 1.03,
+            "listen_groove_confidence": 0.76,
+            "seam_risk": 0.30,
+            "transition_viability": 0.26,
+        },
+        section_label="outro",
+    )
+
+    chosen, note = _choose_with_major_section_balance_guard(spec, [fake_top, safe_alt], prior_selections=[])
+
+    assert chosen == safe_alt
+    assert note is not None
+    assert "late-outro release guard" in note
 
 
 def test_collect_parent_candidates_keeps_structural_section_alternates_alongside_phrase_windows():

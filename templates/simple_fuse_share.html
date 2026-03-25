@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VocalFusion Share</title>
+  <style>
+    body { font-family: Inter, Arial, sans-serif; background:#0f1115; color:#e8ecf1; margin:0; padding:24px; }
+    .wrap { max-width: 820px; margin: 0 auto; }
+    .card { background:#171a21; border:1px solid #2a3140; border-radius:14px; padding:24px; }
+    .muted { color:#94a3b8; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:700; background:#111827; border:1px solid #065f46; color:#a7f3d0; }
+    a { color:#c4b5fd; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>VocalFusion Share</h1>
+      <p><span class="pill">Baseline-first output ready</span></p>
+      <p class="muted">This share page exposes the latest completed baseline-first fuse output, with the current critic-loop readout right below it.</p>
+      <audio controls style="width:100%; margin-top:12px;">
+        <source src="{{ result.audio_url }}">
+        Your browser does not support audio playback.
+      </audio>
+      <p style="margin-top:16px;"><a href="{{ result.audio_url }}" download>Download audio</a></p>
+      {% if result.critic_loop %}
+      <div style="margin-top:16px; padding:14px; border-radius:12px; background:#111827; border:1px solid #273244;">
+        <strong>Critic loop</strong>
+        <p class="muted" style="margin:8px 0 0 0;">{{ result.critic_loop.headline }}{% if result.critic_loop.decision %} · {{ result.critic_loop.decision }}{% endif %}</p>
+        {% if result.critic_loop.next_focus %}
+        <p class="muted" style="margin:8px 0 0 0;">{{ result.critic_loop.next_focus }}</p>
+        {% endif %}
+      </div>
+      {% endif %}
+      <details style="margin-top:18px;">
+        <summary>Run details</summary>
+        <p><strong>Run:</strong> <span class="mono">{{ job.run_id }}</span></p>
+        <p><strong>Folder:</strong> <span class="mono">{{ job.output_dir }}</span></p>
+        <p><strong>Selected output:</strong> <span class="mono">{{ result.selected_candidate_id }}</span></p>
+      </details>
+    </div>
+  </div>
+</body>
+</html>

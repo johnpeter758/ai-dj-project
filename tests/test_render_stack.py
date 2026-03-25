@@ -11,7 +11,14 @@ from src.core.planner import build_stub_arrangement_plan
 from src.core.planner.models import ChildArrangementPlan, CompatibilityFactors, ParentReference, PlannedSection
 from src.core.render import resolve_render_plan, render_resolved_plan
 from src.core.render.manifest import ResolvedRenderPlan
-from src.core.render.renderer import _apply_transition_sonics
+from src.core.render.renderer import (
+    _apply_transition_sonics,
+    _cue_safe_transition_anchor,
+    _find_cue_safe_head_offset_samples,
+    _finalize_master,
+    _overlap_carve_settings,
+    _adaptive_overlap_carve_db,
+)
 from src.core.render.transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
 
 
@@ -1019,6 +1026,92 @@ def test_render_resolved_plan_keeps_handoff_presence_band_more_suppressed_early(
 
 
 
+def test_overlap_carve_settings_prioritize_lead_handoffs_over_filtered_support():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    lead_work = Dummy(vocal_state='lead', role='section_base')
+    lead_section = Dummy(transition_mode='arrival_handoff')
+    filtered_work = Dummy(vocal_state='none', role='filtered_support')
+    filtered_section = Dummy(transition_mode='same_parent_flow')
+
+    lead_db, lead_lo, lead_hi = _overlap_carve_settings(lead_work, lead_section)
+    filtered_db, filtered_lo, filtered_hi = _overlap_carve_settings(filtered_work, filtered_section)
+
+    assert lead_db > filtered_db
+    assert lead_lo <= filtered_lo
+    assert lead_hi > filtered_hi
+
+
+
+def test_adaptive_overlap_carve_db_scales_down_when_presence_is_sparse():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    work = Dummy(vocal_state='lead', role='section_base')
+    section = Dummy(transition_mode='arrival_handoff')
+    sparse_mask = np.full((16, 24), 0.05, dtype=np.float32)
+
+    carve_db = _adaptive_overlap_carve_db(work, section, sparse_mask, base_carve_db=6.0)
+
+    assert carve_db < 5.0
+
+
+
+def test_adaptive_overlap_carve_db_stays_strong_for_dense_lead_handoffs():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    work = Dummy(vocal_state='lead', role='section_base')
+    section = Dummy(transition_mode='arrival_handoff')
+    dense_mask = np.full((24, 36), 0.92, dtype=np.float32)
+
+    carve_db = _adaptive_overlap_carve_db(work, section, dense_mask, base_carve_db=5.5)
+
+    assert carve_db > 6.0
+
+
+
+def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    bed = 0.01 * np.sin(2 * np.pi * 220.0 * t)
+    attack_start = int(0.18 * sr)
+    attack = np.zeros_like(t)
+    attack[attack_start:] = 0.22 * np.sin(2 * np.pi * 880.0 * t[:-attack_start or None])
+    segment = np.vstack([bed + attack, bed + attack]).astype(np.float32)
+
+    offset = _find_cue_safe_head_offset_samples(segment, sr, fade_in_sec=0.4)
+
+    assert int(0.12 * sr) <= offset <= int(0.25 * sr)
+
+
+
+def test_cue_safe_transition_anchor_trims_pre_attack_head_and_preserves_length():
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    signal = np.zeros_like(t)
+    attack_start = int(0.16 * sr)
+    signal[:attack_start] = 0.005 * np.sin(2 * np.pi * 110.0 * t[:attack_start])
+    signal[attack_start:] = 0.18 * np.sin(2 * np.pi * 660.0 * t[:-attack_start or None])
+    segment = np.vstack([signal, signal]).astype(np.float32)
+
+    anchored = _cue_safe_transition_anchor(segment, sr, fade_in_sec=0.35)
+
+    assert anchored.shape == segment.shape
+    early_rms_before = float(np.sqrt(np.mean(segment[:, : int(0.05 * sr)] ** 2)))
+    early_rms_after = float(np.sqrt(np.mean(anchored[:, : int(0.05 * sr)] ** 2)))
+    tail_rms_after = float(np.sqrt(np.mean(anchored[:, -int(0.05 * sr):] ** 2)))
+    assert early_rms_after > early_rms_before * 8.0
+    assert tail_rms_after < early_rms_after * 0.4
+
+
+
 def test_render_resolved_plan_applies_master_finish_not_just_peak_normalize(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0, amplitude=0.35)
     p2 = write_sine(tmp_path / 'b.wav', 330.0, amplitude=0.35)
@@ -1034,3 +1127,23 @@ def test_render_resolved_plan_applies_master_finish_not_just_peak_normalize(tmp_
     assert raw.shape == mastered.shape
     assert not np.allclose(raw, mastered)
     assert np.max(np.abs(mastered)) <= 10 ** (-1.0 / 20.0) + 1e-3
+
+
+
+def test_finalize_master_smooths_hot_transient_before_soft_clip():
+    sr = 44100
+    t = np.arange(sr, dtype=np.float32) / sr
+    body = 0.18 * np.sin(2 * np.pi * 220.0 * t)
+    audio = np.vstack([body, body]).astype(np.float32)
+    spike_start = sr // 3
+    spike_len = 48
+    audio[:, spike_start: spike_start + spike_len] += 1.6
+
+    mastered = _finalize_master(audio, sr=sr, bpm=120.0)
+    window = mastered[:, max(0, spike_start - 64): spike_start + spike_len + 64]
+    ceiling = 10 ** (-1.0 / 20.0)
+    sustained = mastered[:, spike_start + 4000: spike_start + 8000]
+
+    assert mastered.shape == audio.shape
+    assert np.max(np.abs(window)) <= ceiling + 1e-3
+    assert float(np.sqrt(np.mean(sustained ** 2))) > 0.04

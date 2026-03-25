@@ -13,6 +13,8 @@ import soundfile as sf
 from scipy import signal
 
 from .manifest import ResolvedRenderPlan
+from .mastering import bpm_synced_glue_compress, lookahead_envelope_limit, lufs_normalize
+from .spectral import apply_spectral_carve, compute_vocal_presence_mask
 from .transitions import equal_power_fade_in, equal_power_fade_out
 
 
@@ -231,6 +233,71 @@ def _fit_to_duration(segment: np.ndarray, sr: int, target_seconds: float, stretc
     return out.astype(np.float32)
 
 
+def _find_cue_safe_head_offset_samples(segment: np.ndarray, sr: int, fade_in_sec: float) -> int:
+    if segment.size == 0 or fade_in_sec <= 0.0:
+        return 0
+
+    max_shift_samples = min(
+        segment.shape[1] // 8,
+        max(0, int(round(min(fade_in_sec * 0.75, 0.5) * sr))),
+    )
+    if max_shift_samples < max(32, sr // 100):
+        return 0
+
+    mono = np.mean(segment, axis=0).astype(np.float32)
+    guard_samples = min(max_shift_samples, max(0, int(round(0.02 * sr))))
+    if guard_samples >= mono.size - 1:
+        return 0
+
+    search = mono[: max_shift_samples]
+    if search.size < 16:
+        return 0
+
+    hop = max(64, min(512, sr // 100))
+    frame = min(max(256, hop * 4), search.size)
+    rms = librosa.feature.rms(y=search, frame_length=frame, hop_length=hop, center=False)[0]
+    onset_env = librosa.onset.onset_strength(y=search, sr=sr, hop_length=hop, center=False)
+    if rms.size == 0 or onset_env.size == 0:
+        return 0
+
+    usable = min(rms.size, onset_env.size)
+    rms = rms[:usable]
+    onset_env = onset_env[:usable]
+    if usable < 3:
+        return 0
+
+    head_rms = float(np.mean(rms[: max(1, usable // 3)]))
+    peak_rms = float(np.max(rms))
+    peak_onset = float(np.max(onset_env))
+    if peak_rms <= 1e-5 or peak_onset <= 1e-5:
+        return 0
+
+    energy_gate = max(head_rms * 1.6, peak_rms * 0.22)
+    onset_gate = peak_onset * 0.35
+    candidate = None
+    for idx in range(1, usable):
+        sample = idx * hop
+        if sample <= guard_samples:
+            continue
+        if rms[idx] >= energy_gate and onset_env[idx] >= onset_gate:
+            candidate = sample
+            break
+
+    if candidate is None:
+        return 0
+    return int(min(max_shift_samples, candidate))
+
+
+def _cue_safe_transition_anchor(segment: np.ndarray, sr: int, fade_in_sec: float) -> np.ndarray:
+    offset = _find_cue_safe_head_offset_samples(segment, sr, fade_in_sec)
+    if offset <= 0:
+        return segment.astype(np.float32)
+    trimmed = segment[:, offset:]
+    if trimmed.shape[1] == 0:
+        return segment.astype(np.float32)
+    return np.pad(trimmed, ((0, 0), (0, offset))).astype(np.float32)
+
+
 def _apply_edge_fades(segment: np.ndarray, sr: int, fade_in_sec: float, fade_out_sec: float) -> np.ndarray:
     out = segment.copy()
     n = out.shape[1]
@@ -336,6 +403,78 @@ def _soft_limit(audio: np.ndarray, drive: float = 1.1) -> np.ndarray:
     return np.tanh(audio * np.float32(drive)).astype(np.float32) / np.float32(np.tanh(drive))
 
 
+def _should_apply_overlap_carve(work, section) -> bool:
+    vocal_state = str(getattr(work, 'vocal_state', '') or '')
+    role = str(getattr(work, 'role', '') or '')
+    if not bool(getattr(section, 'allowed_overlap', False)):
+        return False
+    if vocal_state in {'lead', 'lead_only', 'support'}:
+        return True
+    return role in {'foreground_counterlayer', 'filtered_counterlayer', 'filtered_support'}
+
+
+def _overlap_carve_settings(work, section) -> tuple[float, float, float]:
+    vocal_state = str(getattr(work, 'vocal_state', '') or '')
+    role = str(getattr(work, 'role', '') or '')
+    transition_mode = str(getattr(section, 'transition_mode', '') or '')
+
+    carve_db = 3.5
+    carve_lo_hz = 160.0
+    carve_hi_hz = 5200.0
+
+    if vocal_state in {'lead', 'lead_only'}:
+        carve_db = 5.25
+        carve_lo_hz = 180.0
+        carve_hi_hz = 6200.0
+    elif vocal_state == 'support':
+        carve_db = 4.25
+        carve_lo_hz = 170.0
+        carve_hi_hz = 5600.0
+    elif role == 'foreground_counterlayer':
+        carve_db = 4.0
+        carve_lo_hz = 180.0
+        carve_hi_hz = 5200.0
+    elif role in {'filtered_counterlayer', 'filtered_support'}:
+        carve_db = 2.5
+        carve_lo_hz = 220.0
+        carve_hi_hz = 4200.0
+
+    if transition_mode in {'arrival_handoff', 'single_owner_handoff'}:
+        carve_db += 0.75
+        carve_hi_hz = max(carve_hi_hz, 5800.0)
+    elif transition_mode == 'same_parent_flow':
+        carve_db *= 0.7
+        carve_hi_hz = min(carve_hi_hz, 4200.0)
+
+    return float(carve_db), float(carve_lo_hz), float(carve_hi_hz)
+
+
+def _adaptive_overlap_carve_db(work, section, vocal_mask: np.ndarray, base_carve_db: float) -> float:
+    if vocal_mask.size == 0:
+        return float(base_carve_db)
+
+    transition_mode = str(getattr(section, 'transition_mode', '') or '')
+    vocal_state = str(getattr(work, 'vocal_state', '') or '')
+
+    mask_mean = float(np.mean(vocal_mask))
+    dense_presence = float(np.mean(vocal_mask >= 0.55))
+
+    intensity = 0.55 * mask_mean + 0.45 * dense_presence
+    intensity = float(np.clip(intensity, 0.0, 1.0))
+
+    scaled_carve = float(base_carve_db) * (0.55 + 0.9 * intensity)
+
+    if transition_mode in {'arrival_handoff', 'single_owner_handoff'} and vocal_state in {'lead', 'lead_only'}:
+        scaled_carve += 0.25 + 0.65 * intensity
+    elif transition_mode == 'same_parent_flow':
+        scaled_carve *= 0.92
+
+    if dense_presence < 0.1 and mask_mean < 0.2:
+        scaled_carve *= 0.8
+
+    return float(np.clip(scaled_carve, 1.5, 7.0))
+
+
 def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndarray:
     out = segment.astype(np.float32)
     overlap_sec = min(float(work.fade_in_sec), max(0.0, float(work.target_duration_sec)))
@@ -387,10 +526,13 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
     return out
 
 
-def _finalize_master(audio: np.ndarray, sr: int) -> np.ndarray:
+def _finalize_master(audio: np.ndarray, sr: int, bpm: float = 120.0) -> np.ndarray:
     finished = _highpass(audio.astype(np.float32), sr, 28.0)
-    finished = _compress_bus(finished, threshold_db=-18.0, ratio=2.0, makeup_db=1.0)
-    finished = _soft_limit(finished, drive=1.1)
+    finished = bpm_synced_glue_compress(finished, sr=sr, bpm=bpm, threshold_db=-16.0, ratio=1.8, makeup_db=0.75)
+    finished = _compress_bus(finished, threshold_db=-18.0, ratio=2.0, makeup_db=0.5)
+    finished = lookahead_envelope_limit(finished, sr=sr, ceiling_db=-1.2, attack_ms=2.0, release_ms=60.0, lookahead_ms=1.5)
+    finished = _soft_limit(finished, drive=1.05)
+    finished = lufs_normalize(finished, target_lufs=-12.0, sr=sr)
     return _peak_normalize(finished, -1.0)
 
 
@@ -430,6 +572,7 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
         segment = _fit_to_duration(segment, sr, work.target_duration_sec, work.stretch_ratio)
         segment = _prepare_role_layer(segment, sr, work, section_map[work.section_index])
         segment = _section_mix_cleanup(segment, sr, work, section_map[work.section_index])
+        segment = _cue_safe_transition_anchor(segment, sr, work.fade_in_sec)
         segment = _apply_gain_db(segment, work.gain_db)
         segment = _apply_transition_sonics(
             segment,
@@ -444,6 +587,22 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
         end_sample = min(total_samples, start_sample + segment.shape[1])
         seg = segment[:, : max(0, end_sample - start_sample)]
         if seg.shape[1] > 0:
+            existing = master[:, start_sample:end_sample]
+            if existing.shape[1] == seg.shape[1] and _should_apply_overlap_carve(work, section_map[work.section_index]):
+                existing_mono = np.mean(existing, axis=0)
+                seg_mono = np.mean(seg, axis=0)
+                mask = compute_vocal_presence_mask(existing_mono, seg_mono, sr)
+                carve_db, carve_lo_hz, carve_hi_hz = _overlap_carve_settings(work, section_map[work.section_index])
+                carve_db = _adaptive_overlap_carve_db(work, section_map[work.section_index], mask, carve_db)
+                existing = apply_spectral_carve(
+                    existing,
+                    mask,
+                    sr,
+                    carve_db=carve_db,
+                    carve_lo_hz=carve_lo_hz,
+                    carve_hi_hz=carve_hi_hz,
+                )
+                master[:, start_sample:end_sample] = existing
             master[:, start_sample:end_sample] += seg
 
     raw_wav = str((outdir / "child_raw.wav").resolve())
@@ -451,7 +610,7 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
     master_mp3 = str((outdir / "child_master.mp3").resolve())
 
     sf.write(raw_wav, master.T, sr, subtype="FLOAT")
-    final_audio = _finalize_master(master, sr)
+    final_audio = _finalize_master(master, sr, bpm=manifest.target_bpm)
     sf.write(master_wav, final_audio.T, sr, subtype="PCM_24")
 
     mp3_ok = False

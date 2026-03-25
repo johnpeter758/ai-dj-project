@@ -124,6 +124,33 @@ Purpose:
 - fail fast when the listener starts preferring artistically worse outputs
 - turn subjective quality expectations into a repeatable regression gate
 
+### Run the critic sprint benchmark harness across fixed fixture pairs
+
+```bash
+python3 scripts/critic_benchmark_harness.py scripts/critic_benchmark_harness.example.json \
+  --output runs/checkpoint/critic_benchmark_harness.json \
+  --markdown runs/checkpoint/critic_benchmark_harness.md \
+  --spec-output-dir runs/checkpoint/critic_specs
+```
+
+Purpose:
+- compare baseline vs adaptive vs critic outputs for the same fixture pair
+- enforce the expected critic > adaptive > baseline ordering on every curated fixture
+- persist per-fixture benchmark specs so regressions are debuggable instead of opaque
+- roll fixture-level outcomes into one sprint scoreboard
+
+### Gate generated vocals before expensive full renders
+
+```bash
+python3 scripts/vocal_quality_gate.py path/to/vocals.wav \
+  --output runs/checkpoint/vocal_quality.json
+```
+
+Purpose:
+- catch clipping, pitch instability, hiss, and thin/noisy vocal artifacts early
+- produce an explicit quality score + verdict (`strong`, `usable`, `borderline`, `reject`)
+- fail fast on bad generations before running full benchmark/render loops
+
 ### Build a reference-driven improvement brief for one fusion
 
 ```bash
@@ -150,6 +177,7 @@ Purpose:
 - render a candidate
 - compare it against known-good references
 - write a code-targeted improvement brief
+- explicitly keep or reject each candidate based on listener progress vs the prior best
 - write a structured change packet for external patch steps
 - optionally call an external patch step
 - rerun tests
@@ -157,9 +185,12 @@ Purpose:
 
 Useful loop artifacts per iteration:
 - `listen_feedback_brief.json` — ranked gaps vs references plus planner/render feedback routes
+- `listener_assessment.json` — listener-agent decision/rank for the candidate
 - `change_command_context.json` — structured fields for automation-friendly patch steps
 - `change_request.md` — concise human-readable implementation brief for the same iteration
 - `render/` — fusion output directory for that iteration
+
+The saved `closed_loop_report.json` also records `candidate_keep_decision` per iteration and aggregate `candidate_decisions` counts so the loop is explicit about which candidates were kept as the new best versus rejected.
 
 To inspect the available `{placeholder}` fields for `--change-command` and `--test-command`:
 

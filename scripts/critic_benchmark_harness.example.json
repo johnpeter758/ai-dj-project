@@ -1,0 +1,40 @@
+{
+  "schema_version": "0.1.0",
+  "lanes": ["baseline", "adaptive", "critic"],
+  "expected_lane_order": ["critic", "adaptive", "baseline"],
+  "require_monotonic_improvement": true,
+  "fixtures": [
+    {
+      "label": "fixture_pair_a",
+      "pair": {
+        "song_a": "Song A.mp3",
+        "song_b": "Song B.mp3"
+      },
+      "notes": [
+        "Replace these paths with the fixed sprint fixture outputs for one pair."
+      ],
+      "cases": {
+        "baseline": "runs/fixture_pair_a/baseline/listen_report.json",
+        "adaptive": "runs/fixture_pair_a/adaptive/listen_report.json",
+        "critic": "runs/fixture_pair_a/critic/listen_report.json"
+      },
+      "expectations": {
+        "baseline": {
+          "gating_status": "review"
+        },
+        "adaptive": {
+          "gating_status": "pass",
+          "overall_score_at_least": 75.0
+        },
+        "critic": {
+          "gating_status": "pass",
+          "overall_score_at_least": 80.0,
+          "component_score_at_least": {
+            "song_likeness": 70.0,
+            "transition": 65.0
+          }
+        }
+      }
+    }
+  ]
+}

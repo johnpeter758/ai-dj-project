@@ -36,11 +36,13 @@
   <div class="wrap">
     <div class="card">
       <h1>VocalFusion Status</h1>
-      <p class="muted">Local evaluator + artifact checkpoint view. Refreshes automatically every 15s.</p>
+      <p class="muted">Baseline-first product status plus critic-loop checkpoints. Refreshes automatically every 15s.</p>
     </div>
 
     <div class="card">
       <div class="grid">
+        <div class="stat"><div class="label">Product flow</div><div id="productFlow" class="mono">Loading…</div></div>
+        <div class="stat"><div class="label">Critic-loop decision</div><div id="criticLoop" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Current sprint</div><div id="currentTask" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest commit</div><div id="latestCommit" class="mono">Loading…</div></div>
         <div class="stat"><div class="label">Latest listen</div><div id="latestEval" class="mono">Loading…</div></div>
@@ -102,6 +104,14 @@
       const href = item.download_url || '#';
       const label = item.name || item.relative_path || item.path || 'artifact';
       return `<a href="${esc(href)}">${esc(label)}</a>`;
+    }
+    function renderProductFlow(flow) {
+      if (!flow) return 'No product-flow summary yet.';
+      return `<span class="pill">${esc(flow.label || flow.mode || 'product flow')}</span><br>${esc(flow.headline || '')}${flow.delivery_contract ? `<br><br>${esc(flow.delivery_contract)}` : ''}${flow.baseline_path ? `<br><br><strong>Baseline path</strong><br>${esc(flow.baseline_path)}` : ''}`;
+    }
+    function renderCriticLoop(loop) {
+      if (!loop) return 'No critic-loop summary yet.';
+      return `<span class="pill">${esc(loop.status || 'idle')}</span><br>${esc(loop.headline || '')}${loop.decision ? `<br><br><strong>Decision</strong><br>${esc(loop.decision)}` : ''}${loop.next_focus ? `<br><br><strong>Next focus</strong><br>${esc(loop.next_focus)}` : ''}`;
     }
     function renderListen(ev) {
       if (!ev) return 'No listen result yet.';
@@ -238,6 +248,8 @@
     async function loadStatus() {
       const res = await fetch('/api/status');
       const data = await res.json();
+      document.getElementById('productFlow').innerHTML = renderProductFlow(data.product_flow);
+      document.getElementById('criticLoop').innerHTML = renderCriticLoop(data.critic_loop);
       document.getElementById('currentTask').textContent = data.current_task || '—';
       document.getElementById('workingOn').textContent = data.currently_working_on || '—';
 

@@ -71,6 +71,7 @@ def test_closed_loop_stops_on_quality_gate(monkeypatch, tmp_path: Path):
     assert report['stop_reason'] == 'quality_gate_reached:85.0'
     assert report['best_iteration']['iteration'] == 2
     assert report['best_iteration']['candidate_listener_decision'] == 'survivor'
+    assert report['best_iteration']['candidate_keep_decision']['decision'] == 'keep'
     assert report['schema_version'] == loop.CLOSED_LOOP_SCHEMA_VERSION
     assert report['artifact_schema']['iteration_artifacts']['listen_feedback_brief']['kind'] == 'listen_feedback_brief'
     iter_one_artifacts = report['iterations'][0]['artifacts']
@@ -386,6 +387,7 @@ def test_closed_loop_writes_structured_loop_summary(monkeypatch, tmp_path: Path)
     assert loop_summary['total_iterations'] == 2
     assert loop_summary['score_trajectory'] == [61.0, 66.5]
     assert loop_summary['net_improvement'] == 5.5
+    assert loop_summary['candidate_decisions'] == {'kept_iterations': 2, 'rejected_iterations': 0}
     assert loop_summary['best_iteration']['iteration'] == 2
     assert loop_summary['best_iteration']['candidate_listener_decision'] == 'borderline'
     assert loop_summary['best_top_intervention']['component'] == 'song_likeness'
@@ -733,6 +735,61 @@ def test_main_prints_template_fields_without_required_positionals(monkeypatch, c
     assert 'Closed-loop command template fields' in output
     assert '{candidate_score}' in output
     assert '{top_code_targets}' in output
+
+
+def test_closed_loop_records_keep_vs_reject_candidate_decisions(monkeypatch, tmp_path: Path):
+    scores = iter([65.0, 64.0])
+    decisions = iter(['borderline', 'reject'])
+
+    def fake_render(song_a: str, song_b: str, output_dir: Path):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return {'output_dir': str(output_dir), 'stdout': '', 'stderr': '', 'command': ['fusion']}
+
+    def fake_candidate_report(_candidate_input: str):
+        score = next(scores)
+        payload = dict(BASE_REPORT)
+        payload['overall_score'] = score
+        payload['verdict'] = 'mixed'
+        payload['gating'] = {'status': 'review', 'raw_overall_score': score}
+        return payload
+
+    def fake_feedback(_candidate: str, _refs: list[str], target_score: float = 99.0):
+        return {
+            'schema_version': '0.2.0',
+            'goal': {'target_listener_score': target_score, 'current_overall_score': 65.0, 'gap_to_target': 34.0},
+            'ranked_interventions': [{'component': 'song_likeness', 'code_targets': ['src/core/planner/arrangement.py']}],
+            'planner_feedback_map': [],
+            'render_feedback_map': [],
+            'next_code_targets': ['src/core/planner/arrangement.py'],
+        }
+
+    monkeypatch.setattr(loop, 'render_iteration', fake_render)
+    monkeypatch.setattr(loop, '_candidate_report', fake_candidate_report)
+    monkeypatch.setattr(loop, '_candidate_listener_assessment', lambda _candidate_input: {'decision': next(decisions), 'listener_rank': 50.0})
+    monkeypatch.setattr(loop, 'build_feedback_brief', fake_feedback)
+    monkeypatch.setattr(loop, '_run_command_template', lambda *args, **kwargs: {'returncode': 0, 'stdout': '', 'stderr': '', 'command': ['noop'], 'command_text': 'noop'})
+
+    report = loop.run_closed_loop(
+        song_a='a.wav',
+        song_b='b.wav',
+        references=['ref.wav'],
+        output_root=str(tmp_path / 'loop_keep_reject'),
+        max_iterations=2,
+        quality_gate=90.0,
+        plateau_limit=1,
+        change_command='echo patch {iteration}',
+    )
+
+    assert report['candidate_decisions'] == {'kept_iterations': 1, 'rejected_iterations': 1}
+    first_decision = report['iterations'][0]['candidate_keep_decision']
+    second_decision = report['iterations'][1]['candidate_keep_decision']
+    assert first_decision['decision'] == 'keep'
+    assert 'first_candidate_establishes_baseline' in first_decision['reasons']
+    assert second_decision['decision'] == 'reject'
+    assert 'no_meaningful_progress_vs_previous_best' in second_decision['reasons']
+    assert report['loop_summary']['candidate_decisions'] == {'kept_iterations': 1, 'rejected_iterations': 1}
+    assert report['loop_summary']['iteration_summaries'][1]['candidate_keep_decision']['decision'] == 'reject'
+
 
 
 def test_closed_loop_rejects_feedback_brief_missing_schema_version(monkeypatch, tmp_path: Path):

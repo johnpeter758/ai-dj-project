@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import fabs
+from typing import Any
 
 from ..analysis.models import SongDNA
 from .models import CompatibilityFactors, CompatibilityReport, ParentReference
@@ -18,6 +19,30 @@ CAMELOT_NEIGHBORS = {
     "10A": {"9A", "11A", "10B"}, "10B": {"9B", "11B", "10A"},
     "11A": {"10A", "12A", "11B"}, "11B": {"10B", "12B", "11A"},
     "12A": {"11A", "1A", "12B"}, "12B": {"11B", "1B", "12A"},
+}
+
+_PITCH_CLASS_BY_TONIC = {
+    'c': 0,
+    'b#': 0,
+    'c#': 1,
+    'db': 1,
+    'd': 2,
+    'd#': 3,
+    'eb': 3,
+    'e': 4,
+    'fb': 4,
+    'f': 5,
+    'e#': 5,
+    'f#': 6,
+    'gb': 6,
+    'g': 7,
+    'g#': 8,
+    'ab': 8,
+    'a': 9,
+    'a#': 10,
+    'bb': 10,
+    'b': 11,
+    'cb': 11,
 }
 
 
@@ -78,6 +103,62 @@ def _stem_conflict_score(a: SongDNA, b: SongDNA) -> tuple[float, str]:
     if a_has_stems or b_has_stems:
         return 0.65, "only one song has stems available"
     return 0.5, "no stems available yet"
+
+
+def tempo_ratio(a: SongDNA, b: SongDNA) -> float:
+    tempo_a = max(float(a.tempo_bpm or 0.0), 1e-6)
+    tempo_b = max(float(b.tempo_bpm or 0.0), 1e-6)
+    return max(tempo_a, tempo_b) / min(tempo_a, tempo_b)
+
+
+def tonic_pitch_class(song: SongDNA) -> int | None:
+    tonic = str(song.key.get('tonic', '') or '').strip().lower()
+    return _PITCH_CLASS_BY_TONIC.get(tonic)
+
+
+def key_semitone_distance(song_a: SongDNA, song_b: SongDNA) -> int | None:
+    pitch_a = tonic_pitch_class(song_a)
+    pitch_b = tonic_pitch_class(song_b)
+    if pitch_a is None or pitch_b is None:
+        return None
+    delta = abs(pitch_a - pitch_b)
+    return min(delta, 12 - delta)
+
+
+def baseline_hard_key_pass(song_a: SongDNA, song_b: SongDNA) -> bool:
+    harmony_score, _ = _harmony_score(song_a, song_b)
+    semitone_delta = key_semitone_distance(song_a, song_b)
+    same_mode = str(song_a.key.get('mode', '') or '').strip().lower() == str(song_b.key.get('mode', '') or '').strip().lower()
+    return (
+        harmony_score >= 0.8
+        or (semitone_delta is not None and semitone_delta <= 2)
+        or (semitone_delta == 0 and same_mode)
+    )
+
+
+def baseline_pair_admissibility(song_a: SongDNA, song_b: SongDNA, *, max_tempo_ratio: float = 1.10) -> dict[str, Any]:
+    current_tempo_ratio = tempo_ratio(song_a, song_b)
+    semitone_delta = key_semitone_distance(song_a, song_b)
+    harmony_score, _ = _harmony_score(song_a, song_b)
+    hard_key_pass = baseline_hard_key_pass(song_a, song_b)
+    admissible = current_tempo_ratio <= max_tempo_ratio and hard_key_pass
+    reasons: list[str] = []
+    if current_tempo_ratio > max_tempo_ratio:
+        reasons.append(f'tempo ratio {current_tempo_ratio:.3f} exceeds baseline hard cap {max_tempo_ratio:.2f}')
+    if not hard_key_pass:
+        if semitone_delta is not None:
+            reasons.append(f'key distance {semitone_delta} semitones exceeds baseline admissibility')
+        else:
+            reasons.append('key relationship is not baseline-admissible')
+    return {
+        'admissible': admissible,
+        'tempo_ratio': round(current_tempo_ratio, 3),
+        'key_distance_semitones': semitone_delta,
+        'harmony_score': round(harmony_score, 3),
+        'hard_key_pass': hard_key_pass,
+        'max_tempo_ratio': round(max_tempo_ratio, 2),
+        'reasons': reasons,
+    }
 
 
 def build_compatibility_report(song_a: SongDNA, song_b: SongDNA) -> CompatibilityReport:

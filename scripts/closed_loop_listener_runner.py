@@ -450,6 +450,50 @@ def _is_meaningful_progress(
     return False, best_progress_signal
 
 
+def _candidate_keep_decision(
+    *,
+    iteration: int,
+    overall: float,
+    listener_assessment: dict[str, Any],
+    quality_gate_status: dict[str, Any],
+    improved_vs_best_before: bool,
+    best_iteration_index: int | None,
+) -> dict[str, Any]:
+    listener_decision = str(listener_assessment.get("decision") or "unknown")
+    decision = "reject"
+    reasons: list[str] = []
+
+    if improved_vs_best_before:
+        decision = "keep"
+        if best_iteration_index is None:
+            reasons.append("first_candidate_establishes_baseline")
+        else:
+            reasons.append("meaningful_progress_vs_previous_best")
+    else:
+        reasons.append("no_meaningful_progress_vs_previous_best")
+
+    if quality_gate_status.get("status") == "pass":
+        reasons.append("meets_quality_gate")
+    else:
+        reasons.append(str(quality_gate_status.get("reason") or "quality_gate_not_met"))
+
+    if listener_decision == "survivor":
+        reasons.append("listener_agent_survivor")
+    elif listener_decision == "borderline":
+        reasons.append("listener_agent_borderline")
+    elif listener_decision == "reject":
+        reasons.append("listener_agent_reject")
+
+    return {
+        "decision": decision,
+        "is_best_so_far": bool(improved_vs_best_before),
+        "best_iteration_before": None if best_iteration_index is None else int(best_iteration_index),
+        "reasons": reasons,
+        "candidate_listener_decision": listener_decision,
+        "candidate_overall_score": round(float(overall), 1),
+    }
+
+
 def _build_iteration_summary(iteration_record: dict[str, Any]) -> dict[str, Any]:
     top_intervention = _top_intervention_summary((iteration_record.get("top_interventions") or [None])[0])
     change_result = iteration_record.get("change_command") or {}
@@ -461,6 +505,7 @@ def _build_iteration_summary(iteration_record: dict[str, Any]) -> dict[str, Any]
         "candidate_verdict": str(iteration_record.get("candidate_verdict") or "unknown"),
         "candidate_listener_decision": str(listener_assessment.get("decision") or "unknown"),
         "candidate_listener_rank": float(listener_assessment.get("listener_rank") or 0.0),
+        "candidate_keep_decision": dict(iteration_record.get("candidate_keep_decision") or {}),
         "gap_to_target": float(iteration_record.get("gap_to_target") or 0.0),
         "improved_vs_best_before": bool(iteration_record.get("improved_vs_best_before")),
         "plateau_count": int(iteration_record.get("plateau_count") or 0),
@@ -488,6 +533,10 @@ def _build_loop_summary(loop_report: dict[str, Any]) -> dict[str, Any]:
     best_iteration_id = int(best.get("iteration") or 0)
     best_record = next((item for item in iterations if int(item.get("iteration") or 0) == best_iteration_id), None)
     best_top_intervention = _top_intervention_summary(((best_record or {}).get("top_interventions") or [None])[0])
+    keep_count = sum(
+        1 for item in iterations
+        if str((item.get("candidate_keep_decision") or {}).get("decision") or "") == "keep"
+    )
     return {
         "total_iterations": len(iterations),
         "best_iteration": {
@@ -495,10 +544,15 @@ def _build_loop_summary(loop_report: dict[str, Any]) -> dict[str, Any]:
             "candidate_overall_score": float(best.get("candidate_overall_score") or 0.0),
             "candidate_verdict": str(best.get("candidate_verdict") or "unknown"),
             "candidate_listener_decision": str(best.get("candidate_listener_decision") or "unknown"),
+            "candidate_keep_decision": dict(best.get("candidate_keep_decision") or {}),
             "candidate_input": str(best.get("candidate_input") or ""),
         } if best else None,
         "score_trajectory": scores,
         "net_improvement": improvement,
+        "candidate_decisions": {
+            "kept_iterations": keep_count,
+            "rejected_iterations": max(0, len(iterations) - keep_count),
+        },
         "stop_reason": str(loop_report.get("stop_reason") or ""),
         "best_top_intervention": best_top_intervention,
         "iteration_summaries": [_build_iteration_summary(item) for item in iterations],
@@ -705,6 +759,7 @@ def run_closed_loop(
             quality_gate=quality_gate,
             feedback_brief=feedback_brief,
         )
+        prior_best_iteration_index = best_iteration_index
         improved, best_progress_signal = _is_meaningful_progress(
             overall=overall,
             listener_assessment=listener_assessment,
@@ -719,6 +774,15 @@ def run_closed_loop(
         else:
             plateau_count += 1
 
+        candidate_keep_decision = _candidate_keep_decision(
+            iteration=iteration_index,
+            overall=overall,
+            listener_assessment=listener_assessment,
+            quality_gate_status=quality_gate_status,
+            improved_vs_best_before=improved,
+            best_iteration_index=prior_best_iteration_index,
+        )
+
         iteration_record: dict[str, Any] = {
             "iteration": iteration_index,
             "render": render_meta,
@@ -727,6 +791,7 @@ def run_closed_loop(
             "candidate_verdict": verdict,
             "candidate_listener_decision": listener_decision,
             "candidate_listener_rank": listener_rank,
+            "candidate_keep_decision": candidate_keep_decision,
             "quality_gate_status": quality_gate_status,
             "listener_assessment": listener_assessment,
             "listener_assessment_path": str(listener_assessment_path),
@@ -817,11 +882,22 @@ def run_closed_loop(
             "candidate_overall_score": best["candidate_overall_score"],
             "candidate_verdict": best["candidate_verdict"],
             "candidate_listener_decision": best.get("candidate_listener_decision", "unknown"),
+            "candidate_keep_decision": dict(best.get("candidate_keep_decision") or {}),
             "quality_gate_status": dict(best.get("quality_gate_status") or {}),
             "candidate_input": best["candidate_input"],
             "feedback_brief_path": best["feedback_brief_path"],
             "listener_assessment_path": best.get("listener_assessment_path"),
         }
+
+    keep_count = sum(
+        1 for item in loop_report["iterations"]
+        if str((item.get("candidate_keep_decision") or {}).get("decision") or "") == "keep"
+    )
+    reject_count = max(0, len(loop_report["iterations"]) - keep_count)
+    loop_report["candidate_decisions"] = {
+        "kept_iterations": keep_count,
+        "rejected_iterations": reject_count,
+    }
 
     if loop_report["best_iteration"]:
         loop_report["summary"].append(

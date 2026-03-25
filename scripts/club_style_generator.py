@@ -167,6 +167,8 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
             left[i] += val * l_gain
             right[i] += val * r_gain
 
+    transition_boundaries = {16, 40, 48, 72, 88}
+
     def section_gain(bar_idx: int) -> dict[str, float]:
         # 0-15 intro, 16-39 groove A, 40-47 break, 48-71 drop, 72-87 groove B, 88-95 outro
         if bar_idx < 16:
@@ -180,6 +182,15 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
         if bar_idx < 88:
             return {"kick": 1.0, "clap": 0.80, "hat": 0.90, "bass": 0.94, "stab": 0.32, "fx": 0.32, "vocal": 0.40}
         return {"kick": 0.78, "clap": 0.40, "hat": 0.48, "bass": 0.30, "stab": 0.14, "fx": 0.22, "vocal": 0.10}
+
+    def transition_shape(bar_idx: int, beat_in_bar: float) -> float:
+        # Soften edges around major section boundaries to improve seam quality.
+        factor = 1.0
+        if (bar_idx + 1) in transition_boundaries and beat_in_bar >= 2.5:
+            factor *= 0.56
+        if bar_idx in transition_boundaries and beat_in_bar <= 1.0:
+            factor *= 0.56
+        return factor
 
     def kick_fn(amp: float = 1.0):
         def fn(t: float) -> float:
@@ -284,7 +295,7 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
         add(t0, 0.24, kick_fn(0.98 * g["kick"]), pan=0.0)
         # thumper ghost kick for shuffle drive
         if g["kick"] > 0.7 and (shuffle_focus or bar >= 16) and beat % 2 == 0:
-            add(t0 + 0.74 * spb, 0.16, kick_fn(0.33 * g["kick"]), pan=0.0)
+            add(t0 + 0.74 * spb, 0.14, kick_fn(0.18 * g["kick"]), pan=0.0)
         if beat % 4 in (1, 3):
             add(t0 + 0.002, 0.15, clap_fn(0.65 * g["clap"]), pan=0.0)
 
@@ -309,11 +320,13 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
             continue
         bar_start = bar * 4 * spb
         for i, midi in enumerate(pattern):
-            t0 = bar_start + (i * 0.5 + syncopation[i]) * spb
-            amp = (0.40 + 0.10 * profile.energy_hint) * g["bass"]
+            beat_in_bar = (i * 0.5)
+            t0 = bar_start + (beat_in_bar + syncopation[i]) * spb
+            edge = transition_shape(bar, beat_in_bar)
+            amp = (0.31 + 0.08 * profile.energy_hint) * g["bass"] * edge
             if i in (4, 5, 7):
-                amp *= 1.12
-            add(t0, 0.46, bass_note(_midi_to_hz(midi), amp), pan=0.0)
+                amp *= 1.08
+            add(t0, 0.36, bass_note(_midi_to_hz(midi), amp), pan=0.0)
 
     # Stabs
     chord_roots = [45, 48, 43, 40]
@@ -326,11 +339,12 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
         for hit in (0.0, 1.5, 3.0):
             t0 = bar_start + hit * spb
             base = _midi_to_hz(root)
-            amp = 0.22 * g["stab"]
+            edge = transition_shape(bar, hit)
+            amp = 0.18 * g["stab"] * edge
             pan = -0.25 if hit < 1.0 else (0.25 if hit > 2.0 else 0.0)
-            add(t0, 0.35, stab_note(base, amp), pan=pan)
-            add(t0, 0.35, stab_note(base * 1.26, amp * 0.82), pan=pan * 0.9)
-            add(t0, 0.35, stab_note(base * 1.50, amp * 0.72), pan=pan * 0.8)
+            add(t0, 0.32, stab_note(base, amp), pan=pan)
+            add(t0, 0.32, stab_note(base * 1.26, amp * 0.78), pan=pan * 0.9)
+            add(t0, 0.32, stab_note(base * 1.50, amp * 0.66), pan=pan * 0.8)
 
     # Chanted vocal hook (synthetic chant stabs)
     for bar in range(bars):
@@ -343,9 +357,10 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
             for idx, hit in enumerate(chant_pattern):
                 if (idx == 0 and random.random() < 0.06):
                     continue
-                amp = (0.18 + (0.06 if chant_focus else 0.0)) * g["vocal"]
+                edge = transition_shape(bar, hit)
+                amp = (0.13 + (0.04 if chant_focus else 0.0)) * g["vocal"] * edge
                 pan = -0.12 if idx % 2 == 0 else 0.12
-                add(bar_start + hit * spb, 0.24, chant_hit_fn(amp, vowel_bias=(idx - 1.5) * 0.4), pan=pan)
+                add(bar_start + hit * spb, 0.20, chant_hit_fn(amp, vowel_bias=(idx - 1.5) * 0.4), pan=pan)
 
     # FX risers
     for bar in [15, 39, 47, 71, 87]:
@@ -391,11 +406,20 @@ def synthesize_original_track(profile: StyleProfile, out_wav: Path, seed: int = 
 
 
 def wav_to_mp3(wav_path: Path, mp3_path: Path) -> None:
+    # Gentle cleanup chain to improve mix sanity without crushing transients.
+    afilter = (
+        "highpass=f=28,"
+        "lowpass=f=16500,"
+        "acompressor=threshold=-16dB:ratio=2.2:attack=10:release=120:makeup=1.8,"
+        "alimiter=limit=0.93"
+    )
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
         str(wav_path),
+        "-af",
+        afilter,
         "-codec:a",
         "libmp3lame",
         "-b:a",

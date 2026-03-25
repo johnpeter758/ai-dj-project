@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.pytest_cache/
+
+# Audio files
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.npy
+*.npz
+
+# Runtime data (songs, stems, ML models — not committed)
+vf_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -422,6 +422,58 @@ def _render_fusion_candidate(
     return result
 
 
+def _parent_balance_from_plan(plan_path: str | None) -> float:
+    if not plan_path:
+        return 0.0
+    try:
+        payload = _load_json(Path(plan_path))
+    except Exception:
+        return 0.0
+    diagnostics = (payload or {}).get("planning_diagnostics") or {}
+    sections = list(diagnostics.get("selected_sections") or [])
+    if not sections:
+        return 0.0
+    counts = {"A": 0, "B": 0}
+    for section in sections:
+        parent = str((section or {}).get("selected_parent") or "").strip().upper()
+        if parent in counts:
+            counts[parent] += 1
+    a, b = counts["A"], counts["B"]
+    if a <= 0 or b <= 0:
+        return 0.0
+    return float(min(a, b) / max(a, b))
+
+
+def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -> float:
+    overall = float(report.get("overall_score") or 0.0)
+    song_likeness = float((report.get("song_likeness") or {}).get("score") or 0.0)
+    groove = float((report.get("groove") or {}).get("score") or 0.0)
+    transition = float((report.get("transition") or {}).get("score") or 0.0)
+    mix_sanity = float((report.get("mix_sanity") or {}).get("score") or 0.0)
+
+    score = (
+        0.45 * overall
+        + 0.20 * song_likeness
+        + 0.14 * groove
+        + 0.11 * transition
+        + 0.10 * mix_sanity
+    )
+    score += 10.0 * float(max(0.0, min(1.0, parent_balance)))
+    if parent_balance <= 0.0:
+        score -= 8.0
+    return round(float(score), 3)
+
+
+def _copy_if_exists(src: str | None, dst: Path) -> None:
+    if not src:
+        return
+    src_path = Path(src)
+    if not src_path.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_path, dst)
+
+
 
 def fusion(
     track1: str,
@@ -434,6 +486,7 @@ def fusion(
 ) -> int:
     """Fuse two tracks together."""
     analyze_audio = _get_analyze_audio_file()
+    evaluate_song = _get_evaluate_song()
     _, build_arrangement_plan = _get_planner_functions()
     track1_path = _resolve_existing_audio_path(track1, "track1")
     track2_path = _resolve_existing_audio_path(track2, "track2")
@@ -450,6 +503,95 @@ def fusion(
 
     song_a = analyze_audio(track1_path)
     song_b = analyze_audio(track2_path)
+
+    if arrangement_mode == "pro":
+        candidate_modes = ("adaptive", "baseline")
+        candidates: list[dict[str, Any]] = []
+
+        for mode in candidate_modes:
+            candidate_dir = outdir / f"candidate_{mode}"
+            candidate_dir.mkdir(parents=True, exist_ok=True)
+            plan = build_arrangement_plan(song_a, song_b, arrangement_mode=mode)
+            result = _render_fusion_plan_candidate(song_a, song_b, plan, candidate_dir)
+            listened = evaluate_song(analyze_audio(result["master_wav_path"]))
+            report = listened.to_dict()
+            report_path = candidate_dir / "listen_report.json"
+            _write_json(report_path, report)
+            parent_balance = _parent_balance_from_plan(result.get("arrangement_plan_path"))
+            selection_score = _pro_fusion_selection_score(report, parent_balance)
+            candidates.append(
+                {
+                    "mode": mode,
+                    "result": result,
+                    "listen_report": report,
+                    "listen_report_path": str(report_path),
+                    "parent_balance": round(parent_balance, 3),
+                    "selection_score": selection_score,
+                }
+            )
+
+        winner = max(candidates, key=lambda item: item["selection_score"])
+        best = winner["result"]
+
+        _copy_if_exists(best.get("raw_wav_path"), outdir / "child_raw.wav")
+        _copy_if_exists(best.get("master_wav_path"), outdir / "child_master.wav")
+        _copy_if_exists(best.get("master_mp3_path"), outdir / "child_master.mp3")
+        _copy_if_exists(best.get("render_manifest_path"), outdir / "render_manifest.json")
+        _copy_if_exists(best.get("arrangement_plan_path"), outdir / "arrangement_plan.json")
+
+        selection_payload = {
+            "mode": "pro",
+            "winner": {
+                "arrangement_mode": winner["mode"],
+                "selection_score": winner["selection_score"],
+                "overall_score": float((winner["listen_report"] or {}).get("overall_score") or 0.0),
+                "song_likeness": float(((winner["listen_report"] or {}).get("song_likeness") or {}).get("score") or 0.0),
+                "groove": float(((winner["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
+                "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
+                "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                "parent_balance": winner["parent_balance"],
+                "candidate_dir": str(Path(best.get("master_wav_path") or "").parent),
+            },
+            "candidates": [
+                {
+                    "arrangement_mode": item["mode"],
+                    "selection_score": item["selection_score"],
+                    "overall_score": float((item["listen_report"] or {}).get("overall_score") or 0.0),
+                    "song_likeness": float(((item["listen_report"] or {}).get("song_likeness") or {}).get("score") or 0.0),
+                    "groove": float(((item["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
+                    "transition": float(((item["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
+                    "mix_sanity": float(((item["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                    "parent_balance": item["parent_balance"],
+                    "listen_report_path": item["listen_report_path"],
+                    "candidate_dir": str(Path(item["result"].get("master_wav_path") or "").parent),
+                }
+                for item in candidates
+            ],
+            "promoted_outputs": {
+                "raw_wav": str(outdir / "child_raw.wav"),
+                "master_wav": str(outdir / "child_master.wav"),
+                "master_mp3": str(outdir / "child_master.mp3"),
+                "manifest": str(outdir / "render_manifest.json"),
+                "arrangement_plan": str(outdir / "arrangement_plan.json"),
+            },
+        }
+        selection_path = outdir / "fusion_selection.json"
+        _write_json(selection_path, selection_payload)
+
+        if genre or bpm or key:
+            print("Note: v1 render currently ignores target genre/BPM/key overrides and uses analyzed parent timing.")
+        print("Render outputs (pro mode):")
+        print(f"  winner mode: {winner['mode']}")
+        print(f"  winner selection score: {winner['selection_score']}")
+        print(f"  winner overall score: {(winner['listen_report'] or {}).get('overall_score')}")
+        print(f"  winner parent balance: {winner['parent_balance']}")
+        print(f"  raw wav: {outdir / 'child_raw.wav'}")
+        print(f"  master wav: {outdir / 'child_master.wav'}")
+        print(f"  master mp3: {(outdir / 'child_master.mp3') if (outdir / 'child_master.mp3').exists() else 'not written (ffmpeg unavailable)'}")
+        print(f"  manifest: {outdir / 'render_manifest.json'}")
+        print(f"  selection report: {selection_path}")
+        return 0
+
     plan = build_arrangement_plan(song_a, song_b, arrangement_mode=arrangement_mode)
     result = _render_fusion_plan_candidate(song_a, song_b, plan, outdir)
     if genre or bpm or key:
@@ -2316,7 +2458,7 @@ Suggested first checkpoint:
     fus_parser.add_argument("--bpm", "-b", type=int, help="Target BPM (accepted but not yet applied)")
     fus_parser.add_argument("--key", "-k", help="Target musical key")
     fus_parser.add_argument("--output", "-o", help="Output directory for render artifacts")
-    fus_parser.add_argument("--arrangement-mode", default="baseline", choices=["baseline", "adaptive"], help="Arrangement planning mode")
+    fus_parser.add_argument("--arrangement-mode", default="baseline", choices=["baseline", "adaptive", "pro"], help="Arrangement planning mode (pro runs adaptive+baseline and promotes best)")
 
     proto_parser = subparsers.add_parser("prototype", help="Generate first-pass two-song prototype artifacts")
     proto_parser.add_argument("song_a", help="Path to parent song A")
