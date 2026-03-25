@@ -450,17 +450,26 @@ def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -
     groove = float((report.get("groove") or {}).get("score") or 0.0)
     transition = float((report.get("transition") or {}).get("score") or 0.0)
     mix_sanity = float((report.get("mix_sanity") or {}).get("score") or 0.0)
+    gating_status = str((report.get("gating") or {}).get("status") or "").strip().lower()
 
     score = (
-        0.45 * overall
-        + 0.20 * song_likeness
+        0.42 * overall
+        + 0.22 * song_likeness
         + 0.14 * groove
-        + 0.11 * transition
+        + 0.12 * transition
         + 0.10 * mix_sanity
     )
     score += 10.0 * float(max(0.0, min(1.0, parent_balance)))
     if parent_balance <= 0.0:
         score -= 8.0
+
+    if gating_status == "reject":
+        score -= 12.0
+    elif gating_status == "review":
+        score -= 3.0
+    elif gating_status == "pass":
+        score += 2.0
+
     return round(float(score), 3)
 
 
@@ -506,29 +515,41 @@ def fusion(
 
     if arrangement_mode == "pro":
         candidate_modes = ("adaptive", "baseline")
+        per_mode_batch = 3
         candidates: list[dict[str, Any]] = []
 
         for mode in candidate_modes:
-            candidate_dir = outdir / f"candidate_{mode}"
-            candidate_dir.mkdir(parents=True, exist_ok=True)
             plan = build_arrangement_plan(song_a, song_b, arrangement_mode=mode)
-            result = _render_fusion_plan_candidate(song_a, song_b, plan, candidate_dir)
-            listened = evaluate_song(analyze_audio(result["master_wav_path"]))
-            report = listened.to_dict()
-            report_path = candidate_dir / "listen_report.json"
-            _write_json(report_path, report)
-            parent_balance = _parent_balance_from_plan(result.get("arrangement_plan_path"))
-            selection_score = _pro_fusion_selection_score(report, parent_balance)
-            candidates.append(
-                {
-                    "mode": mode,
-                    "result": result,
-                    "listen_report": report,
-                    "listen_report_path": str(report_path),
-                    "parent_balance": round(parent_balance, 3),
-                    "selection_score": selection_score,
-                }
-            )
+            variant_configs = _build_auto_shortlist_variant_configs(plan, per_mode_batch, variant_mode="safe")
+            for idx, variant in enumerate(variant_configs, start=1):
+                variant_id = str(variant.get("variant_id") or f"{mode}_{idx:02d}")
+                candidate_dir = outdir / f"candidate_{mode}_{idx:02d}_{variant_id}"
+                candidate_dir.mkdir(parents=True, exist_ok=True)
+                result = _render_fusion_candidate(
+                    song_a,
+                    song_b,
+                    plan,
+                    candidate_dir,
+                    candidate_id=f"{mode}_{idx:02d}",
+                    variant_config=variant,
+                )
+                listened = evaluate_song(analyze_audio(result["master_wav_path"]))
+                report = listened.to_dict()
+                report_path = candidate_dir / "listen_report.json"
+                _write_json(report_path, report)
+                parent_balance = _parent_balance_from_plan(result.get("arrangement_plan_path"))
+                selection_score = _pro_fusion_selection_score(report, parent_balance)
+                candidates.append(
+                    {
+                        "mode": mode,
+                        "variant": variant,
+                        "result": result,
+                        "listen_report": report,
+                        "listen_report_path": str(report_path),
+                        "parent_balance": round(parent_balance, 3),
+                        "selection_score": selection_score,
+                    }
+                )
 
         winner = max(candidates, key=lambda item: item["selection_score"])
         best = winner["result"]
@@ -543,24 +564,28 @@ def fusion(
             "mode": "pro",
             "winner": {
                 "arrangement_mode": winner["mode"],
+                "variant": winner.get("variant") or {},
                 "selection_score": winner["selection_score"],
                 "overall_score": float((winner["listen_report"] or {}).get("overall_score") or 0.0),
                 "song_likeness": float(((winner["listen_report"] or {}).get("song_likeness") or {}).get("score") or 0.0),
                 "groove": float(((winner["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
                 "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                 "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                "gating_status": str(((winner["listen_report"] or {}).get("gating") or {}).get("status") or ""),
                 "parent_balance": winner["parent_balance"],
                 "candidate_dir": str(Path(best.get("master_wav_path") or "").parent),
             },
             "candidates": [
                 {
                     "arrangement_mode": item["mode"],
+                    "variant": item.get("variant") or {},
                     "selection_score": item["selection_score"],
                     "overall_score": float((item["listen_report"] or {}).get("overall_score") or 0.0),
                     "song_likeness": float(((item["listen_report"] or {}).get("song_likeness") or {}).get("score") or 0.0),
                     "groove": float(((item["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
                     "transition": float(((item["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                     "mix_sanity": float(((item["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                    "gating_status": str(((item["listen_report"] or {}).get("gating") or {}).get("status") or ""),
                     "parent_balance": item["parent_balance"],
                     "listen_report_path": item["listen_report_path"],
                     "candidate_dir": str(Path(item["result"].get("master_wav_path") or "").parent),
@@ -581,6 +606,7 @@ def fusion(
         if genre or bpm or key:
             print("Note: v1 render currently ignores target genre/BPM/key overrides and uses analyzed parent timing.")
         print("Render outputs (pro mode):")
+        print(f"  candidates evaluated: {len(candidates)}")
         print(f"  winner mode: {winner['mode']}")
         print(f"  winner selection score: {winner['selection_score']}")
         print(f"  winner overall score: {(winner['listen_report'] or {}).get('overall_score')}")
