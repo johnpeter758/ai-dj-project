@@ -4,7 +4,7 @@ import pytest
 
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionCandidate, _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _backbone_selection_guard_reason, _baseline_mini_arc_metrics, _boundary_confidence, _build_section_program, _build_selection_shortlist_diagnostics, _choose_backbone_parent, _choose_support_recipe, _choose_with_major_section_balance_guard, _collect_parent_candidates, _enumerate_section_choices, _hard_groove_candidate_pool, _hard_outro_release_candidate_pool, _infer_transition_mode, _outro_release_candidate_metrics, _phrase_window_candidates, _pick_candidate, _planner_listen_feedback, _planner_seam_risk, _resolve_baseline_donor_mini_arc, _selection_backbone_continuity_penalty, _selection_opening_continuity_penalty, _support_gain_db_for_recipe
+from src.core.planner.arrangement import _SectionCandidate, _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _backbone_selection_guard_reason, _baseline_mini_arc_metrics, _boundary_confidence, _build_section_program, _build_selection_shortlist_diagnostics, _choose_backbone_parent, _choose_support_recipe, _choose_with_major_section_balance_guard, _clamp01, _collect_parent_candidates, _enumerate_section_choices, _hard_groove_candidate_pool, _hard_outro_release_candidate_pool, _infer_transition_mode, _normalize_scores, _outro_release_candidate_metrics, _phrase_window_candidates, _pick_candidate, _planner_listen_feedback, _planner_seam_risk, _resolve_baseline_donor_mini_arc, _safe_float_list, _selection_backbone_continuity_penalty, _selection_opening_continuity_penalty, _support_gain_db_for_recipe
 from src.core.planner.compatibility import baseline_hard_key_pass, baseline_pair_admissibility, key_semitone_distance, tempo_ratio
 
 
@@ -18,6 +18,18 @@ def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sect
         structure={"sections": [{"label": f"section_{i}"} for i in range(sections)]},
         energy={"summary": {"mean_rms": mean_rms, "mean_bar_rms": mean_rms}, "derived": {"energy_confidence": 0.7}},
     )
+
+
+def test_safe_numeric_helpers_drop_non_finite_values_and_stabilize_normalization():
+    assert _safe_float_list([0.1, "0.2", float("nan"), float("inf"), None, "bad"]) == [0.1, 0.2]
+    assert _clamp01(float("nan")) == 0.0
+    assert _clamp01(float("inf")) == 0.0
+    assert _normalize_scores({"a": 0.0, "b": float("nan"), "c": float("inf"), "d": -1.0}) == {
+        "a": 1.0,
+        "b": 0.0,
+        "c": 0.0,
+        "d": 0.0,
+    }
 
 
 def test_build_compatibility_report_returns_factorized_scores():

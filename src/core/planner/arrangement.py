@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from ..analysis.models import SongDNA
@@ -586,9 +587,12 @@ def _safe_float_list(values) -> list[float]:
     out: list[float] = []
     for value in values or []:
         try:
-            out.append(float(value))
+            parsed = float(value)
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(parsed):
+            continue
+        out.append(parsed)
     return out
 
 
@@ -1207,13 +1211,28 @@ def _boundary_confidence(song: SongDNA, candidate: _SectionCandidate) -> float:
 def _normalize_scores(values: dict[str, float]) -> dict[str, float]:
     if not values:
         return {}
-    low = min(values.values())
-    high = max(values.values())
+    finite_values: dict[str, float] = {}
+    for key, value in values.items():
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(parsed):
+            finite_values[key] = parsed
+    if not finite_values:
+        return {key: 0.0 for key in values}
+    low = min(finite_values.values())
+    high = max(finite_values.values())
     span = max(high - low, 1e-6)
-    return {key: (value - low) / span for key, value in values.items()}
+    normalized = {key: (value - low) / span for key, value in finite_values.items()}
+    for key in values:
+        normalized.setdefault(key, 0.0)
+    return normalized
 
 
 def _clamp01(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
     return max(0.0, min(1.0, value))
 
 
