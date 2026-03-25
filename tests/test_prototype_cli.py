@@ -38,7 +38,11 @@ def test_prototype_writes_expected_artifacts(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(ai_dj, "analyze_audio_file", lambda path, stems_dir=None: DummySongDNA(str(path)))
     monkeypatch.setattr(ai_dj, "build_compatibility_report", lambda a, b: type("R", (), {"to_dict": lambda self: {"factors": {"overall": 0.8}}})())
-    monkeypatch.setattr(ai_dj, "build_stub_arrangement_plan", lambda a, b: type("P", (), {"to_dict": lambda self: {"sections": [{"label": "intro"}]}})())
+    monkeypatch.setattr(
+        ai_dj,
+        "build_stub_arrangement_plan",
+        lambda a, b, arrangement_mode="baseline": type("P", (), {"to_dict": lambda self: {"sections": [{"label": "intro"}]}})(),
+    )
 
     outdir = tmp_path / "prototype"
     code = ai_dj.prototype(str(song_a), str(song_b), str(outdir))
