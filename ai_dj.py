@@ -493,6 +493,35 @@ def _extract_transition_seam_snapshot(report: dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
+def _safe_metric(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(number):
+        return float(default)
+    return number
+
+
+def _winner_sort_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+    report = candidate.get("listen_report") or {}
+    transition_metrics = (((report.get("transition") or {}).get("details") or {}).get("aggregate_metrics") or {})
+    selection_score = _safe_metric(candidate.get("selection_score"), default=0.0)
+    structure = _safe_metric((report.get("structure") or {}).get("score"), default=0.0)
+    song_likeness = _safe_metric((report.get("song_likeness") or {}).get("score"), default=0.0)
+    groove = _safe_metric((report.get("groove") or {}).get("score"), default=0.0)
+    overall = _safe_metric(report.get("overall_score"), default=0.0)
+    mean_seam_risk = _safe_metric(transition_metrics.get("mean_seam_risk"), default=1.0)
+    return (
+        round(selection_score, 6),
+        round(structure, 6),
+        round(song_likeness, 6),
+        round(groove, 6),
+        round(overall, 6),
+        round(-mean_seam_risk, 6),
+    )
+
+
 def _candidate_meets_quality_floor(
     report: dict[str, Any],
     *,
@@ -548,7 +577,7 @@ def _select_pro_fusion_winner(
     }
 
     if floor_pass_candidates:
-        winner = max(floor_pass_candidates, key=lambda item: item["selection_score"])
+        winner = max(floor_pass_candidates, key=_winner_sort_key)
         return winner, "pass+floor", counts
 
     if pass_candidates:

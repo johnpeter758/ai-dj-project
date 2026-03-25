@@ -130,3 +130,70 @@ def test_select_pro_fusion_winner_picks_top_floor_pass_candidate():
     assert winner is high_score_floor_pass
     assert policy == "pass+floor"
     assert counts["floor_pass_count"] == 2
+
+
+def test_select_pro_fusion_winner_breaks_ties_toward_stronger_structure():
+    lower_structure = {
+        "selection_score": 90.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 80.0,
+            "song_likeness": {"score": 70.0},
+            "groove": {"score": 70.0},
+            "structure": {"score": 60.0},
+        },
+    }
+    higher_structure = {
+        "selection_score": 90.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 79.0,
+            "song_likeness": {"score": 69.0},
+            "groove": {"score": 69.0},
+            "structure": {"score": 74.0},
+        },
+    }
+
+    winner, policy, counts = ai_dj._select_pro_fusion_winner(
+        [lower_structure, higher_structure],
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+    )
+
+    assert winner is higher_structure
+    assert policy == "pass+floor"
+    assert counts["floor_pass_count"] == 2
+
+
+def test_select_pro_fusion_winner_treats_nan_selection_score_as_zero():
+    nan_score = {
+        "selection_score": float("nan"),
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 90.0,
+            "song_likeness": {"score": 80.0},
+            "groove": {"score": 80.0},
+            "structure": {"score": 80.0},
+        },
+    }
+    finite_score = {
+        "selection_score": 1.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 70.0,
+            "song_likeness": {"score": 60.0},
+            "groove": {"score": 60.0},
+            "structure": {"score": 60.0},
+        },
+    }
+
+    winner, policy, _counts = ai_dj._select_pro_fusion_winner(
+        [nan_score, finite_score],
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+    )
+
+    assert winner is finite_score
+    assert policy == "pass+floor"
