@@ -4793,6 +4793,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
         transition_mode = _infer_transition_mode(spec, chosen, previous, previous.section_label if previous else None)
         continuity_treatment = None
         if transition_mode == 'same_parent_flow' and chosen.parent_id == backbone_plan.backbone_parent and spec.label in {'verse', 'bridge', 'outro'}:
+            transition_mode = 'backbone_flow'
             continuity_treatment = 'backbone_flow'
         breakdown = ', '.join(f"{name}={value:.2f}" for name, value in chosen.score_breakdown.items())
         feedback = parent_feedback[chosen.parent_id]

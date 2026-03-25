@@ -57,7 +57,7 @@ def test_build_stub_arrangement_plan_returns_sections():
     assert "evaluator_alignment" in payoff_diag
     assert "seam_risk" in payoff_diag["evaluator_alignment"]
     assert "transition_readiness" in payoff_diag["evaluator_alignment"]
-    assert payoff_diag["transition_mode"] in {"same_parent_flow", "single_owner_handoff", "crossfade_support", "arrival_handoff", None}
+    assert payoff_diag["transition_mode"] in {"same_parent_flow", "backbone_flow", "single_owner_handoff", "crossfade_support", "arrival_handoff", None}
     assert payoff_diag["selection_rank"] >= 1
     assert any(item["selected"] for item in payoff_diag["candidate_shortlist"])
     assert payoff_diag["cross_parent_best_alternate"] is None or "window_label" in payoff_diag["cross_parent_best_alternate"]
@@ -1130,6 +1130,40 @@ def test_infer_transition_mode_prefers_single_owner_handoff_for_cross_parent_bui
     spec = _SectionSpec(label="build", start_bar=16, bar_count=8, target_energy=0.58, source_parent_preference="B", transition_in="blend", transition_out="swap")
 
     assert _infer_transition_mode(spec, chosen, previous, "verse") == "single_owner_handoff"
+
+
+def test_build_stub_arrangement_plan_promotes_backbone_same_parent_flow_to_backbone_flow():
+    a = make_song("backbone_a.wav", 128.0, "A", "minor", "8A", 6, 0.22)
+    b = make_song("backbone_b.wav", 128.0, "A", "minor", "8A", 6, 0.18)
+
+    for song in (a, b):
+        song.duration_seconds = 48.0
+        song.structure["phrase_boundaries_seconds"] = [0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0]
+        song.structure["section_boundaries_seconds"] = [8.0, 16.0, 24.0, 32.0, 40.0]
+
+    a.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0]
+    a.energy["beat_rms"] = [0.08, 0.10, 0.14, 0.18, 0.26, 0.30, 0.36, 0.42, 0.48, 0.54, 0.62, 0.70]
+    b.energy["beat_times"] = [2.0, 6.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0]
+    b.energy["beat_rms"] = [0.12, 0.14, 0.22, 0.26, 0.34, 0.38, 0.44, 0.50, 0.56, 0.60, 0.66, 0.72]
+
+    plan = build_stub_arrangement_plan(a, b).to_dict()
+    diagnostics = {item["label"]: item for item in plan["planning_diagnostics"]["selected_sections"]}
+    backbone_parent = plan["planning_diagnostics"]["backbone_plan"]["backbone_parent"]
+
+    structural_backbone_sections = [
+        item
+        for item in plan["sections"]
+        if item["label"] in {"verse", "bridge", "outro"}
+        and item["source_parent"] == backbone_parent
+        and item.get("transition_mode") is not None
+    ]
+
+    assert structural_backbone_sections
+    assert any(item["transition_mode"] == "backbone_flow" for item in structural_backbone_sections)
+    assert any(
+        diagnostics[item["label"]]["transition_mode"] == "backbone_flow"
+        for item in structural_backbone_sections
+    )
 
 
 def test_build_plan_uses_sequential_transition_viability_to_keep_energy_rising_into_payoff():
