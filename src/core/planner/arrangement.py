@@ -4704,8 +4704,21 @@ def _choose_support_recipe(
     return None
 
 
+_ALLOWED_ARRANGEMENT_MODES = {'adaptive', 'baseline'}
+
+
+def _normalize_arrangement_mode(arrangement_mode: str | None) -> tuple[str, str | None]:
+    requested = str(arrangement_mode or '').strip().lower()
+    if requested in _ALLOWED_ARRANGEMENT_MODES:
+        return requested, None
+    return 'adaptive', (
+        f"Unknown arrangement_mode={arrangement_mode!r}; falling back to 'adaptive'. "
+        "Allowed values: 'adaptive', 'baseline'."
+    )
+
 
 def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mode: str = 'adaptive') -> ChildArrangementPlan:
+    arrangement_mode, arrangement_mode_warning = _normalize_arrangement_mode(arrangement_mode)
     report = build_compatibility_report(song_a, song_b)
 
     backbone_plan = _choose_backbone_parent(song_a, song_b)
@@ -4737,6 +4750,8 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
     }
 
     selection_notes: list[str] = []
+    if arrangement_mode_warning is not None:
+        selection_notes.append(arrangement_mode_warning)
     previous: _WindowSelection | None = None
     selection_history: list[_WindowSelection] = []
     chosen_selections: list[_WindowSelection] = []
@@ -4900,6 +4915,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
     diagnostics = {
         'planner_evaluator_bridge': 'listen-aligned planner diagnostics',
         'arrangement_mode': arrangement_mode,
+        'arrangement_mode_warning': arrangement_mode_warning,
         'baseline_admissibility': baseline_admissibility,
         'baseline_donor_mini_arc': baseline_mini_arc_diagnostics,
         'selection_shortlist_policy': {

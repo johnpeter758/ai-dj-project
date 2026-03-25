@@ -140,6 +140,19 @@ def test_build_stub_arrangement_plan_baseline_mode_falls_back_to_backbone_only_w
 
 
 
+def test_build_stub_arrangement_plan_unknown_mode_falls_back_to_adaptive_with_warning():
+    a = make_song("mode_a.wav", 128.0, "A", "minor", "8A", 5, 0.11)
+    b = make_song("mode_b.wav", 130.0, "B", "minor", "10A", 5, 0.14)
+
+    plan = build_stub_arrangement_plan(a, b, arrangement_mode="BASELINE_PLUS").to_dict()
+    diagnostics = plan["planning_diagnostics"]
+
+    assert diagnostics["arrangement_mode"] == "adaptive"
+    assert "Unknown arrangement_mode" in str(diagnostics.get("arrangement_mode_warning"))
+    assert any("falling back to 'adaptive'" in note for note in plan["planning_notes"])
+
+
+
 def test_baseline_mini_arc_metrics_flags_rewound_underpowered_payoff_as_illegitimate():
     song = make_song("donor.wav", 128.0, "A", "minor", "8A", 6, 0.14)
     build = _WindowSelection(
