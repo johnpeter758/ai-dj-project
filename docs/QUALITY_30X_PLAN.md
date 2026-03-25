@@ -56,10 +56,11 @@ Stage B: rank shortlist by weighted quality + diversity + seam confidence.
 
 ## Sprint 1 (immediate, 1-2 days)
 - [x] Pro mode candidate expansion + gating-aware scoring (landed).
-- [ ] Add hard winner floors in pro mode promotion logic:
+- [x] Add hard winner floors in pro mode promotion logic:
       - gate must be pass
       - song_likeness >= threshold
       - groove >= threshold
+      - structure >= threshold (added to prevent structurally weak passes from promotion)
 - [ ] Emit seam-spotlight clips + diagnostics for top candidate.
 - [ ] Add regression tests for pro-mode promotion constraints.
 

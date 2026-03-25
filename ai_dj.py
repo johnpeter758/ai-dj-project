@@ -498,11 +498,18 @@ def _candidate_meets_quality_floor(
     *,
     min_song_likeness: float,
     min_groove: float,
+    min_structure: float,
 ) -> bool:
     gate = str((report.get("gating") or {}).get("status") or "").strip().lower()
     song_likeness = float((report.get("song_likeness") or {}).get("score") or 0.0)
     groove = float((report.get("groove") or {}).get("score") or 0.0)
-    return gate == "pass" and song_likeness >= float(min_song_likeness) and groove >= float(min_groove)
+    structure = float((report.get("structure") or {}).get("score") or 0.0)
+    return (
+        gate == "pass"
+        and song_likeness >= float(min_song_likeness)
+        and groove >= float(min_groove)
+        and structure >= float(min_structure)
+    )
 
 
 def _select_pro_fusion_winner(
@@ -510,6 +517,7 @@ def _select_pro_fusion_winner(
     *,
     min_song_likeness: float,
     min_groove: float,
+    min_structure: float,
 ) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
     pass_candidates = [
         item
@@ -523,6 +531,7 @@ def _select_pro_fusion_winner(
             item.get("listen_report") or {},
             min_song_likeness=min_song_likeness,
             min_groove=min_groove,
+            min_structure=min_structure,
         )
     ]
     review_candidates = [
@@ -629,11 +638,13 @@ def fusion(
 
         min_song_likeness = 55.0
         min_groove = 60.0
+        min_structure = 58.0
 
         winner, selection_policy, selection_counts = _select_pro_fusion_winner(
             candidates,
             min_song_likeness=min_song_likeness,
             min_groove=min_groove,
+            min_structure=min_structure,
         )
 
         selection_payload = {
@@ -642,6 +653,7 @@ def fusion(
                 "winner_policy": selection_policy,
                 "min_song_likeness": min_song_likeness,
                 "min_groove": min_groove,
+                "min_structure": min_structure,
                 **selection_counts,
             },
             "winner": None,
@@ -656,6 +668,7 @@ def fusion(
                     "groove": float(((item["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
                     "transition": float(((item["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                     "mix_sanity": float(((item["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                    "structure": float(((item["listen_report"] or {}).get("structure") or {}).get("score") or 0.0),
                     "gating_status": str(((item["listen_report"] or {}).get("gating") or {}).get("status") or ""),
                     "seam_snapshot": _extract_transition_seam_snapshot(item["listen_report"] or {}),
                     "parent_balance": item["parent_balance"],
@@ -689,6 +702,7 @@ def fusion(
                 "groove": float(((winner["listen_report"] or {}).get("groove") or {}).get("score") or 0.0),
                 "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                 "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
+                "structure": float(((winner["listen_report"] or {}).get("structure") or {}).get("score") or 0.0),
                 "gating_status": str(((winner["listen_report"] or {}).get("gating") or {}).get("status") or ""),
                 "seam_snapshot": _extract_transition_seam_snapshot(winner["listen_report"] or {}),
                 "parent_balance": winner["parent_balance"],
@@ -704,7 +718,12 @@ def fusion(
         print(f"  winner policy: {selection_policy}")
         if winner is None:
             print("  promotion blocked: no candidate met hard pass+quality floors")
-            print(f"  required floors: song_likeness >= {min_song_likeness:.1f}, groove >= {min_groove:.1f}, gate=pass")
+            print(
+                "  required floors: "
+                f"song_likeness >= {min_song_likeness:.1f}, "
+                f"groove >= {min_groove:.1f}, "
+                f"structure >= {min_structure:.1f}, gate=pass"
+            )
             print(f"  selection report: {selection_path}")
             return 2
 

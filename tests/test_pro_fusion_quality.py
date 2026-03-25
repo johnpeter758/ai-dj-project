@@ -6,8 +6,14 @@ def test_candidate_meets_quality_floor_requires_pass_and_thresholds():
         "gating": {"status": "pass"},
         "song_likeness": {"score": 56.0},
         "groove": {"score": 61.0},
+        "structure": {"score": 60.0},
     }
-    assert ai_dj._candidate_meets_quality_floor(report, min_song_likeness=55.0, min_groove=60.0) is True
+    assert ai_dj._candidate_meets_quality_floor(
+        report,
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+    ) is True
 
 
 def test_candidate_meets_quality_floor_rejects_review_even_if_scores_high():
@@ -15,8 +21,29 @@ def test_candidate_meets_quality_floor_rejects_review_even_if_scores_high():
         "gating": {"status": "review"},
         "song_likeness": {"score": 90.0},
         "groove": {"score": 90.0},
+        "structure": {"score": 90.0},
     }
-    assert ai_dj._candidate_meets_quality_floor(report, min_song_likeness=55.0, min_groove=60.0) is False
+    assert ai_dj._candidate_meets_quality_floor(
+        report,
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+    ) is False
+
+
+def test_candidate_meets_quality_floor_rejects_low_structure():
+    report = {
+        "gating": {"status": "pass"},
+        "song_likeness": {"score": 80.0},
+        "groove": {"score": 80.0},
+        "structure": {"score": 52.0},
+    }
+    assert ai_dj._candidate_meets_quality_floor(
+        report,
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+    ) is False
 
 
 def test_extract_transition_seam_snapshot_is_resilient():
@@ -45,6 +72,7 @@ def test_select_pro_fusion_winner_requires_pass_plus_quality_floor():
                 "gating": {"status": "pass"},
                 "song_likeness": {"score": 54.0},
                 "groove": {"score": 70.0},
+                "structure": {"score": 65.0},
             },
         },
         {
@@ -53,6 +81,7 @@ def test_select_pro_fusion_winner_requires_pass_plus_quality_floor():
                 "gating": {"status": "review"},
                 "song_likeness": {"score": 90.0},
                 "groove": {"score": 90.0},
+                "structure": {"score": 92.0},
             },
         },
     ]
@@ -61,6 +90,7 @@ def test_select_pro_fusion_winner_requires_pass_plus_quality_floor():
         candidates,
         min_song_likeness=55.0,
         min_groove=60.0,
+        min_structure=58.0,
     )
 
     assert winner is None
@@ -77,6 +107,7 @@ def test_select_pro_fusion_winner_picks_top_floor_pass_candidate():
             "gating": {"status": "pass"},
             "song_likeness": {"score": 60.0},
             "groove": {"score": 62.0},
+            "structure": {"score": 60.0},
         },
     }
     high_score_floor_pass = {
@@ -85,6 +116,7 @@ def test_select_pro_fusion_winner_picks_top_floor_pass_candidate():
             "gating": {"status": "pass"},
             "song_likeness": {"score": 66.0},
             "groove": {"score": 71.0},
+            "structure": {"score": 64.0},
         },
     }
 
@@ -92,6 +124,7 @@ def test_select_pro_fusion_winner_picks_top_floor_pass_candidate():
         [low_score_floor_pass, high_score_floor_pass],
         min_song_likeness=55.0,
         min_groove=60.0,
+        min_structure=58.0,
     )
 
     assert winner is high_score_floor_pass
