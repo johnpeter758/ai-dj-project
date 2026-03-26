@@ -527,10 +527,10 @@ def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -
     gating_status = str((report.get("gating") or {}).get("status") or "").strip().lower()
 
     score = (
-        0.42 * overall
-        + 0.22 * song_likeness
-        + 0.14 * groove
-        + 0.12 * transition
+        0.34 * overall
+        + 0.24 * song_likeness
+        + 0.10 * groove
+        + 0.22 * transition
         + 0.10 * mix_sanity
     )
     score += 10.0 * float(max(0.0, min(1.0, parent_balance)))
@@ -542,8 +542,10 @@ def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -
     elif gating_status == "review":
         score -= 3.0
     elif gating_status == "pass":
-        score += 2.0
+        # Under pass gate, bias toward listener-perceived song flow quality.
+        score += 0.12 * song_likeness + 0.16 * transition
 
+    score -= _seam_risk_penalty(report)
     return round(float(score), 3)
 
 
@@ -577,19 +579,36 @@ def _safe_metric(value: Any, default: float = 0.0) -> float:
     return number
 
 
-def _winner_sort_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _seam_risk_penalty(report: dict[str, Any]) -> float:
+    transition_metrics = (((report.get("transition") or {}).get("details") or {}).get("aggregate_metrics") or {})
+    mean_seam_risk = _clamp01(_safe_metric(transition_metrics.get("mean_seam_risk"), default=0.0))
+    max_seam_risk = _clamp01(_safe_metric(transition_metrics.get("max_seam_risk"), default=mean_seam_risk))
+    energy_jump = _clamp01(_safe_metric(transition_metrics.get("mean_energy_jump"), default=0.0))
+
+    # Penalize unstable seams heavily so "track-switch" feeling loses ranking priority.
+    return float(12.0 * mean_seam_risk + 10.0 * max_seam_risk + 3.0 * energy_jump)
+
+
+def _winner_sort_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float, float]:
     report = candidate.get("listen_report") or {}
     transition_metrics = (((report.get("transition") or {}).get("details") or {}).get("aggregate_metrics") or {})
     selection_score = _safe_metric(candidate.get("selection_score"), default=0.0)
     structure = _safe_metric((report.get("structure") or {}).get("score"), default=0.0)
+    transition = _safe_metric((report.get("transition") or {}).get("score"), default=0.0)
     song_likeness = _safe_metric((report.get("song_likeness") or {}).get("score"), default=0.0)
     groove = _safe_metric((report.get("groove") or {}).get("score"), default=0.0)
     overall = _safe_metric(report.get("overall_score"), default=0.0)
     mean_seam_risk = _safe_metric(transition_metrics.get("mean_seam_risk"), default=1.0)
+    adjusted_selection = selection_score - _seam_risk_penalty(report)
     return (
-        round(selection_score, 6),
         round(structure, 6),
+        round(transition, 6),
         round(song_likeness, 6),
+        round(adjusted_selection, 6),
         round(groove, 6),
         round(overall, 6),
         round(-mean_seam_risk, 6),

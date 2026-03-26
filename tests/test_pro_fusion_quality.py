@@ -220,10 +220,11 @@ def test_select_pro_fusion_winner_treats_nan_selection_score_as_zero():
         "selection_score": float("nan"),
         "listen_report": {
             "gating": {"status": "pass"},
-            "overall_score": 90.0,
-            "song_likeness": {"score": 80.0},
-            "groove": {"score": 80.0},
-            "structure": {"score": 80.0},
+            "overall_score": 70.0,
+            "song_likeness": {"score": 60.0},
+            "groove": {"score": 60.0},
+            "structure": {"score": 60.0},
+            "transition": {"score": 60.0},
         },
     }
     finite_score = {
@@ -234,6 +235,7 @@ def test_select_pro_fusion_winner_treats_nan_selection_score_as_zero():
             "song_likeness": {"score": 60.0},
             "groove": {"score": 60.0},
             "structure": {"score": 60.0},
+            "transition": {"score": 60.0},
         },
     }
 
@@ -247,4 +249,84 @@ def test_select_pro_fusion_winner_treats_nan_selection_score_as_zero():
     )
 
     assert winner is finite_score
+    assert policy == "pass+floor"
+
+
+def test_select_pro_fusion_winner_biases_transition_clarity_under_pass_gate():
+    lower_transition = {
+        "selection_score": 92.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 85.0,
+            "song_likeness": {"score": 74.0},
+            "groove": {"score": 72.0},
+            "structure": {"score": 70.0},
+            "transition": {"score": 62.0},
+        },
+    }
+    higher_transition = {
+        "selection_score": 91.5,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 84.0,
+            "song_likeness": {"score": 78.0},
+            "groove": {"score": 71.0},
+            "structure": {"score": 70.0},
+            "transition": {"score": 74.0},
+        },
+    }
+
+    winner, policy, _counts = ai_dj._select_pro_fusion_winner(
+        [lower_transition, higher_transition],
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
+    )
+
+    assert winner is higher_transition
+    assert policy == "pass+floor"
+
+
+def test_select_pro_fusion_winner_penalizes_high_seam_risk_in_final_sort():
+    high_risk = {
+        "selection_score": 96.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 85.0,
+            "song_likeness": {"score": 75.0},
+            "groove": {"score": 72.0},
+            "structure": {"score": 72.0},
+            "transition": {
+                "score": 72.0,
+                "details": {"aggregate_metrics": {"mean_seam_risk": 0.9, "max_seam_risk": 0.95, "mean_energy_jump": 0.8}},
+            },
+        },
+    }
+    low_risk = {
+        "selection_score": 93.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 85.0,
+            "song_likeness": {"score": 75.0},
+            "groove": {"score": 72.0},
+            "structure": {"score": 72.0},
+            "transition": {
+                "score": 72.0,
+                "details": {"aggregate_metrics": {"mean_seam_risk": 0.15, "max_seam_risk": 0.2, "mean_energy_jump": 0.15}},
+            },
+        },
+    }
+
+    winner, policy, _counts = ai_dj._select_pro_fusion_winner(
+        [high_risk, low_risk],
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
+    )
+
+    assert winner is low_risk
     assert policy == "pass+floor"

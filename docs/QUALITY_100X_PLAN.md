@@ -30,8 +30,8 @@ Shipped commits:
 ## Phase 2 — Musical quality uplift (IN PROGRESS)
 - [x] Add section-diverse variant generation (not only top-single swaps)
 - [x] Add multi-swap safe variants to improve macro arc options
-- [ ] Bias winner ranking toward transition clarity + song-likeness under pass gate
-- [ ] Add targeted seam-risk penalty in final candidate sorting
+- [x] Bias winner ranking toward transition clarity + song-likeness under pass gate
+- [x] Add targeted seam-risk penalty in final candidate sorting
 
 Shipped commits (phase 2):
 - `this checkpoint commit` — section-diverse shortlist generation + safe dual-section variants
