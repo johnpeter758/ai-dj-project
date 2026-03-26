@@ -13,6 +13,8 @@ def test_candidate_meets_quality_floor_requires_pass_and_thresholds():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     ) is True
 
 
@@ -28,6 +30,8 @@ def test_candidate_meets_quality_floor_rejects_review_even_if_scores_high():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     ) is False
 
 
@@ -43,7 +47,46 @@ def test_candidate_meets_quality_floor_rejects_low_structure():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     ) is False
+
+
+def test_candidate_meets_quality_floor_rejects_low_boundary_recovery_when_present():
+    report = {
+        "gating": {"status": "pass"},
+        "song_likeness": {
+            "score": 82.0,
+            "details": {"aggregate_metrics": {"boundary_recovery": 0.31, "role_plausibility": 0.62}},
+        },
+        "groove": {"score": 80.0},
+        "structure": {"score": 78.0},
+    }
+    assert ai_dj._candidate_meets_quality_floor(
+        report,
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
+    ) is False
+
+
+def test_candidate_meets_quality_floor_does_not_require_readability_metrics_when_missing():
+    report = {
+        "gating": {"status": "pass"},
+        "song_likeness": {"score": 75.0},
+        "groove": {"score": 65.0},
+        "structure": {"score": 61.0},
+    }
+    assert ai_dj._candidate_meets_quality_floor(
+        report,
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
+    ) is True
 
 
 def test_extract_transition_seam_snapshot_is_resilient():
@@ -91,6 +134,8 @@ def test_select_pro_fusion_winner_requires_pass_plus_quality_floor():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     )
 
     assert winner is None
@@ -125,6 +170,8 @@ def test_select_pro_fusion_winner_picks_top_floor_pass_candidate():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     )
 
     assert winner is high_score_floor_pass
@@ -159,6 +206,8 @@ def test_select_pro_fusion_winner_breaks_ties_toward_stronger_structure():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     )
 
     assert winner is higher_structure
@@ -193,6 +242,8 @@ def test_select_pro_fusion_winner_treats_nan_selection_score_as_zero():
         min_song_likeness=55.0,
         min_groove=60.0,
         min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
     )
 
     assert winner is finite_score

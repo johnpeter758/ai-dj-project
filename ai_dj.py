@@ -522,22 +522,44 @@ def _winner_sort_key(candidate: dict[str, Any]) -> tuple[float, float, float, fl
     )
 
 
+def _song_likeness_aggregate_metric(report: dict[str, Any], key: str) -> float | None:
+    metrics = (((report.get("song_likeness") or {}).get("details") or {}).get("aggregate_metrics") or {})
+    if key not in metrics:
+        return None
+    value = _safe_metric(metrics.get(key), default=float("nan"))
+    if not math.isfinite(value):
+        return None
+    return float(value)
+
+
 def _candidate_meets_quality_floor(
     report: dict[str, Any],
     *,
     min_song_likeness: float,
     min_groove: float,
     min_structure: float,
+    min_boundary_recovery: float,
+    min_role_plausibility: float,
 ) -> bool:
     gate = str((report.get("gating") or {}).get("status") or "").strip().lower()
     song_likeness = float((report.get("song_likeness") or {}).get("score") or 0.0)
     groove = float((report.get("groove") or {}).get("score") or 0.0)
     structure = float((report.get("structure") or {}).get("score") or 0.0)
+    boundary_recovery = _song_likeness_aggregate_metric(report, "boundary_recovery")
+    role_plausibility = _song_likeness_aggregate_metric(report, "role_plausibility")
+
+    structure_readability_ok = True
+    if boundary_recovery is not None and boundary_recovery < float(min_boundary_recovery):
+        structure_readability_ok = False
+    if role_plausibility is not None and role_plausibility < float(min_role_plausibility):
+        structure_readability_ok = False
+
     return (
         gate == "pass"
         and song_likeness >= float(min_song_likeness)
         and groove >= float(min_groove)
         and structure >= float(min_structure)
+        and structure_readability_ok
     )
 
 
@@ -547,6 +569,8 @@ def _select_pro_fusion_winner(
     min_song_likeness: float,
     min_groove: float,
     min_structure: float,
+    min_boundary_recovery: float,
+    min_role_plausibility: float,
 ) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
     pass_candidates = [
         item
@@ -561,6 +585,8 @@ def _select_pro_fusion_winner(
             min_song_likeness=min_song_likeness,
             min_groove=min_groove,
             min_structure=min_structure,
+            min_boundary_recovery=min_boundary_recovery,
+            min_role_plausibility=min_role_plausibility,
         )
     ]
     review_candidates = [
@@ -668,12 +694,16 @@ def fusion(
         min_song_likeness = 55.0
         min_groove = 60.0
         min_structure = 58.0
+        min_boundary_recovery = 0.45
+        min_role_plausibility = 0.48
 
         winner, selection_policy, selection_counts = _select_pro_fusion_winner(
             candidates,
             min_song_likeness=min_song_likeness,
             min_groove=min_groove,
             min_structure=min_structure,
+            min_boundary_recovery=min_boundary_recovery,
+            min_role_plausibility=min_role_plausibility,
         )
 
         selection_payload = {
@@ -683,6 +713,8 @@ def fusion(
                 "min_song_likeness": min_song_likeness,
                 "min_groove": min_groove,
                 "min_structure": min_structure,
+                "min_boundary_recovery": min_boundary_recovery,
+                "min_role_plausibility": min_role_plausibility,
                 **selection_counts,
             },
             "winner": None,
@@ -698,6 +730,8 @@ def fusion(
                     "transition": float(((item["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                     "mix_sanity": float(((item["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
                     "structure": float(((item["listen_report"] or {}).get("structure") or {}).get("score") or 0.0),
+                    "boundary_recovery": _song_likeness_aggregate_metric(item["listen_report"] or {}, "boundary_recovery"),
+                    "role_plausibility": _song_likeness_aggregate_metric(item["listen_report"] or {}, "role_plausibility"),
                     "gating_status": str(((item["listen_report"] or {}).get("gating") or {}).get("status") or ""),
                     "seam_snapshot": _extract_transition_seam_snapshot(item["listen_report"] or {}),
                     "parent_balance": item["parent_balance"],
@@ -732,6 +766,8 @@ def fusion(
                 "transition": float(((winner["listen_report"] or {}).get("transition") or {}).get("score") or 0.0),
                 "mix_sanity": float(((winner["listen_report"] or {}).get("mix_sanity") or {}).get("score") or 0.0),
                 "structure": float(((winner["listen_report"] or {}).get("structure") or {}).get("score") or 0.0),
+                "boundary_recovery": _song_likeness_aggregate_metric(winner["listen_report"] or {}, "boundary_recovery"),
+                "role_plausibility": _song_likeness_aggregate_metric(winner["listen_report"] or {}, "role_plausibility"),
                 "gating_status": str(((winner["listen_report"] or {}).get("gating") or {}).get("status") or ""),
                 "seam_snapshot": _extract_transition_seam_snapshot(winner["listen_report"] or {}),
                 "parent_balance": winner["parent_balance"],
@@ -751,7 +787,10 @@ def fusion(
                 "  required floors: "
                 f"song_likeness >= {min_song_likeness:.1f}, "
                 f"groove >= {min_groove:.1f}, "
-                f"structure >= {min_structure:.1f}, gate=pass"
+                f"structure >= {min_structure:.1f}, "
+                f"boundary_recovery >= {min_boundary_recovery:.2f} (if present), "
+                f"role_plausibility >= {min_role_plausibility:.2f} (if present), "
+                "gate=pass"
             )
             print(f"  selection report: {selection_path}")
             return 2
