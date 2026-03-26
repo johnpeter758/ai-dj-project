@@ -27,11 +27,14 @@ Shipped commits:
 - `f710d83` — quality floors + seam diagnostics
 - `0fdbb80` — planner empty-ranked-candidate crash fixes
 
-## Phase 2 — Musical quality uplift (NEXT)
-- [ ] Add section-diverse variant generation (not only top-single swaps)
-- [ ] Add multi-swap safe variants to improve macro arc options
+## Phase 2 — Musical quality uplift (IN PROGRESS)
+- [x] Add section-diverse variant generation (not only top-single swaps)
+- [x] Add multi-swap safe variants to improve macro arc options
 - [ ] Bias winner ranking toward transition clarity + song-likeness under pass gate
 - [ ] Add targeted seam-risk penalty in final candidate sorting
+
+Shipped commits (phase 2):
+- `this checkpoint commit` — section-diverse shortlist generation + safe dual-section variants
 
 ## Phase 3 — Full-mix production loop
 - [ ] Run standardized full-length benchmark batch on priority pairings

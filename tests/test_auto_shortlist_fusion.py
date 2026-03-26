@@ -211,3 +211,60 @@ def test_build_auto_shortlist_variant_configs_emits_baseline_plus_safe_alternate
     assert configs[0]['variant_id'] == 'baseline'
     assert any(config['strategy'] == 'single_section_alternate' for config in configs[1:])
     assert len(configs) == 2
+
+
+def test_build_auto_shortlist_variant_configs_can_emit_dual_section_variants_when_room_exists():
+    def _section(label: str, selected_parent: str, selected_label: str, alt_parent: str, alt_label: str):
+        return {
+            'label': label,
+            'selected_parent': selected_parent,
+            'selected_window_label': selected_label,
+            'selection_rank': 1,
+            'candidate_shortlist': [
+                {
+                    'rank': 1,
+                    'parent_id': selected_parent,
+                    'window_label': selected_label,
+                    'selected': True,
+                    'planner_error': 0.22,
+                    'error_delta_vs_selected': 0.0,
+                    'score_breakdown': {'stretch_ratio': 1.0, 'stretch_gate': 0.0, 'seam_risk': 0.2, 'transition_viability': 0.3},
+                },
+                {
+                    'rank': 2,
+                    'parent_id': alt_parent,
+                    'window_label': alt_label,
+                    'selected': False,
+                    'planner_error': 0.35,
+                    'error_delta_vs_selected': 0.13,
+                    'score_breakdown': {'stretch_ratio': 1.05, 'stretch_gate': 0.0, 'seam_risk': 0.3, 'transition_viability': 0.4},
+                },
+            ],
+            'cross_parent_best_alternate': {
+                'rank': 2,
+                'parent_id': alt_parent,
+                'window_label': alt_label,
+                'selected': False,
+                'planner_error': 0.35,
+                'error_delta_vs_selected': 0.13,
+                'score_breakdown': {'stretch_ratio': 1.05, 'stretch_gate': 0.0, 'seam_risk': 0.3, 'transition_viability': 0.4},
+            },
+        }
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [
+                _section('intro', 'A', 'phrase_0_2', 'B', 'phrase_6_8'),
+                _section('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10'),
+                _section('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12'),
+            ],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=6, variant_mode='safe')
+    assert configs[0]['variant_id'] == 'baseline'
+    assert any(config['strategy'] == 'single_section_alternate' for config in configs[1:])
+    assert any(config['strategy'] == 'dual_section_alternate' for config in configs[1:])

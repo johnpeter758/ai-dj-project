@@ -309,6 +309,7 @@ def _collect_plan_variant_opportunities(plan: Any) -> list[dict[str, Any]]:
 
 def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant_mode: str = "safe") -> list[dict[str, Any]]:
     opportunities = _collect_plan_variant_opportunities(plan)
+    max_variants = max(1, int(batch_size or 1))
     configs: list[dict[str, Any]] = [
         {
             "variant_id": "baseline",
@@ -318,7 +319,44 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             "swaps": [],
         }
     ]
-    for idx, opportunity in enumerate(opportunities, start=1):
+    if max_variants <= 1 or not opportunities:
+        return configs[:max_variants]
+
+    def _op_identity(op: dict[str, Any]) -> tuple[int, str, str]:
+        return (
+            int(op.get("section_index", -1) or -1),
+            str(op.get("alternate_parent") or ""),
+            str(op.get("alternate_window_label") or ""),
+        )
+
+    used_identities: set[tuple[int, str, str]] = set()
+    singles: list[dict[str, Any]] = []
+
+    # First pass: section-diverse singles (one strong alternate per section).
+    seen_sections: set[int] = set()
+    for op in opportunities:
+        sec_idx = int(op.get("section_index", -1) or -1)
+        identity = _op_identity(op)
+        if sec_idx in seen_sections or identity in used_identities:
+            continue
+        singles.append(op)
+        seen_sections.add(sec_idx)
+        used_identities.add(identity)
+        if len(configs) + len(singles) >= max_variants:
+            break
+
+    # Second pass: fill remaining slots with next-best singles.
+    if len(configs) + len(singles) < max_variants:
+        for op in opportunities:
+            identity = _op_identity(op)
+            if identity in used_identities:
+                continue
+            singles.append(op)
+            used_identities.add(identity)
+            if len(configs) + len(singles) >= max_variants:
+                break
+
+    for idx, opportunity in enumerate(singles, start=1):
         section_label = str(opportunity.get("section_label") or f"section_{opportunity.get('section_index', idx)}")
         alt_parent = str(opportunity.get("alternate_parent") or "X")
         alt_label = str(opportunity.get("alternate_window_label") or f"window_{idx}")
@@ -332,9 +370,45 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 "swaps": [opportunity],
             }
         )
-        if len(configs) >= max(1, batch_size):
+        if len(configs) >= max_variants:
+            return configs[:max_variants]
+
+    # Third pass: when room exists, add safe two-swap variants to explore macro shape.
+    by_section: dict[int, dict[str, Any]] = {}
+    for op in opportunities:
+        sec_idx = int(op.get("section_index", -1) or -1)
+        if sec_idx < 0 or sec_idx in by_section:
+            continue
+        by_section[sec_idx] = op
+    ordered_section_ops = [by_section[idx] for idx in sorted(by_section)]
+
+    combo_idx = 1
+    for left_idx in range(len(ordered_section_ops)):
+        if len(configs) >= max_variants:
             break
-    return configs[: max(1, batch_size)]
+        for right_idx in range(left_idx + 1, len(ordered_section_ops)):
+            if len(configs) >= max_variants:
+                break
+            left = ordered_section_ops[left_idx]
+            right = ordered_section_ops[right_idx]
+            if int(left.get("section_index", -1)) == int(right.get("section_index", -1)):
+                continue
+            combo_error = float(left.get("error_delta", 0.0) or 0.0) + float(right.get("error_delta", 0.0) or 0.0)
+            if combo_error > 1.65:
+                continue
+            combo_variant_id = f"combo_{combo_idx:02d}_{left.get('section_label')}_{right.get('section_label')}"
+            configs.append(
+                {
+                    "variant_id": combo_variant_id,
+                    "label": f"combo {left.get('section_label')} + {right.get('section_label')}",
+                    "strategy": "dual_section_alternate",
+                    "variant_mode": variant_mode,
+                    "swaps": [left, right],
+                }
+            )
+            combo_idx += 1
+
+    return configs[:max_variants]
 
 
 
