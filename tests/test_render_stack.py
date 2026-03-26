@@ -617,6 +617,34 @@ def test_resolve_render_plan_normalizes_transition_mode_whitespace_and_case(tmp_
     assert manifest.work_orders[1].gain_db == pytest.approx(incoming_gain_db('blend', 'crossfade_support') - 0.75)
 
 
+def test_resolve_render_plan_normalizes_transition_mode_hyphenated_variants(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='build', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='payoff', start_bar=4, bar_count=4, source_parent='B', source_section_label='phrase_0_2', transition_in='blend', transition_mode='  Single-Owner Handoff  '),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[1].transition_mode == 'single_owner_handoff'
+    assert manifest.sections[1].background_owner is None
+    assert manifest.sections[1].overlap_beats_max == 0.5
+    assert manifest.work_orders[1].gain_db == incoming_gain_db('blend', 'single_owner_handoff')
+
+
 def test_resolve_render_plan_honors_single_owner_handoff_mode(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'

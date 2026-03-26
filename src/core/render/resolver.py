@@ -38,8 +38,11 @@ def _normalize_transition_mode(transition_mode: str | None) -> tuple[str | None,
     raw = str(transition_mode or "").strip().lower()
     if not raw:
         return None, None
-    if raw in _KNOWN_TRANSITION_MODES:
-        return raw, None
+
+    normalized = raw.replace('-', '_').replace(' ', '_')
+    if normalized in _KNOWN_TRANSITION_MODES:
+        return normalized, None
+
     return None, (
         f"unknown transition_mode={transition_mode!r}; "
         f"falling back to default cross-parent ownership policy"
