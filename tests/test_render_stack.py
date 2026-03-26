@@ -279,6 +279,28 @@ def test_resolve_render_plan_directly_uses_trimmed_phrase_window_label(tmp_path:
     assert 'too coarse for direct use' not in joined
 
 
+def test_resolve_render_plan_interprets_structured_phrase_window_labels(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    a.structure['phrase_boundaries_seconds'] = [0.0, 4.0, 8.0, 12.0]
+    plan = _single_section_plan(source_parent='A', bar_count=4, source_section_label='opening_intro_0_3')
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    source = manifest.sections[0].source
+    assert source.raw_start_sec == 0.0
+    assert source.raw_end_sec == 12.0
+    assert source.snapped_start_sec == 0.0
+    assert source.snapped_end_sec == 12.0
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[0].warnings)
+    assert 'missing or unresolved' not in joined
+    assert 'too coarse for direct use' not in joined
+
+
 def test_render_resolved_plan_is_deterministic_for_same_inputs(tmp_path: Path):
     sr = 44100
     t = np.linspace(0, 12.0, sr * 12, endpoint=False)

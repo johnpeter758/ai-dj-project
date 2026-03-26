@@ -25,6 +25,23 @@ _GENERIC_SECTION_PREFIXES = ("section_", "part_", "segment_")
 _WEAK_SECTION_SPAN_RATIO = 0.8
 _PHRASE_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)$")
 _PHRASE_TRIM_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)_trim_(tail|head|center)$")
+_STRUCTURED_WINDOW_LABEL_RE = re.compile(r"^(?P<prefix>[a-z][a-z0-9_]*)_(?P<start>\d+)_(?P<end>\d+)$")
+_STRUCTURED_WINDOW_HINT_TOKENS = {
+    "opening",
+    "intro",
+    "verse",
+    "build",
+    "rise",
+    "pre",
+    "chorus",
+    "hook",
+    "drop",
+    "payoff",
+    "bridge",
+    "break",
+    "outro",
+    "ending",
+}
 _KNOWN_TRANSITION_MODES = {
     "same_parent_flow",
     "backbone_flow",
@@ -299,13 +316,26 @@ def _phrase_label_bounds(requested_label: str | None, song: SongDNA, section: Pl
     if not requested_label:
         return None
     label = requested_label.strip()
-    match = _PHRASE_LABEL_RE.match(label)
-    trim_match = _PHRASE_TRIM_LABEL_RE.match(label)
-    if not match and not trim_match:
-        return None
+    normalized_label = label.lower().replace('-', '_').replace(' ', '_')
+    match = _PHRASE_LABEL_RE.match(normalized_label)
+    trim_match = _PHRASE_TRIM_LABEL_RE.match(normalized_label)
 
-    start_idx = int((match or trim_match).group(1))
-    end_idx = int((match or trim_match).group(2))
+    start_idx: int | None = None
+    end_idx: int | None = None
+    if match or trim_match:
+        start_idx = int((match or trim_match).group(1))
+        end_idx = int((match or trim_match).group(2))
+    else:
+        structured_match = _STRUCTURED_WINDOW_LABEL_RE.match(normalized_label)
+        if structured_match:
+            prefix = structured_match.group("prefix")
+            prefix_tokens = {token for token in prefix.split('_') if token}
+            if prefix_tokens & _STRUCTURED_WINDOW_HINT_TOKENS:
+                start_idx = int(structured_match.group("start"))
+                end_idx = int(structured_match.group("end"))
+
+    if start_idx is None or end_idx is None:
+        return None
     phrase_boundaries = sorted(float(x) for x in song.structure.get("phrase_boundaries_seconds", []) if 0.0 <= float(x) <= float(song.duration_seconds))
     if not phrase_boundaries:
         return 0.0, float(song.duration_seconds), [f"phrase window label '{requested_label}' could not be resolved because phrase boundaries were missing"]
