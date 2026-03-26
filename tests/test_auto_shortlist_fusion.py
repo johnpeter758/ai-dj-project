@@ -338,3 +338,25 @@ def test_build_auto_shortlist_variant_configs_avoids_intro_payoff_combo_when_cor
 
     assert 'payoff' in combo_labels
     assert 'intro' not in combo_labels
+
+
+
+def test_build_auto_shortlist_variant_configs_prefers_payoff_build_combo_over_payoff_verse_when_single_combo_slot():
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [
+                _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10'),
+                _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11'),
+                _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12'),
+            ],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    combo = next(config for config in configs if config['strategy'] == 'dual_section_alternate')
+    combo_labels = {str(swap.get('section_label') or '').strip().lower() for swap in combo.get('swaps', [])}
+
+    assert combo_labels == {'build', 'payoff'}

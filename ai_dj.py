@@ -422,16 +422,18 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 continue
             combo_candidates.append((left, right, combo_error))
 
-    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, float, int, int]:
+    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, float, int, int]:
         left, right, combo_error = item
         left_label = str(left.get("section_label") or "").strip().lower()
         right_label = str(right.get("section_label") or "").strip().lower()
         has_payoff = left_label == "payoff" or right_label == "payoff"
         has_build = left_label == "build" or right_label == "build"
+        has_payoff_build = has_payoff and has_build
         intro_outro_penalty = int(left_label in {"intro", "outro"}) + int(right_label in {"intro", "outro"})
         left_idx = int(left.get("section_index", 0) or 0)
         right_idx = int(right.get("section_index", 0) or 0)
         return (
+            0 if has_payoff_build else 1,
             0 if has_payoff else 1,
             intro_outro_penalty,
             combo_error,
