@@ -25,6 +25,25 @@ _GENERIC_SECTION_PREFIXES = ("section_", "part_", "segment_")
 _WEAK_SECTION_SPAN_RATIO = 0.8
 _PHRASE_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)$")
 _PHRASE_TRIM_LABEL_RE = re.compile(r"^phrase_(\d+)_(\d+)_trim_(tail|head|center)$")
+_KNOWN_TRANSITION_MODES = {
+    "same_parent_flow",
+    "backbone_flow",
+    "arrival_handoff",
+    "single_owner_handoff",
+    "crossfade_support",
+}
+
+
+def _normalize_transition_mode(transition_mode: str | None) -> tuple[str | None, str | None]:
+    raw = str(transition_mode or "").strip().lower()
+    if not raw:
+        return None, None
+    if raw in _KNOWN_TRANSITION_MODES:
+        return raw, None
+    return None, (
+        f"unknown transition_mode={transition_mode!r}; "
+        f"falling back to default cross-parent ownership policy"
+    )
 
 
 def _beat_times(song: SongDNA) -> list[float]:
@@ -668,12 +687,16 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
 
         previous_section = resolved_sections[-1] if resolved_sections else None
         previous_label = previous_section.label if previous_section else None
+        normalized_transition_mode, transition_mode_normalization_warning = _normalize_transition_mode(sec.transition_mode)
+        if transition_mode_normalization_warning:
+            section_warnings.append(transition_mode_normalization_warning)
+
         overlap_beats = transition_overlap_beats(sec.transition_in, config=config, stretch_ratio=stretch_ratio)
         overlap_beats, late_handoff_warning = _cap_late_payoff_handoff_overlap(
             previous_label,
             sec.label,
             overlap_beats,
-            transition_mode=sec.transition_mode,
+            transition_mode=normalized_transition_mode,
         )
         if late_handoff_warning:
             section_warnings.append(late_handoff_warning)
@@ -681,7 +704,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         overlap_beats, same_parent_warning = _cap_same_parent_flow_overlap(
             sec.transition_in,
             overlap_beats,
-            sec.transition_mode,
+            normalized_transition_mode,
             cross_parent_handoff,
             previous_label,
             sec.label,
@@ -689,7 +712,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
         if same_parent_warning:
             section_warnings.append(same_parent_warning)
         overlap_beats, suppress_background_owner, transition_mode_warning = _apply_transition_mode_constraints(
-            sec.transition_mode,
+            normalized_transition_mode,
             overlap_beats,
             cross_parent_handoff,
             sec.label,
@@ -758,7 +781,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             collapse_if_conflict=True,
             transition_in=sec.transition_in,
             transition_out=sec.transition_out,
-            transition_mode=sec.transition_mode,
+            transition_mode=normalized_transition_mode,
             stretch_ratio=stretch_ratio,
             semitone_shift=0.0,
             warnings=section_warnings + stretch_fallbacks + support_fallbacks,
@@ -781,7 +804,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             semitone_shift=0.0,
             gain_db=_resolve_incoming_gain_db(
                 sec.transition_in,
-                sec.transition_mode,
+                normalized_transition_mode,
                 overlap_beats,
                 previous_label,
                 sec.label,
@@ -790,7 +813,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             fade_in_sec=fade_in_sec,
             fade_out_sec=transition_overlap_seconds(sec.transition_out, anchor_bpm, config=config, stretch_ratio=stretch_ratio),
             transition_type=sec.transition_in,
-            transition_mode=sec.transition_mode,
+            transition_mode=normalized_transition_mode,
             foreground_state="owner",
             low_end_state="owner",
             vocal_state=base_vocal_state,
