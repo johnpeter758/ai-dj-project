@@ -822,6 +822,34 @@ def test_resolve_render_plan_caps_same_parent_flow_blend_to_verse_at_two_beats(t
 
 
 
+def test_resolve_render_plan_caps_same_parent_flow_blend_to_payoff_at_half_beat(tmp_path: Path):
+    p1 = tmp_path / 'a.wav'
+    p2 = tmp_path / 'b.wav'
+    sf.write(p1, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    sf.write(p2, np.zeros(44100 * 12, dtype=np.float32), 44100)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 2, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 2, 0.1)
+    compatibility = CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=compatibility,
+        sections=[
+            PlannedSection(label='verse', start_bar=0, bar_count=4, source_parent='A', source_section_label='phrase_0_2'),
+            PlannedSection(label='payoff', start_bar=4, bar_count=4, source_parent='A', source_section_label='phrase_0_2', transition_in='blend', transition_mode='same_parent_flow'),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert manifest.sections[1].overlap_beats_max == 0.5
+    joined = '\n'.join(manifest.warnings + manifest.fallbacks + manifest.sections[1].warnings)
+    assert 'transition_mode=same_parent_flow capped overlap from 8.0 to 0.5 beats' in joined
+
+
+
 def test_resolve_render_plan_caps_backbone_flow_overlap(tmp_path: Path):
     p1 = tmp_path / 'a.wav'
     p2 = tmp_path / 'b.wav'

@@ -191,7 +191,9 @@ def _cap_same_parent_flow_overlap(
     if cap is None:
         return overlap_beats, None
 
-    if curr in {"build", "payoff", "outro"}:
+    if curr == "payoff":
+        cap = min(cap, 0.5)
+    elif curr in {"build", "outro"}:
         cap = min(cap, 1.0)
     if prev in {"build", "payoff"} and curr in {"bridge", "outro"}:
         cap = min(cap, 0.5)

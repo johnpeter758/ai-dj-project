@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-26 12:24 EDT (post payoff+build combo-priority rerun)
+Last updated: 2026-03-26 12:09 EDT (post payoff-overlap-cap benchmark)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -21,7 +21,7 @@ Owner: execution operator
 
 ## Blocked Tasks
 1. **Promote a pro winner artifact automatically**
-   - Blocker: latest run (`quality_push_after_payoff_build_combo_20260326_1222`) still has `floor_pass_count=0`.
+   - Blocker: latest run (`quality_push_after_payoff_overlap_cap_20260326_122858`) still has `floor_pass_count=0` (best song_likeness `54.2`).
    - Unblock condition: next run produces at least one floor-pass candidate.
 
 ## Queue Rules (enforced each cycle)
