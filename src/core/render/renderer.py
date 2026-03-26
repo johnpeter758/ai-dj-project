@@ -18,6 +18,11 @@ from .spectral import apply_spectral_carve, compute_vocal_presence_mask
 from .transitions import equal_power_fade_in, equal_power_fade_out
 
 
+def _normalize_transition_mode_token(transition_mode: str | None) -> str | None:
+    token = str(transition_mode or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return token or None
+
+
 def _one_pole_lowpass(audio: np.ndarray, cutoff_hz: np.ndarray, sr: int) -> np.ndarray:
     if audio.size == 0:
         return audio.astype(np.float32)
@@ -50,6 +55,7 @@ def _transition_filter_profile(
     transition_type: str | None,
     transition_mode: str | None,
 ) -> tuple[float, float, float, float, float, float]:
+    transition_mode = _normalize_transition_mode_token(transition_mode)
     incoming_start = 0.0
     incoming_end = 0.0
     outgoing_lowpass_start = 20000.0
@@ -423,7 +429,7 @@ def _should_apply_overlap_carve(work, section) -> bool:
 def _overlap_carve_settings(work, section) -> tuple[float, float, float]:
     vocal_state = str(getattr(work, 'vocal_state', '') or '')
     role = str(getattr(work, 'role', '') or '')
-    transition_mode = str(getattr(section, 'transition_mode', '') or '')
+    transition_mode = _normalize_transition_mode_token(getattr(section, 'transition_mode', None))
 
     carve_db = 3.5
     carve_lo_hz = 160.0
@@ -463,7 +469,7 @@ def _adaptive_overlap_carve_db(work, section, vocal_mask: np.ndarray, base_carve
     if vocal_mask.size == 0:
         return float(base_carve_db)
 
-    transition_mode = str(getattr(section, 'transition_mode', '') or '')
+    transition_mode = _normalize_transition_mode_token(getattr(section, 'transition_mode', None))
     vocal_state = str(getattr(work, 'vocal_state', '') or '')
 
     mask_mean = float(np.mean(vocal_mask))
@@ -489,6 +495,7 @@ def _adaptive_overlap_carve_db(work, section, vocal_mask: np.ndarray, base_carve
 
 def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndarray:
     out = segment.astype(np.float32)
+    transition_mode = _normalize_transition_mode_token(getattr(section, 'transition_mode', None))
     overlap_sec = min(float(work.fade_in_sec), max(0.0, float(work.target_duration_sec)))
     overlap_samples = min(out.shape[1], max(0, int(round(overlap_sec * sr))))
     if overlap_samples <= 0:
@@ -506,16 +513,16 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
         highpass_hz = 175.0
         bandstop_low_hz, bandstop_high_hz = 280.0, 5200.0
         recover_curve_exp = 2.1
-    elif section.transition_mode in {"arrival_handoff", "single_owner_handoff"}:
+    elif transition_mode in {"arrival_handoff", "single_owner_handoff"}:
         cleanup_gain_db = -1.5
         highpass_hz = 165.0
         bandstop_low_hz, bandstop_high_hz = 300.0, 5000.0
         recover_curve_exp = 1.6
-    elif section.transition_mode == "same_parent_flow":
+    elif transition_mode == "same_parent_flow":
         cleanup_gain_db = -0.2
         highpass_hz = 70.0
         recover_curve_exp = 1.05
-    elif section.transition_mode == "backbone_flow":
+    elif transition_mode == "backbone_flow":
         cleanup_gain_db = -0.5
         highpass_hz = 95.0
         recover_curve_exp = 1.1

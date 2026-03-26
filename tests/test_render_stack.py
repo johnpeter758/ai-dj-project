@@ -968,6 +968,35 @@ def test_apply_transition_sonics_backbone_flow_highpasses_outgoing_tail_more_tha
 
 
 
+def test_apply_transition_sonics_normalizes_transition_mode_variants():
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    low = np.sin(2 * np.pi * 60.0 * t)
+    mids = 0.45 * np.sin(2 * np.pi * 1500.0 * t)
+    segment = np.vstack([low + mids, low + mids]).astype(np.float32)
+
+    canonical = _apply_transition_sonics(
+        segment,
+        sr,
+        fade_in_sec=0.0,
+        fade_out_sec=0.8,
+        transition_type='blend',
+        transition_mode='same_parent_flow',
+    )
+    variant = _apply_transition_sonics(
+        segment,
+        sr,
+        fade_in_sec=0.0,
+        fade_out_sec=0.8,
+        transition_type='blend',
+        transition_mode='  Same-Parent Flow ',
+    )
+
+    assert np.allclose(variant, canonical, atol=1e-6)
+
+
+
 def test_render_resolved_plan_rejects_invalid_target_timing_contract(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 440.0)
@@ -1161,6 +1190,22 @@ def test_overlap_carve_settings_make_backbone_flow_more_conservative_than_same_p
     assert back_db < same_db
     assert back_lo == same_lo
     assert back_hi < same_hi
+
+
+
+def test_overlap_carve_settings_normalize_transition_mode_variants():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    work = Dummy(vocal_state='none', role='filtered_support')
+    canonical = Dummy(transition_mode='backbone_flow')
+    variant = Dummy(transition_mode='  Backbone-Flow  ')
+
+    canonical_settings = _overlap_carve_settings(work, canonical)
+    variant_settings = _overlap_carve_settings(work, variant)
+
+    assert variant_settings == canonical_settings
 
 
 
