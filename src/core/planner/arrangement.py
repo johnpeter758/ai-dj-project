@@ -4350,21 +4350,34 @@ def _choose_with_major_section_balance_guard(
     return alternate, note
 
 
+def _normalize_section_token(value: str | None) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip().lower().replace('-', '_').replace(' ', '_')
+    return token or None
+
+
+
 def _infer_transition_mode(
     spec: _SectionSpec,
     chosen: _WindowSelection,
     previous: _WindowSelection | None,
     previous_label: str | None,
 ) -> str | None:
-    if spec.transition_in is None:
+    transition_in = _normalize_section_token(spec.transition_in)
+    if transition_in is None:
         return None
     if previous is None:
         return None
+
+    section_label = _normalize_section_token(spec.label)
+    previous_section_label = _normalize_section_token(previous_label)
+
     if previous.parent_id == chosen.parent_id:
         return "same_parent_flow"
-    if previous_label == "payoff" and spec.label in {"bridge", "outro"}:
+    if previous_section_label == "payoff" and section_label in {"bridge", "outro"}:
         return "arrival_handoff"
-    if spec.transition_in in {"swap", "drop"} or spec.label in {"build", "payoff"}:
+    if transition_in in {"swap", "drop"} or section_label in {"build", "payoff"}:
         return "single_owner_handoff"
     return "crossfade_support"
 

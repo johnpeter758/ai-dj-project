@@ -1172,6 +1172,30 @@ def test_infer_transition_mode_prefers_single_owner_handoff_for_cross_parent_bui
     assert _infer_transition_mode(spec, chosen, previous, "verse") == "single_owner_handoff"
 
 
+def test_infer_transition_mode_normalizes_label_and_transition_tokens():
+    song_a = make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    song_b = make_song("b.wav", 128.0, "A", "minor", "8A", 6, 0.20)
+    previous = _WindowSelection(
+        parent_id="A",
+        song=song_a,
+        candidate=_pick_candidate(song_a, target_position="late", bar_count=8, target_energy=0.76, role="payoff"),
+        blended_error=0.10,
+        score_breakdown={},
+        section_label="payoff",
+    )
+    chosen = _WindowSelection(
+        parent_id="B",
+        song=song_b,
+        candidate=_pick_candidate(song_b, target_position="late", bar_count=8, target_energy=0.34, role="outro"),
+        blended_error=0.12,
+        score_breakdown={},
+        section_label="outro",
+    )
+    spec = _SectionSpec(label=" Outro ", start_bar=40, bar_count=8, target_energy=0.34, source_parent_preference="A", transition_in="  DROP  ", transition_out="blend")
+
+    assert _infer_transition_mode(spec, chosen, previous, " Payoff ") == "arrival_handoff"
+
+
 def test_build_stub_arrangement_plan_promotes_backbone_same_parent_flow_to_backbone_flow():
     a = make_song("backbone_a.wav", 128.0, "A", "minor", "8A", 6, 0.22)
     b = make_song("backbone_b.wav", 128.0, "A", "minor", "8A", 6, 0.18)
