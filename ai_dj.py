@@ -403,13 +403,9 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         by_section[sec_idx] = op
     ordered_section_ops = [by_section[idx] for idx in sorted(by_section)]
 
-    combo_idx = 1
+    combo_candidates: list[tuple[dict[str, Any], dict[str, Any], float]] = []
     for left_idx in range(len(ordered_section_ops)):
-        if len(configs) >= max_variants:
-            break
         for right_idx in range(left_idx + 1, len(ordered_section_ops)):
-            if len(configs) >= max_variants:
-                break
             left = ordered_section_ops[left_idx]
             right = ordered_section_ops[right_idx]
             if int(left.get("section_index", -1)) == int(right.get("section_index", -1)):
@@ -417,17 +413,40 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             combo_error = float(left.get("error_delta", 0.0) or 0.0) + float(right.get("error_delta", 0.0) or 0.0)
             if combo_error > 1.65:
                 continue
-            combo_variant_id = f"combo_{combo_idx:02d}_{left.get('section_label')}_{right.get('section_label')}"
-            configs.append(
-                {
-                    "variant_id": combo_variant_id,
-                    "label": f"combo {left.get('section_label')} + {right.get('section_label')}",
-                    "strategy": "dual_section_alternate",
-                    "variant_mode": variant_mode,
-                    "swaps": [left, right],
-                }
-            )
-            combo_idx += 1
+            combo_candidates.append((left, right, combo_error))
+
+    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, float, int, int]:
+        left, right, combo_error = item
+        left_label = str(left.get("section_label") or "").strip().lower()
+        right_label = str(right.get("section_label") or "").strip().lower()
+        has_payoff = left_label == "payoff" or right_label == "payoff"
+        has_build = left_label == "build" or right_label == "build"
+        left_idx = int(left.get("section_index", 0) or 0)
+        right_idx = int(right.get("section_index", 0) or 0)
+        return (
+            0 if has_payoff else 1,
+            combo_error,
+            0 if has_build else 1,
+            left_idx + right_idx,
+        )
+
+    combo_candidates.sort(key=_combo_priority)
+
+    combo_idx = 1
+    for left, right, _combo_error in combo_candidates:
+        if len(configs) >= max_variants:
+            break
+        combo_variant_id = f"combo_{combo_idx:02d}_{left.get('section_label')}_{right.get('section_label')}"
+        configs.append(
+            {
+                "variant_id": combo_variant_id,
+                "label": f"combo {left.get('section_label')} + {right.get('section_label')}",
+                "strategy": "dual_section_alternate",
+                "variant_mode": variant_mode,
+                "swaps": [left, right],
+            }
+        )
+        combo_idx += 1
 
     if len(configs) < max_variants:
         for op in opportunities:
