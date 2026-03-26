@@ -34,7 +34,8 @@ Shipped commits:
 - [x] Add targeted seam-risk penalty in final candidate sorting
 
 Shipped commits (phase 2):
-- `this checkpoint commit` — section-diverse shortlist generation + safe dual-section variants
+- `a64ab64` — section-diverse shortlist generation + safe dual-section variants
+- `4d3fe91` — normalize hyphenated/space transition-mode labels in resolver ownership policy
 
 ## Phase 3 — Full-mix production loop
 - [ ] Run standardized full-length benchmark batch on priority pairings
@@ -47,6 +48,6 @@ Shipped commits (phase 2):
 - Overall: `69.3` | Gate: `pass` | Song-likeness: `49.2` | Transition: `49.7`
 
 ## Immediate next execution block
-1. Implement section-diverse + multi-swap variant generation.
-2. Re-run pro full-length on Relax × Treasure.
-3. Promote best candidate only if it beats current artifact on song-likeness + transition.
+1. Run standardized full-length benchmark batch on priority pairings and capture listener-gate metrics.
+2. Keep/promote only pass + floor winners, attaching a concise listen report per promoted artifact.
+3. Log regressions and weak dimensions (song-likeness/transition) into the daily quality log for the next planner/render tuning pass.
