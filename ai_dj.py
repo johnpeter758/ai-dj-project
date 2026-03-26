@@ -362,8 +362,16 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
 
     core_labels = {"verse", "build", "payoff", "bridge"}
 
+    def _normalize_section_label(value: Any) -> str:
+        label = str(value or "").strip().lower().replace("-", "_")
+        if " " in label:
+            label = label.split()[0]
+        if "_" in label:
+            label = label.split("_", 1)[0]
+        return label
+
     def _is_core_donor_op(op: dict[str, Any]) -> bool:
-        section_label = str(op.get("section_label") or "").strip().lower()
+        section_label = _normalize_section_label(op.get("section_label"))
         alternate_role = str(op.get("alternate_role") or "").strip().lower()
         alternate_parent = str(op.get("alternate_parent") or "")
         return (
@@ -430,11 +438,26 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
 
     # Third pass: when room exists, add safe two-swap variants to explore macro shape.
     by_section: dict[int, dict[str, Any]] = {}
+    core_donor_single_selected = any(_is_core_donor_op(op) for op in singles)
+    prefer_core_donor_combo = not core_donor_single_selected
+
+    def _combo_section_rank(op: dict[str, Any]) -> tuple[int, float]:
+        # If no donor-bearing core single exists, bias combo construction toward
+        # donor-bearing core section swaps so baseline doesn't collapse to backbone-only shape changes.
+        donor_bias = 0 if (prefer_core_donor_combo and _is_core_donor_op(op)) else 1
+        try:
+            error_delta = float(op.get("error_delta", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            error_delta = 0.0
+        return donor_bias, error_delta
+
     for op in opportunities:
         sec_idx = _section_index_of(op, default=-1)
-        if sec_idx < 0 or sec_idx in by_section:
+        if sec_idx < 0:
             continue
-        by_section[sec_idx] = op
+        existing = by_section.get(sec_idx)
+        if existing is None or _combo_section_rank(op) < _combo_section_rank(existing):
+            by_section[sec_idx] = op
     ordered_section_ops = [by_section[idx] for idx in sorted(by_section)]
 
     combo_candidates: list[tuple[dict[str, Any], dict[str, Any], float]] = []
@@ -449,17 +472,19 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 continue
             combo_candidates.append((left, right, combo_error))
 
-    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, float, int, int]:
+    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, float, int, int]:
         left, right, combo_error = item
-        left_label = str(left.get("section_label") or "").strip().lower()
-        right_label = str(right.get("section_label") or "").strip().lower()
+        left_label = _normalize_section_label(left.get("section_label"))
+        right_label = _normalize_section_label(right.get("section_label"))
         has_payoff = left_label == "payoff" or right_label == "payoff"
         has_build = left_label == "build" or right_label == "build"
         has_payoff_build = has_payoff and has_build
+        has_core_donor = _is_core_donor_op(left) or _is_core_donor_op(right)
         intro_outro_penalty = int(left_label in {"intro", "outro"}) + int(right_label in {"intro", "outro"})
         left_idx = int(left.get("section_index", 0) or 0)
         right_idx = int(right.get("section_index", 0) or 0)
         return (
+            0 if (prefer_core_donor_combo and has_core_donor) else 1,
             0 if has_payoff_build else 1,
             0 if has_payoff else 1,
             intro_outro_penalty,

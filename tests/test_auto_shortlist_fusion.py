@@ -381,3 +381,25 @@ def test_build_auto_shortlist_variant_configs_forces_core_donor_single_before_sa
 
     assert str(swap.get('section_label') or '').strip().lower() == 'verse'
     assert swap.get('alternate_parent') == 'B'
+
+
+
+def test_build_auto_shortlist_variant_configs_treats_suffixed_core_labels_as_core_for_donor_priority():
+    payoff_same_parent = _make_section_with_alternate('payoff_a', 'A', 'phrase_4_6', 'A', 'phrase_10_12')
+    verse_donor = _make_section_with_alternate('verse_b', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
+    intro_same_parent = _make_section_with_alternate('intro', 'A', 'phrase_0_2', 'A', 'phrase_6_8')
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [payoff_same_parent, verse_donor, intro_same_parent],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    single = next(config for config in configs if config['strategy'] == 'single_section_alternate')
+    swap = single['swaps'][0]
+
+    assert str(swap.get('section_label') or '').strip().lower() == 'verse_b'
+    assert swap.get('alternate_parent') == 'B'
