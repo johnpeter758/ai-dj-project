@@ -332,6 +332,27 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     used_identities: set[tuple[int, str, str]] = set()
     singles: list[dict[str, Any]] = []
 
+    def _has_safe_dual_combo(ops: list[dict[str, Any]]) -> bool:
+        best_by_section: dict[int, dict[str, Any]] = {}
+        for item in ops:
+            sec_idx = int(item.get("section_index", -1) or -1)
+            if sec_idx < 0 or sec_idx in best_by_section:
+                continue
+            best_by_section[sec_idx] = item
+        section_ops = [best_by_section[idx] for idx in sorted(best_by_section)]
+        for left_idx in range(len(section_ops)):
+            for right_idx in range(left_idx + 1, len(section_ops)):
+                left = section_ops[left_idx]
+                right = section_ops[right_idx]
+                combo_error = float(left.get("error_delta", 0.0) or 0.0) + float(right.get("error_delta", 0.0) or 0.0)
+                if combo_error <= 1.65:
+                    return True
+        return False
+
+    reserve_combo_slot = max_variants >= 3 and _has_safe_dual_combo(opportunities)
+    max_single_slots = max_variants - len(configs) - (1 if reserve_combo_slot else 0)
+    max_single_slots = max(0, max_single_slots)
+
     # First pass: section-diverse singles (one strong alternate per section).
     seen_sections: set[int] = set()
     for op in opportunities:
@@ -342,18 +363,18 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         singles.append(op)
         seen_sections.add(sec_idx)
         used_identities.add(identity)
-        if len(configs) + len(singles) >= max_variants:
+        if len(singles) >= max_single_slots:
             break
 
     # Second pass: fill remaining slots with next-best singles.
-    if len(configs) + len(singles) < max_variants:
+    if len(singles) < max_single_slots:
         for op in opportunities:
             identity = _op_identity(op)
             if identity in used_identities:
                 continue
             singles.append(op)
             used_identities.add(identity)
-            if len(configs) + len(singles) >= max_variants:
+            if len(singles) >= max_single_slots:
                 break
 
     for idx, opportunity in enumerate(singles, start=1):
@@ -407,6 +428,28 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 }
             )
             combo_idx += 1
+
+    if len(configs) < max_variants:
+        for op in opportunities:
+            identity = _op_identity(op)
+            if identity in used_identities:
+                continue
+            section_label = str(op.get("section_label") or f"section_{op.get('section_index', len(configs))}")
+            alt_parent = str(op.get("alternate_parent") or "X")
+            alt_label = str(op.get("alternate_window_label") or f"window_{len(configs)}")
+            variant_id = f"swap_{len(configs):02d}_{section_label}_{alt_parent}"
+            configs.append(
+                {
+                    "variant_id": variant_id,
+                    "label": f"{section_label} -> {alt_parent}:{alt_label}",
+                    "strategy": "single_section_alternate",
+                    "variant_mode": variant_mode,
+                    "swaps": [op],
+                }
+            )
+            used_identities.add(identity)
+            if len(configs) >= max_variants:
+                break
 
     return configs[:max_variants]
 
