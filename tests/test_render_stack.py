@@ -11,6 +11,7 @@ from src.core.planner import build_stub_arrangement_plan
 from src.core.planner.models import ChildArrangementPlan, CompatibilityFactors, ParentReference, PlannedSection
 from src.core.render import resolve_render_plan, render_resolved_plan
 from src.core.render.manifest import ResolvedRenderPlan
+from src.core.render.resolver import _available_snap_grid
 from src.core.render.renderer import (
     _apply_transition_sonics,
     _cue_safe_transition_anchor,
@@ -57,6 +58,28 @@ def clone_manifest(manifest: ResolvedRenderPlan, **updates) -> ResolvedRenderPla
     }
     payload.update(updates)
     return ResolvedRenderPlan(**payload)
+
+
+def test_available_snap_grid_ignores_non_finite_and_malformed_values():
+    song = SongDNA(
+        source_path='dummy.wav',
+        sample_rate=44100,
+        duration_seconds=8.0,
+        tempo_bpm=120.0,
+        key={'tonic': 'A', 'mode': 'minor', 'camelot': '8A', 'confidence': 0.9},
+        structure={'sections': [], 'phrase_boundaries_seconds': [0.0, 4.0, 8.0]},
+        energy={
+            'bar_times': [0.0, 2.0, float('nan'), 'bad', None, float('inf')],
+            'beat_times': [0.5, 1.0, -float('inf')],
+        },
+        metadata={'schema_version': '0.1.0', 'tempo': {'beat_times': [0.0, 0.5, 1.0]}},
+        stems={'enabled': False, 'files': {}},
+    )
+
+    grid = _available_snap_grid(song, lower=0.0, upper=2.0)
+
+    assert grid == [0.0, 0.5, 1.0, 2.0]
+
 
 
 def test_resolve_render_plan_emits_sections_and_work_orders(tmp_path: Path):

@@ -239,14 +239,28 @@ def _resolve_incoming_gain_db(
     return gain_db
 
 
+def _finite_float_values(values: list[float] | tuple[float, ...] | object) -> list[float]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    out: list[float] = []
+    for value in values:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(parsed):
+            out.append(parsed)
+    return out
+
+
 def _available_snap_grid(song: SongDNA, lower: float, upper: float) -> list[float]:
     grid = sorted({
-        *[float(x) for x in song.energy.get("bar_times", [])],
-        *[float(x) for x in song.energy.get("beat_times", [])],
+        *_finite_float_values(song.energy.get("bar_times", [])),
+        *_finite_float_values(song.energy.get("beat_times", [])),
         float(lower),
         float(upper),
     })
-    return [value for value in grid if lower <= value <= upper]
+    return [value for value in grid if math.isfinite(value) and lower <= value <= upper]
 
 
 
