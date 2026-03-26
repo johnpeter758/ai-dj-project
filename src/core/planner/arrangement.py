@@ -4786,7 +4786,41 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
             backbone_parent=backbone_plan.backbone_parent,
             donor_parent=backbone_plan.donor_parent,
         )
-        chosen, balance_guard_note = _choose_with_major_section_balance_guard(spec, ranked, selection_history)
+        if not ranked:
+            fallback_parent = spec.source_parent_preference if spec.source_parent_preference in {'A', 'B'} else backbone_plan.backbone_parent
+            fallback_song = song_map[fallback_parent]
+            fallback_candidate = (_section_candidates(fallback_song) or [
+                _SectionCandidate(
+                    label='section_0',
+                    start=0.0,
+                    end=float(fallback_song.duration_seconds),
+                    duration=float(fallback_song.duration_seconds),
+                    midpoint=float(fallback_song.duration_seconds) * 0.5,
+                    energy=_window_energy(fallback_song, 0.0, float(fallback_song.duration_seconds)),
+                    origin='section',
+                )
+            ])[0]
+            chosen = _WindowSelection(
+                parent_id=fallback_parent,
+                song=fallback_song,
+                candidate=fallback_candidate,
+                blended_error=999.0,
+                score_breakdown={
+                    'fallback_no_ranked_candidates': 1.0,
+                },
+                section_label=spec.label,
+            )
+            balance_guard_note = (
+                f"planner fallback: no ranked candidates available; using {fallback_parent}:{fallback_candidate.label}"
+            )
+        else:
+            try:
+                chosen, balance_guard_note = _choose_with_major_section_balance_guard(spec, ranked, selection_history)
+            except Exception as exc:
+                chosen = ranked[0]
+                balance_guard_note = (
+                    f"major-section balance guard fallback: {type(exc).__name__}: {exc}; using top-ranked candidate"
+                )
         if arrangement_mode == 'baseline' and spec.source_parent_preference in {'A', 'B'}:
             preferred_choice = next((item for item in ranked if item.parent_id == spec.source_parent_preference), None)
             if preferred_choice is not None:
@@ -4796,6 +4830,8 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
                         f"baseline preferred-parent guard: locked {spec.label} to {chosen.parent_id}:{chosen.candidate.label} "
                         f"to preserve single-backbone / contiguous-donor chronology; alt delta {chosen.blended_error - ranked[0].blended_error:.2f}"
                     )
+        if not ranked:
+            ranked = [chosen]
         ranked_choices.append(ranked)
         chosen_selections.append(chosen)
         if balance_guard_note is not None:
@@ -4902,7 +4938,7 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
                 'selected_window_seconds': {'start': round(candidate.start, 3), 'end': round(candidate.end, 3)},
                 'backbone_tempo_bpm': round(song_map[backbone_plan.backbone_parent].tempo_bpm, 3),
                 'candidate_tempo_bpm': round(chosen.song.tempo_bpm, 3),
-                'target_section_seconds': round(chosen.score_breakdown['target_duration_seconds'], 3),
+                'target_section_seconds': round(float(chosen.score_breakdown.get('target_duration_seconds', candidate.duration) or candidate.duration), 3),
                 'transition_in': spec.transition_in,
                 'transition_out': spec.transition_out,
                 'transition_mode': transition_mode,
@@ -4916,10 +4952,10 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
                 'support_recipe': support_recipe,
                 'child_section_recipe': recipe.to_dict(),
                 'evaluator_alignment': {
-                    'listen_feedback_penalty': round(chosen.score_breakdown['listen_feedback'], 3),
-                    'seam_risk': round(chosen.score_breakdown['seam_risk'], 3),
-                    'transition_viability': round(1.0 - chosen.score_breakdown['transition_viability'], 3),
-                    'energy_arc_fit': round(1.0 - chosen.score_breakdown['energy_arc'], 3),
+                    'listen_feedback_penalty': round(float(chosen.score_breakdown.get('listen_feedback', 1.0) or 1.0), 3),
+                    'seam_risk': round(float(chosen.score_breakdown.get('seam_risk', 1.0) or 1.0), 3),
+                    'transition_viability': round(1.0 - float(chosen.score_breakdown.get('transition_viability', 1.0) or 1.0), 3),
+                    'energy_arc_fit': round(1.0 - float(chosen.score_breakdown.get('energy_arc', 1.0) or 1.0), 3),
                     'groove_confidence': round(feedback.groove_confidence, 3),
                     'transition_readiness': round(feedback.transition_readiness, 3),
                     'coherence_confidence': round(feedback.coherence_confidence, 3),
