@@ -360,9 +360,38 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     max_single_slots = max_variants - len(configs) - (1 if reserve_combo_slot else 0)
     max_single_slots = max(0, max_single_slots)
 
+    core_labels = {"verse", "build", "payoff", "bridge"}
+
+    def _is_core_donor_op(op: dict[str, Any]) -> bool:
+        section_label = str(op.get("section_label") or "").strip().lower()
+        alternate_role = str(op.get("alternate_role") or "").strip().lower()
+        alternate_parent = str(op.get("alternate_parent") or "")
+        return (
+            section_label in core_labels
+            and (
+                alternate_role == "donor"
+                or (alternate_parent and alternate_parent != str(op.get("backbone_parent") or ""))
+            )
+        )
+
     # First pass: section-diverse singles (one strong alternate per section).
     seen_sections: set[int] = set()
+
+    # Guarantee one core donor single (verse/build/payoff/bridge) when available.
+    if max_single_slots > 0:
+        for op in opportunities:
+            if not _is_core_donor_op(op):
+                continue
+            sec_idx = _section_index_of(op, default=-1)
+            identity = _op_identity(op)
+            singles.append(op)
+            seen_sections.add(sec_idx)
+            used_identities.add(identity)
+            break
+
     for op in opportunities:
+        if len(singles) >= max_single_slots:
+            break
         sec_idx = _section_index_of(op, default=-1)
         identity = _op_identity(op)
         if sec_idx in seen_sections or identity in used_identities:
@@ -370,8 +399,6 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         singles.append(op)
         seen_sections.add(sec_idx)
         used_identities.add(identity)
-        if len(singles) >= max_single_slots:
-            break
 
     # Second pass: fill remaining slots with next-best singles.
     if len(singles) < max_single_slots:
