@@ -403,3 +403,28 @@ def test_build_auto_shortlist_variant_configs_treats_suffixed_core_labels_as_cor
 
     assert str(swap.get('section_label') or '').strip().lower() == 'verse_b'
     assert swap.get('alternate_parent') == 'B'
+
+
+
+def test_build_auto_shortlist_variant_configs_baseline_combo_forces_core_donor_when_singles_have_none():
+    payoff_same_parent = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'A', 'phrase_10_12')
+    build_same_parent = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'A', 'phrase_9_11')
+    verse_donor = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
+    bridge_donor = _make_section_with_alternate('bridge', 'A', 'phrase_5_7', 'B', 'phrase_11_13')
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'baseline',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [payoff_same_parent, build_same_parent, verse_donor, bridge_donor],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    combo = next(config for config in configs if config['strategy'] == 'dual_section_alternate')
+    combo_labels = {str(swap.get('section_label') or '').strip().lower() for swap in combo.get('swaps', [])}
+    combo_parents = {str(swap.get('alternate_parent') or '') for swap in combo.get('swaps', [])}
+
+    assert combo_labels & {'verse', 'build', 'payoff', 'bridge'}
+    assert 'B' in combo_parents

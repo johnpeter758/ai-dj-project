@@ -440,6 +440,8 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     by_section: dict[int, dict[str, Any]] = {}
     core_donor_single_selected = any(_is_core_donor_op(op) for op in singles)
     prefer_core_donor_combo = not core_donor_single_selected
+    arrangement_mode = str(((getattr(plan, "planning_diagnostics", {}) or {}).get("arrangement_mode") or "")).strip().lower()
+    enforce_baseline_core_donor_combo = arrangement_mode == "baseline"
 
     def _combo_section_rank(op: dict[str, Any]) -> tuple[int, float]:
         # If no donor-bearing core single exists, bias combo construction toward
@@ -472,6 +474,10 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 continue
             combo_candidates.append((left, right, combo_error))
 
+    def _combo_has_core_donor(item: tuple[dict[str, Any], dict[str, Any], float]) -> bool:
+        left, right, _ = item
+        return _is_core_donor_op(left) or _is_core_donor_op(right)
+
     def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, float, int, int]:
         left, right, combo_error = item
         left_label = _normalize_section_label(left.get("section_label"))
@@ -479,7 +485,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         has_payoff = left_label == "payoff" or right_label == "payoff"
         has_build = left_label == "build" or right_label == "build"
         has_payoff_build = has_payoff and has_build
-        has_core_donor = _is_core_donor_op(left) or _is_core_donor_op(right)
+        has_core_donor = _combo_has_core_donor(item)
         intro_outro_penalty = int(left_label in {"intro", "outro"}) + int(right_label in {"intro", "outro"})
         left_idx = int(left.get("section_index", 0) or 0)
         right_idx = int(right.get("section_index", 0) or 0)
@@ -492,6 +498,11 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             0 if has_build else 1,
             left_idx + right_idx,
         )
+
+    if enforce_baseline_core_donor_combo:
+        donor_combo_candidates = [item for item in combo_candidates if _combo_has_core_donor(item)]
+        if donor_combo_candidates:
+            combo_candidates = donor_combo_candidates
 
     combo_candidates.sort(key=_combo_priority)
 
