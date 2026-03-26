@@ -322,9 +322,16 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     if max_variants <= 1 or not opportunities:
         return configs[:max_variants]
 
+    def _section_index_of(op: dict[str, Any], *, default: int = -1) -> int:
+        raw = op.get("section_index", default)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
     def _op_identity(op: dict[str, Any]) -> tuple[int, str, str]:
         return (
-            int(op.get("section_index", -1) or -1),
+            _section_index_of(op, default=-1),
             str(op.get("alternate_parent") or ""),
             str(op.get("alternate_window_label") or ""),
         )
@@ -335,7 +342,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     def _has_safe_dual_combo(ops: list[dict[str, Any]]) -> bool:
         best_by_section: dict[int, dict[str, Any]] = {}
         for item in ops:
-            sec_idx = int(item.get("section_index", -1) or -1)
+            sec_idx = _section_index_of(item, default=-1)
             if sec_idx < 0 or sec_idx in best_by_section:
                 continue
             best_by_section[sec_idx] = item
@@ -356,7 +363,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     # First pass: section-diverse singles (one strong alternate per section).
     seen_sections: set[int] = set()
     for op in opportunities:
-        sec_idx = int(op.get("section_index", -1) or -1)
+        sec_idx = _section_index_of(op, default=-1)
         identity = _op_identity(op)
         if sec_idx in seen_sections or identity in used_identities:
             continue
@@ -397,7 +404,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     # Third pass: when room exists, add safe two-swap variants to explore macro shape.
     by_section: dict[int, dict[str, Any]] = {}
     for op in opportunities:
-        sec_idx = int(op.get("section_index", -1) or -1)
+        sec_idx = _section_index_of(op, default=-1)
         if sec_idx < 0 or sec_idx in by_section:
             continue
         by_section[sec_idx] = op
@@ -408,23 +415,25 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         for right_idx in range(left_idx + 1, len(ordered_section_ops)):
             left = ordered_section_ops[left_idx]
             right = ordered_section_ops[right_idx]
-            if int(left.get("section_index", -1)) == int(right.get("section_index", -1)):
+            if _section_index_of(left, default=-1) == _section_index_of(right, default=-1):
                 continue
             combo_error = float(left.get("error_delta", 0.0) or 0.0) + float(right.get("error_delta", 0.0) or 0.0)
             if combo_error > 1.65:
                 continue
             combo_candidates.append((left, right, combo_error))
 
-    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, float, int, int]:
+    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, float, int, int]:
         left, right, combo_error = item
         left_label = str(left.get("section_label") or "").strip().lower()
         right_label = str(right.get("section_label") or "").strip().lower()
         has_payoff = left_label == "payoff" or right_label == "payoff"
         has_build = left_label == "build" or right_label == "build"
+        intro_outro_penalty = int(left_label in {"intro", "outro"}) + int(right_label in {"intro", "outro"})
         left_idx = int(left.get("section_index", 0) or 0)
         right_idx = int(right.get("section_index", 0) or 0)
         return (
             0 if has_payoff else 1,
+            intro_outro_penalty,
             combo_error,
             0 if has_build else 1,
             left_idx + right_idx,
@@ -486,7 +495,11 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
     selected_sections = list(diagnostics.get("selected_sections") or [])
     overrides: list[dict[str, Any]] = []
     for swap in list(variant_config.get("swaps") or []):
-        section_index = int(swap.get("section_index", -1) or -1)
+        raw_section_index = swap.get("section_index", -1)
+        try:
+            section_index = int(raw_section_index)
+        except (TypeError, ValueError):
+            section_index = -1
         if section_index < 0 or section_index >= len(cloned.sections):
             continue
         section = cloned.sections[section_index]
