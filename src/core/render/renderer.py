@@ -406,6 +406,7 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
         return out
 
     section_label = str(getattr(section, 'label', '') or '').strip().lower()
+    transition_mode = _normalize_transition_mode_token(getattr(section, 'transition_mode', None))
 
     entry_sec = float(min(max(getattr(work, 'fade_in_sec', 0.0), 0.0) * 1.35, 1.2, max(getattr(work, 'target_duration_sec', 0.0) * 0.45, 0.0)))
     entry_samples = min(out.shape[1], max(0, int(round(entry_sec * sr))))
@@ -427,11 +428,20 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
             intro = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
             if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
                 # Early donor-support entry is where lead-vocal masking spikes.
-                # Keep support identity but bias first moments away from vocal-presence mids.
-                notched = _bandstop(intro, sr, 380.0, 2600.0)
+                # Make the vocal-presence notch transition-aware so hard handoffs stay cleaner,
+                # while same-parent/backbone transitions retain more support identity.
+                notch_low_hz, notch_high_hz = 380.0, 2600.0
+                notch_strength = 0.28
+                if transition_mode in {'arrival_handoff', 'single_owner_handoff'}:
+                    notch_low_hz, notch_high_hz = 340.0, 2900.0
+                    notch_strength = 0.36
+                elif transition_mode in {'same_parent_flow', 'backbone_flow'}:
+                    notch_low_hz, notch_high_hz = 420.0, 2350.0
+                    notch_strength = 0.22
+                notched = _bandstop(intro, sr, notch_low_hz, notch_high_hz)
                 notch_mix = np.linspace(1.0, 0.0, entry_samples, endpoint=True, dtype=np.float32)
                 notch_mix = np.power(notch_mix, np.float32(1.4))[np.newaxis, :]
-                intro = intro * (1.0 - 0.28 * notch_mix) + notched * (0.28 * notch_mix)
+                intro = intro * (1.0 - notch_strength * notch_mix) + notched * (notch_strength * notch_mix)
             out[:, :entry_samples] = intro
 
     release_scale = 1.35 if section_label in {'build', 'payoff'} else 1.0
@@ -463,8 +473,18 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
             tail = _one_pole_lowpass(tail, cutoff, sr)
             if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
                 # Build/payoff overlays are the highest collision risk with incoming lead vox.
-                # Lightly notch vocal-presence mids in the support release tail.
-                tail = _bandstop(tail, sr, 320.0, 2100.0)
+                # Keep release notch transition-aware: stronger for handoffs, lighter for flow sections.
+                notch_low_hz, notch_high_hz = 320.0, 2100.0
+                notch_strength = 1.0
+                if transition_mode in {'arrival_handoff', 'single_owner_handoff'}:
+                    notch_low_hz, notch_high_hz = 300.0, 2350.0
+                    notch_strength = 1.0
+                elif transition_mode in {'same_parent_flow', 'backbone_flow'}:
+                    notch_low_hz, notch_high_hz = 360.0, 1950.0
+                    notch_strength = 0.65
+
+                notched_tail = _bandstop(tail, sr, notch_low_hz, notch_high_hz)
+                tail = tail * (1.0 - notch_strength) + notched_tail * notch_strength
             out[:, -release_samples:] = tail
 
     return out.astype(np.float32)

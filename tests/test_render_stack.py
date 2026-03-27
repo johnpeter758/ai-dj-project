@@ -1449,6 +1449,52 @@ def test_apply_support_entry_shape_build_entry_notches_vocal_presence_mids_more_
     assert build_proj < verse_proj * 0.82
 
 
+def test_apply_support_entry_shape_build_entry_notches_handoff_more_than_same_parent_flow():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    mid_tone = np.sin(2 * np.pi * 1000.0 * t).astype(np.float32)
+    segment = np.vstack([mid_tone, mid_tone])
+    work = Dummy(order_type='section_support', role='filtered_support', fade_in_sec=0.65, fade_out_sec=0.45, target_duration_sec=seconds)
+
+    handoff = _apply_support_entry_shape(segment, sr, work, Dummy(label='build', transition_mode='arrival_handoff'))
+    same_parent = _apply_support_entry_shape(segment, sr, work, Dummy(label='build', transition_mode='same_parent_flow'))
+
+    head_slice = slice(int(0.03 * sr), int(0.26 * sr))
+    t_head = t[: head_slice.stop - head_slice.start]
+    carrier = np.sin(2 * np.pi * 1000.0 * t_head)
+    handoff_proj = np.abs(np.mean(handoff[0, head_slice] * carrier))
+    same_parent_proj = np.abs(np.mean(same_parent[0, head_slice] * carrier))
+    assert handoff_proj < same_parent_proj * 0.9
+
+
+def test_apply_support_entry_shape_build_tail_notches_handoff_more_than_same_parent_flow():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    mid_tone = np.sin(2 * np.pi * 1000.0 * t).astype(np.float32)
+    segment = np.vstack([mid_tone, mid_tone])
+    work = Dummy(order_type='section_support', role='filtered_counterlayer', fade_in_sec=0.3, fade_out_sec=0.7, target_duration_sec=seconds)
+
+    handoff = _apply_support_entry_shape(segment, sr, work, Dummy(label='payoff', transition_mode='single_owner_handoff'))
+    same_parent = _apply_support_entry_shape(segment, sr, work, Dummy(label='payoff', transition_mode='same_parent_flow'))
+
+    tail_slice = slice(int(1.78 * sr), int(1.98 * sr))
+    t_tail = t[: tail_slice.stop - tail_slice.start]
+    carrier = np.sin(2 * np.pi * 1000.0 * t_tail)
+    handoff_proj = np.abs(np.mean(handoff[0, tail_slice] * carrier))
+    same_parent_proj = np.abs(np.mean(same_parent[0, tail_slice] * carrier))
+    assert handoff_proj < same_parent_proj * 0.92
+
+
 def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
     sr = 44100
     seconds = 2.0
