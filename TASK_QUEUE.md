@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 12:14 EDT (intelligent dual-support pairing + adaptive support policy)
+Last updated: 2026-03-27 12:24 EDT (handoff-aware support envelope profile in resolver + transition-mode propagation)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -10,12 +10,15 @@ Owner: execution operator
      - patch: support decisions now use adaptive `support_policy` (risk + context aware gain/mode) rather than rigid per-label defaults.
      - patch: adaptive dual-support pairing now uses pair scoring (payoff/build preference with hard risk caps, max/mean risk, error sum, section span, parent diversity) instead of blindly taking first two support candidates.
      - patch: removed rigid shortlist early-return that skipped support overlays when swap opportunities were empty.
+     - patch: resolver now applies handoff-aware support overlay profiles (gain + fade-in/out shaping) to reduce integrated-support crowding during `arrival_handoff`/`single_owner_handoff` transitions.
+     - patch: support work orders now inherit normalized section `transition_mode` instead of support-role tokens, keeping planner intent intact through render.
      - regressions:
        - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk`
        - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_dual_support_avoids_extreme_risk_payoff_pair`
      - validation:
        - `pytest -q tests/test_auto_shortlist_fusion.py -k "variant_configs or support_policy_adapts or avoids_extreme_risk_payoff_pair"` → `17 passed, 4 deselected`.
        - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py tests/test_core_planner.py tests/test_render_stack.py` → `221 passed, 1 skipped`.
+       - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_render_stack.py` → `87 passed`.
      - artifact reruns:
        - `runs/quality_push_pair2_intelligent_support_policy_20260327_111418`
          - policy: `pass+floor`, `promotion_blocked=false`

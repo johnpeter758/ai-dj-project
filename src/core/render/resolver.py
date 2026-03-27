@@ -280,6 +280,44 @@ def _resolve_incoming_gain_db(
     return gain_db
 
 
+
+
+def _resolve_support_overlay_profile(
+    *,
+    section_label: str | None,
+    transition_mode: str | None,
+    support_mode: str | None,
+    target_duration_sec: float,
+    support_gain_db: float,
+) -> tuple[float, float, float]:
+    """Tune support layer gain/edges for cleaner transitions.
+
+    Goal: keep integrated support musical while reducing handoff crowding.
+    """
+    label = (section_label or '').strip().lower()
+    mode = (transition_mode or '').strip().lower()
+    role = (support_mode or '').strip().lower()
+
+    fade_in_sec = min(0.75, target_duration_sec * 0.15)
+    fade_out_sec = min(1.0, target_duration_sec * 0.18)
+    gain_db = float(support_gain_db)
+
+    if label in {'build', 'payoff'}:
+        gain_db -= 0.5
+
+    if mode in {'arrival_handoff', 'single_owner_handoff'}:
+        gain_db -= 1.25
+        fade_in_sec = min(1.1, max(fade_in_sec * 1.25, target_duration_sec * 0.18))
+        fade_out_sec = min(1.25, max(fade_out_sec * 1.2, target_duration_sec * 0.22))
+    elif mode in {'same_parent_flow', 'backbone_flow'}:
+        gain_db += 0.35
+        fade_in_sec = min(fade_in_sec, max(0.18, target_duration_sec * 0.1))
+
+    if role == 'foreground_counterlayer' and mode in {'arrival_handoff', 'single_owner_handoff'}:
+        gain_db -= 0.75
+
+    return gain_db, fade_in_sec, fade_out_sec
+
 def _finite_float_values(values: list[float] | tuple[float, ...] | object) -> list[float]:
     if not isinstance(values, (list, tuple)):
         return []
@@ -855,6 +893,13 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             conflict_policy="collapse_to_single_source",
         ))
         if integrated_support_active and support_ref is not None and support_stretch_ratio is not None:
+            support_gain_db, support_fade_in_sec, support_fade_out_sec = _resolve_support_overlay_profile(
+                section_label=sec.label,
+                transition_mode=normalized_transition_mode,
+                support_mode=sec.support_mode,
+                target_duration_sec=target_duration_sec,
+                support_gain_db=float(sec.support_gain_db if sec.support_gain_db is not None else -10.0),
+            )
             work_orders.append(AudioWorkOrder(
                 order_id=f"section_{idx}_support",
                 section_index=idx,
@@ -868,11 +913,11 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 target_duration_sec=target_duration_sec,
                 stretch_ratio=support_stretch_ratio,
                 semitone_shift=0.0,
-                gain_db=float(sec.support_gain_db if sec.support_gain_db is not None else -10.0),
-                fade_in_sec=min(0.75, target_duration_sec * 0.15),
-                fade_out_sec=min(1.0, target_duration_sec * 0.18),
+                gain_db=support_gain_db,
+                fade_in_sec=support_fade_in_sec,
+                fade_out_sec=support_fade_out_sec,
                 transition_type=None,
-                transition_mode=str(sec.support_mode or 'filtered_support'),
+                transition_mode=normalized_transition_mode,
                 foreground_state="owner" if (sec.support_mode or '') == 'foreground_counterlayer' else "support",
                 low_end_state="support",
                 vocal_state="lead" if (sec.support_mode or '') == 'foreground_counterlayer' else "none",

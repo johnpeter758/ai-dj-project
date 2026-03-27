@@ -398,6 +398,83 @@ def test_resolve_render_plan_emits_support_order_for_integrated_two_parent_secti
 
 
 
+
+
+def test_resolve_render_plan_handoff_support_profile_ducks_and_softens_overlay_edges(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 660.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+
+    base_plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0),
+        sections=[
+            PlannedSection(
+                label='build',
+                start_bar=0,
+                bar_count=4,
+                source_parent='A',
+                source_section_label='phrase_0_2',
+                support_parent='B',
+                support_section_label='phrase_0_2',
+                support_gain_db=-9.0,
+                support_mode='filtered_support',
+                transition_mode='same_parent_flow',
+            )
+        ],
+    )
+    handoff_plan = ChildArrangementPlan(
+        parents=base_plan.parents,
+        compatibility=base_plan.compatibility,
+        sections=[replace(base_plan.sections[0], transition_mode='arrival_handoff')],
+    )
+
+    base_manifest = resolve_render_plan(base_plan, a, b)
+    handoff_manifest = resolve_render_plan(handoff_plan, a, b)
+    base_support = next(work for work in base_manifest.work_orders if work.order_type == 'section_support')
+    handoff_support = next(work for work in handoff_manifest.work_orders if work.order_type == 'section_support')
+
+    assert handoff_support.gain_db < base_support.gain_db
+    assert handoff_support.fade_in_sec > base_support.fade_in_sec
+    assert handoff_support.fade_out_sec > base_support.fade_out_sec
+
+
+def test_resolve_render_plan_support_work_order_tracks_section_transition_mode(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 440.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0),
+        sections=[
+            PlannedSection(
+                label='payoff',
+                start_bar=0,
+                bar_count=4,
+                source_parent='A',
+                source_section_label='phrase_0_2',
+                support_parent='B',
+                support_section_label='phrase_0_2',
+                support_mode='filtered_counterlayer',
+                transition_mode='single-owner handoff',
+            )
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+    support = next(work for work in manifest.work_orders if work.order_type == 'section_support')
+
+    assert manifest.sections[0].transition_mode == 'single_owner_handoff'
+    assert support.transition_mode == 'single_owner_handoff'
+
 def test_render_resolved_plan_support_layer_changes_audio_output(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 880.0)
