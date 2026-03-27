@@ -761,25 +761,42 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         combo_idx += 1
 
     if reserve_support_slot and support_candidates and len(configs) < max_variants:
-        support_idx = 1
-        for support in support_candidates:
-            if len(configs) >= max_variants:
-                break
-            section_label = str(support.get("section_label") or f"section_{support.get('section_index', support_idx)}")
-            support_parent = str(support.get("support_parent") or "X")
-            support_label = str(support.get("support_section_label") or f"window_{support_idx}")
-            variant_id = f"support_{support_idx:02d}_{section_label}_{support_parent}"
+        if arrangement_mode == "adaptive" and len(support_candidates) >= 2:
+            primary = support_candidates[0]
+            secondary = support_candidates[1]
+            primary_label = str(primary.get("section_label") or "section")
+            secondary_label = str(secondary.get("section_label") or "section")
+            support_parent = str(primary.get("support_parent") or secondary.get("support_parent") or "X")
             configs.append(
                 {
-                    "variant_id": variant_id,
-                    "label": f"{section_label} + {support_parent}:{support_label} support",
-                    "strategy": "single_section_support",
+                    "variant_id": f"support_01_{primary_label}_{secondary_label}_{support_parent}",
+                    "label": f"{primary_label}+{secondary_label} integrated support",
+                    "strategy": "dual_section_support",
                     "variant_mode": variant_mode,
                     "swaps": [],
-                    "supports": [support],
+                    "supports": [primary, secondary],
                 }
             )
-            support_idx += 1
+        else:
+            support_idx = 1
+            for support in support_candidates:
+                if len(configs) >= max_variants:
+                    break
+                section_label = str(support.get("section_label") or f"section_{support.get('section_index', support_idx)}")
+                support_parent = str(support.get("support_parent") or "X")
+                support_label = str(support.get("support_section_label") or f"window_{support_idx}")
+                variant_id = f"support_{support_idx:02d}_{section_label}_{support_parent}"
+                configs.append(
+                    {
+                        "variant_id": variant_id,
+                        "label": f"{section_label} + {support_parent}:{support_label} support",
+                        "strategy": "single_section_support",
+                        "variant_mode": variant_mode,
+                        "swaps": [],
+                        "supports": [support],
+                    }
+                )
+                support_idx += 1
 
     if len(configs) < max_variants:
         for op in opportunities:

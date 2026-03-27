@@ -586,7 +586,7 @@ def test_build_auto_shortlist_variant_configs_adaptive_reserves_support_variant_
     configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
 
     assert len(configs) == 3
-    assert any(config['strategy'] == 'single_section_support' for config in configs)
+    assert any(config['strategy'] in {'single_section_support', 'dual_section_support'} for config in configs)
     assert any(config['strategy'] == 'dual_section_alternate' for config in configs)
 
 
@@ -607,15 +607,16 @@ def test_build_auto_shortlist_variant_configs_adaptive_synthesizes_counterparent
     )
 
     configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
-    support = next(config for config in configs if config['strategy'] == 'single_section_support')
-    payload = support['supports'][0]
+    support = next(config for config in configs if config['strategy'] in {'single_section_support', 'dual_section_support'})
+    assert len(support['supports']) >= 1
 
-    sec_idx = int(payload['section_index'])
-    selected_section = plan.planning_diagnostics['selected_sections'][sec_idx]
-    assert payload['kind'] == 'support_overlay_counterparent'
-    assert payload['support_parent'] == 'A'
-    assert payload['support_parent'] != selected_section['selected_parent']
-    assert payload['support_section_label'] == selected_section['selected_window_label']
+    for payload in support['supports']:
+        sec_idx = int(payload['section_index'])
+        selected_section = plan.planning_diagnostics['selected_sections'][sec_idx]
+        assert payload['kind'] == 'support_overlay_counterparent'
+        assert payload['support_parent'] == 'A'
+        assert payload['support_parent'] != selected_section['selected_parent']
+        assert payload['support_section_label'] == selected_section['selected_window_label']
 
 
 def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_diagnostics():
