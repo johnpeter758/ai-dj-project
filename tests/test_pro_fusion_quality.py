@@ -330,3 +330,98 @@ def test_select_pro_fusion_winner_penalizes_high_seam_risk_in_final_sort():
 
     assert winner is low_risk
     assert policy == "pass+floor"
+
+
+
+def test_pro_fusion_selection_score_penalizes_medley_like_outputs_with_low_integration():
+    base = {
+        "gating": {"status": "pass"},
+        "overall_score": 78.0,
+        "song_likeness": {"score": 72.0, "details": {"aggregate_metrics": {}}},
+        "groove": {"score": 74.0},
+        "transition": {"score": 73.0, "details": {"aggregate_metrics": {"mean_seam_risk": 0.2, "max_seam_risk": 0.25, "mean_energy_jump": 0.2}}},
+        "mix_sanity": {"score": 70.0},
+    }
+    fused = {
+        **base,
+        "song_likeness": {
+            "score": 72.0,
+            "details": {
+                "aggregate_metrics": {
+                    "full_mix_medley_risk": 0.08,
+                    "integrated_two_parent_section_ratio": 0.42,
+                    "max_parent_share": 0.62,
+                    "owner_switch_ratio": 0.18,
+                }
+            },
+        },
+    }
+    medley_like = {
+        **base,
+        "song_likeness": {
+            "score": 72.0,
+            "details": {
+                "aggregate_metrics": {
+                    "full_mix_medley_risk": 0.86,
+                    "integrated_two_parent_section_ratio": 0.02,
+                    "max_parent_share": 0.98,
+                    "owner_switch_ratio": 0.82,
+                }
+            },
+        },
+    }
+
+    fused_score = ai_dj._pro_fusion_selection_score(fused, parent_balance=0.5)
+    medley_score = ai_dj._pro_fusion_selection_score(medley_like, parent_balance=0.5)
+
+    assert fused_score > medley_score
+
+
+
+def test_pro_fusion_selection_score_penalizes_back_and_forth_owner_switching():
+    base = {
+        "gating": {"status": "pass"},
+        "overall_score": 78.0,
+        "song_likeness": {
+            "score": 72.0,
+            "details": {
+                "aggregate_metrics": {
+                    "full_mix_medley_risk": 0.45,
+                    "integrated_two_parent_section_ratio": 0.20,
+                    "max_parent_share": 0.78,
+                }
+            },
+        },
+        "groove": {"score": 74.0},
+        "transition": {"score": 73.0, "details": {"aggregate_metrics": {"mean_seam_risk": 0.2, "max_seam_risk": 0.25, "mean_energy_jump": 0.2}}},
+        "mix_sanity": {"score": 70.0},
+    }
+    stable = {
+        **base,
+        "song_likeness": {
+            "score": 72.0,
+            "details": {
+                "aggregate_metrics": {
+                    **base["song_likeness"]["details"]["aggregate_metrics"],
+                    "owner_switch_ratio": 0.05,
+                }
+            },
+        },
+    }
+    switchy = {
+        **base,
+        "song_likeness": {
+            "score": 72.0,
+            "details": {
+                "aggregate_metrics": {
+                    **base["song_likeness"]["details"]["aggregate_metrics"],
+                    "owner_switch_ratio": 0.65,
+                }
+            },
+        },
+    }
+
+    stable_score = ai_dj._pro_fusion_selection_score(stable, parent_balance=0.5)
+    switchy_score = ai_dj._pro_fusion_selection_score(switchy, parent_balance=0.5)
+
+    assert stable_score > switchy_score

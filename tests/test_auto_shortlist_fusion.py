@@ -497,7 +497,7 @@ def test_build_auto_shortlist_variant_configs_baseline_combo_keeps_donor_paths_w
     assert 'B' in combo_parents
 
 
-def test_build_auto_shortlist_variant_configs_baseline_combo_falls_back_to_non_core_donor_when_core_donor_is_unavailable():
+def test_build_auto_shortlist_variant_configs_baseline_combo_prefers_core_shape_over_intro_donor_fallback_when_core_donor_is_unavailable():
     intro_donor = _make_section_with_alternate('intro', 'A', 'phrase_0_2', 'B', 'phrase_6_8')
     verse_same_parent = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'A', 'phrase_8_10')
     payoff_same_parent = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'A', 'phrase_10_12')
@@ -521,5 +521,6 @@ def test_build_auto_shortlist_variant_configs_baseline_combo_falls_back_to_non_c
     combo_labels = {str(swap.get('section_label') or '').strip().lower() for swap in combo.get('swaps', [])}
     combo_parents = {str(swap.get('alternate_parent') or '') for swap in combo.get('swaps', [])}
 
-    assert 'intro' in combo_labels
-    assert 'B' in combo_parents
+    assert 'intro' not in combo_labels
+    assert combo_labels == {'verse', 'payoff'}
+    assert combo_parents == {'A'}

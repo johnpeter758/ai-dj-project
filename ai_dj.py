@@ -509,6 +509,12 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             or str(right.get("alternate_parent") or "") != str(right.get("backbone_parent") or "")
         )
 
+    def _combo_has_intro_or_outro(item: tuple[dict[str, Any], dict[str, Any], float]) -> bool:
+        left, right, _ = item
+        left_label = _normalize_section_label(left.get("section_label"))
+        right_label = _normalize_section_label(right.get("section_label"))
+        return left_label in {"intro", "outro"} or right_label in {"intro", "outro"}
+
     def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, float, int, int]:
         left, right, combo_error = item
         left_label = _normalize_section_label(left.get("section_label"))
@@ -535,9 +541,13 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         if core_donor_combo_candidates:
             combo_candidates = core_donor_combo_candidates
         else:
-            any_donor_combo_candidates = [item for item in combo_candidates if _combo_has_any_donor(item)]
-            if any_donor_combo_candidates:
-                combo_candidates = any_donor_combo_candidates
+            core_shape_combo_candidates = [item for item in combo_candidates if not _combo_has_intro_or_outro(item)]
+            if core_shape_combo_candidates:
+                combo_candidates = core_shape_combo_candidates
+            else:
+                any_donor_combo_candidates = [item for item in combo_candidates if _combo_has_any_donor(item)]
+                if any_donor_combo_candidates:
+                    combo_candidates = any_donor_combo_candidates
 
     combo_candidates.sort(key=_combo_priority)
 
@@ -701,6 +711,12 @@ def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -
     mix_sanity = float((report.get("mix_sanity") or {}).get("score") or 0.0)
     gating_status = str((report.get("gating") or {}).get("status") or "").strip().lower()
 
+    song_metrics = (((report.get("song_likeness") or {}).get("details") or {}).get("aggregate_metrics") or {})
+    medley_risk = _clamp01(_safe_metric(song_metrics.get("full_mix_medley_risk"), default=0.0))
+    integrated_ratio = _clamp01(_safe_metric(song_metrics.get("integrated_two_parent_section_ratio"), default=0.0))
+    max_parent_share = _clamp01(_safe_metric(song_metrics.get("max_parent_share"), default=1.0))
+    owner_switch_ratio = _clamp01(_safe_metric(song_metrics.get("owner_switch_ratio"), default=0.0))
+
     score = (
         0.34 * overall
         + 0.24 * song_likeness
@@ -711,6 +727,17 @@ def _pro_fusion_selection_score(report: dict[str, Any], parent_balance: float) -
     score += 10.0 * float(max(0.0, min(1.0, parent_balance)))
     if parent_balance <= 0.0:
         score -= 8.0
+
+    # Guardrail: de-prioritize medley-like outputs that feel like back-and-forth track switching.
+    integration_target = 0.35
+    integration_gap = max(0.0, integration_target - integrated_ratio)
+    medley_penalty = (
+        18.0 * medley_risk
+        + 12.0 * integration_gap
+        + 8.0 * max(0.0, max_parent_share - 0.80)
+        + 10.0 * owner_switch_ratio
+    )
+    score -= medley_penalty
 
     if gating_status == "reject":
         score -= 12.0
