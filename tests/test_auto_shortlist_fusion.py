@@ -524,3 +524,104 @@ def test_build_auto_shortlist_variant_configs_baseline_combo_prefers_core_shape_
     assert 'intro' not in combo_labels
     assert combo_labels == {'verse', 'payoff'}
     assert combo_parents == {'A'}
+
+
+def test_build_auto_shortlist_variant_configs_baseline_reserves_support_variant_for_relaxed_core_donor_overlay():
+    intro_donor = _make_section_with_alternate('intro', 'A', 'phrase_0_2', 'B', 'phrase_6_8')
+    verse_same_parent = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'A', 'phrase_8_10')
+    payoff_same_parent = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'A', 'phrase_10_12')
+
+    relaxed_payoff_donor = {
+        'rank': 3,
+        'parent_id': 'B',
+        'window_label': 'phrase_5_7',
+        'selected': False,
+        'planner_error': 1.12,
+        'error_delta_vs_selected': 2.2,
+        'score_breakdown': {
+            'stretch_ratio': 1.06,
+            'stretch_gate': 0.0,
+            'seam_risk': 0.34,
+            'transition_viability': 0.41,
+        },
+    }
+    payoff_same_parent['cross_parent_best_alternate'] = dict(relaxed_payoff_donor)
+    payoff_same_parent['candidate_shortlist'].append(dict(relaxed_payoff_donor))
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'baseline',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [intro_donor, verse_same_parent, payoff_same_parent],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+
+    support = next(config for config in configs if config['strategy'] == 'single_section_support')
+    assert support['swaps'] == []
+    assert len(support['supports']) == 1
+    support_payload = support['supports'][0]
+    assert str(support_payload.get('section_label') or '').strip().lower() == 'payoff'
+    assert support_payload.get('support_parent') == 'B'
+
+
+def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_diagnostics():
+    plan = SimpleNamespace(
+        sections=[
+            SimpleNamespace(
+                label='payoff',
+                source_parent='A',
+                source_section_label='phrase_4_6',
+                support_parent=None,
+                support_section_label=None,
+                support_gain_db=None,
+                support_mode=None,
+            )
+        ],
+        planning_diagnostics={
+            'selected_sections': [
+                {
+                    'label': 'payoff',
+                    'selected_parent': 'A',
+                    'selected_window_label': 'phrase_4_6',
+                }
+            ]
+        },
+        planning_notes=[],
+    )
+
+    variant = {
+        'variant_id': 'support_01_payoff_B',
+        'label': 'payoff + B support',
+        'strategy': 'single_section_support',
+        'variant_mode': 'safe',
+        'swaps': [],
+        'supports': [
+            {
+                'section_index': 0,
+                'section_label': 'payoff',
+                'support_parent': 'B',
+                'support_section_label': 'phrase_5_7',
+                'support_gain_db': -10.5,
+                'support_mode': 'filtered_counterlayer',
+                'kind': 'support_overlay',
+                'error_delta': 2.2,
+            }
+        ],
+    }
+
+    updated = ai_dj._apply_auto_shortlist_variant(plan, variant)
+
+    section = updated.sections[0]
+    assert section.support_parent == 'B'
+    assert section.support_section_label == 'phrase_5_7'
+    assert section.support_gain_db == -10.5
+    assert section.support_mode == 'filtered_counterlayer'
+
+    diag = updated.planning_diagnostics['selected_sections'][0]
+    assert diag['support_recipe']['parent_id'] == 'B'
+    assert diag['support_recipe']['window_label'] == 'phrase_5_7'
+    assert diag['support_recipe']['mode'] == 'filtered_counterlayer'

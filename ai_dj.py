@@ -356,10 +356,6 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     return True
         return False
 
-    reserve_combo_slot = max_variants >= 3 and _has_safe_dual_combo(opportunities)
-    max_single_slots = max_variants - len(configs) - (1 if reserve_combo_slot else 0)
-    max_single_slots = max(0, max_single_slots)
-
     core_labels = {"verse", "build", "payoff", "bridge"}
 
     def _normalize_section_label(value: Any) -> str:
@@ -381,6 +377,116 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 or (alternate_parent and alternate_parent != str(op.get("backbone_parent") or ""))
             )
         )
+
+    def _support_gain_db_for_label(section_label: str) -> float:
+        if section_label == "payoff":
+            return -11.0
+        if section_label == "build":
+            return -10.5
+        return -9.5
+
+    def _support_mode_for_label(section_label: str) -> str:
+        if section_label == "build":
+            return "foreground_counterlayer"
+        return "filtered_counterlayer"
+
+    def _collect_core_support_candidates() -> list[dict[str, Any]]:
+        diagnostics = getattr(plan, "planning_diagnostics", {}) or {}
+        selected_sections = list(diagnostics.get("selected_sections") or [])
+        backbone_parent = str(((diagnostics.get("backbone_plan") or {}).get("backbone_parent") or "A"))
+        raw_candidates: list[dict[str, Any]] = []
+
+        for index, section_diag in enumerate(selected_sections):
+            section_label_raw = section_diag.get("label")
+            section_label = _normalize_section_label(section_label_raw)
+            if section_label not in core_labels:
+                continue
+            selected_parent = str(section_diag.get("selected_parent") or "")
+            selected_window_label = str(section_diag.get("selected_window_label") or "")
+            seen: set[tuple[str, str]] = {(selected_parent, selected_window_label)} if selected_parent and selected_window_label else set()
+
+            alternates: list[dict[str, Any]] = []
+            cross_parent = section_diag.get("cross_parent_best_alternate")
+            if isinstance(cross_parent, dict):
+                alternates.append(cross_parent)
+            alternates.extend(
+                item
+                for item in list(section_diag.get("candidate_shortlist") or [])
+                if isinstance(item, dict) and not bool(item.get("selected"))
+            )
+
+            for alt in alternates:
+                support_parent = str(alt.get("parent_id") or "")
+                support_label = str(alt.get("window_label") or "")
+                identity = (support_parent, support_label)
+                if not support_parent or not support_label or identity in seen:
+                    continue
+                seen.add(identity)
+                if support_parent == selected_parent:
+                    continue
+
+                score_breakdown = dict(alt.get("score_breakdown") or {})
+                stretch_ratio = float(score_breakdown.get("stretch_ratio", 1.0) or 1.0)
+                stretch_gate = float(score_breakdown.get("stretch_gate", 0.0) or 0.0)
+                seam_risk = float(score_breakdown.get("seam_risk", 0.0) or 0.0)
+                transition_viability = float(score_breakdown.get("transition_viability", 0.0) or 0.0)
+                error_delta = float(alt.get("error_delta_vs_selected", 99.0) or 99.0)
+                if error_delta > 9.5:
+                    continue
+                if stretch_gate > 0.85 or stretch_ratio > 1.30 or seam_risk > 0.92 or transition_viability > 0.95:
+                    continue
+
+                raw_candidates.append(
+                    {
+                        "section_index": index,
+                        "section_label": section_label_raw,
+                        "support_parent": support_parent,
+                        "support_section_label": support_label,
+                        "support_gain_db": _support_gain_db_for_label(section_label),
+                        "support_mode": _support_mode_for_label(section_label),
+                        "selection_rank": int(alt.get("rank") or section_diag.get("selection_rank") or 1),
+                        "error_delta": error_delta,
+                        "planner_error": float(alt.get("planner_error", 0.0) or 0.0),
+                        "backbone_parent": backbone_parent,
+                        "kind": "support_overlay",
+                    }
+                )
+
+        best_by_section: dict[int, dict[str, Any]] = {}
+        for candidate in raw_candidates:
+            sec_idx = _section_index_of(candidate, default=-1)
+            if sec_idx < 0:
+                continue
+            existing = best_by_section.get(sec_idx)
+            candidate_rank = (
+                float(candidate.get("error_delta", 99.0) or 99.0),
+                int(candidate.get("selection_rank") or 999),
+            )
+            if existing is None:
+                best_by_section[sec_idx] = candidate
+                continue
+            existing_rank = (
+                float(existing.get("error_delta", 99.0) or 99.0),
+                int(existing.get("selection_rank") or 999),
+            )
+            if candidate_rank < existing_rank:
+                best_by_section[sec_idx] = candidate
+
+        return [best_by_section[idx] for idx in sorted(best_by_section)]
+
+    support_candidates = _collect_core_support_candidates()
+    reserve_combo_slot = max_variants >= 3 and _has_safe_dual_combo(opportunities)
+    has_core_donor_swap = any(_is_core_donor_op(op) for op in opportunities)
+    arrangement_mode = str(((getattr(plan, "planning_diagnostics", {}) or {}).get("arrangement_mode") or "")).strip().lower()
+    reserve_support_slot = (
+        arrangement_mode == "baseline"
+        and max_variants >= 3
+        and bool(support_candidates)
+        and not has_core_donor_swap
+    )
+
+    max_single_slots = max_variants - len(configs) - (1 if reserve_combo_slot else 0) - (1 if reserve_support_slot else 0)
+    max_single_slots = max(0, max_single_slots)
 
     # First pass: section-diverse singles (one strong alternate per section).
     seen_sections: set[int] = set()
@@ -440,7 +546,6 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     by_section: dict[int, dict[str, Any]] = {}
     core_donor_single_selected = any(_is_core_donor_op(op) for op in singles)
     prefer_core_donor_combo = not core_donor_single_selected
-    arrangement_mode = str(((getattr(plan, "planning_diagnostics", {}) or {}).get("arrangement_mode") or "")).strip().lower()
     enforce_baseline_core_donor_combo = arrangement_mode == "baseline"
 
     def _combo_section_rank(op: dict[str, Any]) -> tuple[int, float]:
@@ -567,6 +672,27 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         )
         combo_idx += 1
 
+    if reserve_support_slot and support_candidates and len(configs) < max_variants:
+        support_idx = 1
+        for support in support_candidates:
+            if len(configs) >= max_variants:
+                break
+            section_label = str(support.get("section_label") or f"section_{support.get('section_index', support_idx)}")
+            support_parent = str(support.get("support_parent") or "X")
+            support_label = str(support.get("support_section_label") or f"window_{support_idx}")
+            variant_id = f"support_{support_idx:02d}_{section_label}_{support_parent}"
+            configs.append(
+                {
+                    "variant_id": variant_id,
+                    "label": f"{section_label} + {support_parent}:{support_label} support",
+                    "strategy": "single_section_support",
+                    "variant_mode": variant_mode,
+                    "swaps": [],
+                    "supports": [support],
+                }
+            )
+            support_idx += 1
+
     if len(configs) < max_variants:
         for op in opportunities:
             identity = _op_identity(op)
@@ -595,7 +721,9 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
 
 def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | None) -> Any:
     cloned = deepcopy(plan)
-    if not variant_config or not list(variant_config.get("swaps") or []):
+    swaps = list((variant_config or {}).get("swaps") or [])
+    supports = list((variant_config or {}).get("supports") or [])
+    if not variant_config or (not swaps and not supports):
         diagnostics = getattr(cloned, "planning_diagnostics", {}) or {}
         diagnostics["variant"] = variant_config or {"variant_id": "baseline", "strategy": "baseline"}
         cloned.planning_diagnostics = diagnostics
@@ -604,7 +732,8 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
     diagnostics = getattr(cloned, "planning_diagnostics", {}) or {}
     selected_sections = list(diagnostics.get("selected_sections") or [])
     overrides: list[dict[str, Any]] = []
-    for swap in list(variant_config.get("swaps") or []):
+    support_overrides: list[dict[str, Any]] = []
+    for swap in swaps:
         raw_section_index = swap.get("section_index", -1)
         try:
             section_index = int(raw_section_index)
@@ -647,6 +776,54 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
                 "error_delta": swap.get("error_delta"),
             }
         )
+    for support in supports:
+        raw_section_index = support.get("section_index", -1)
+        try:
+            section_index = int(raw_section_index)
+        except (TypeError, ValueError):
+            section_index = -1
+        if section_index < 0 or section_index >= len(cloned.sections):
+            continue
+
+        section = cloned.sections[section_index]
+        support_parent = str(support.get("support_parent") or "").strip()
+        support_section_label = str(support.get("support_section_label") or "").strip()
+        if not support_parent or not support_section_label:
+            continue
+
+        section.support_parent = support_parent
+        section.support_section_label = support_section_label
+        try:
+            section.support_gain_db = float(support.get("support_gain_db", -10.0) or -10.0)
+        except (TypeError, ValueError):
+            section.support_gain_db = -10.0
+        section.support_mode = str(support.get("support_mode") or "filtered_counterlayer")
+
+        if 0 <= section_index < len(selected_sections):
+            diag = dict(selected_sections[section_index])
+            diag["support_recipe"] = {
+                "parent_id": section.support_parent,
+                "window_label": section.support_section_label,
+                "gain_db": round(float(section.support_gain_db or -10.0), 3),
+                "mode": section.support_mode,
+            }
+            selected_sections[section_index] = diag
+
+        support_overrides.append(
+            {
+                "section_index": section_index,
+                "section_label": section.label,
+                "support_parent": section.support_parent,
+                "support_section_label": section.support_section_label,
+                "support_gain_db": round(float(section.support_gain_db or -10.0), 3),
+                "support_mode": section.support_mode,
+                "strategy": variant_config.get("strategy"),
+                "kind": support.get("kind"),
+                "planner_error": support.get("planner_error"),
+                "error_delta": support.get("error_delta"),
+            }
+        )
+
     diagnostics["selected_sections"] = selected_sections
     diagnostics["variant"] = {
         "variant_id": variant_config.get("variant_id"),
@@ -654,11 +831,20 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
         "strategy": variant_config.get("strategy"),
         "variant_mode": variant_config.get("variant_mode"),
         "overrides": overrides,
+        "support_overrides": support_overrides,
     }
     cloned.planning_diagnostics = diagnostics
-    cloned.planning_notes = list(getattr(cloned, "planning_notes", []) or []) + [
-        f"Auto-shortlist variant applied: {variant_config.get('label') or variant_config.get('variant_id')}."
-    ]
+    note_parts: list[str] = [f"Auto-shortlist variant applied: {variant_config.get('label') or variant_config.get('variant_id')}." ]
+    if support_overrides:
+        note_parts.append(
+            "Integrated support overlays: "
+            + ", ".join(
+                f"{item['section_label']}<-{item['support_parent']}:{item['support_section_label']}"
+                for item in support_overrides
+            )
+            + "."
+        )
+    cloned.planning_notes = list(getattr(cloned, "planning_notes", []) or []) + note_parts
     return cloned
 
 
@@ -672,7 +858,7 @@ def _render_fusion_candidate(
     candidate_id: str,
     variant_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    variant = variant_config or {"variant_id": candidate_id, "label": candidate_id, "strategy": "baseline", "swaps": []}
+    variant = variant_config or {"variant_id": candidate_id, "label": candidate_id, "strategy": "baseline", "swaps": [], "supports": []}
     plan = _apply_auto_shortlist_variant(base_plan, variant)
     result = _render_fusion_plan_candidate(song_a, song_b, plan, outdir, variant_config=variant)
     result["candidate_id"] = candidate_id
