@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 16:33 EDT (planner-risk wiring into resolver support envelope + pair2 rerun)
+Last updated: 2026-03-27 18:20 EDT (transition-intelligence render experiment benchmarked + rolled back)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -39,6 +39,10 @@ Owner: execution operator
          - patch: explicit planner support risk/collision is now wired into resolver support envelope shaping.
          - policy: `pass+floor`, `promotion_blocked=false`, winner still adaptive dual-support (`support_01_payoff_build_A`).
          - winner metrics: `song_likeness=58.5`, `transition=53.7`, `overall=70.0`, `selection_score=73.685`.
+      - `runs/quality_push_pair2_transition_intelligence_20260327_1815`
+        - experiment: renderer-side dynamic transition-intelligence shaping (spectral-density-driven entry/tail filter/notch modulation).
+        - outcome: no transition lift (`transition=53.6`), selection-score regression (`73.611` vs `73.685`), floor stability held (`pass+floor`, `song_likeness=58.4`, `overall=70.0`).
+        - action: experiment rolled back (no code promoted) to preserve best-known branch state.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -49,7 +53,7 @@ Owner: execution operator
 
 ## Next Task (auto-start immediately after current)
 1. **Push transition over 53.8 via section-specific support envelope offsets (build vs payoff) and rerun pair2**
-   - Why: explicit planner-risk wiring lifted selection score and recovered transition to 53.7, but the bottleneck remains below the 53.8 target.
+   - Why: broad renderer transition-intelligence modulation regressed selection score; next pass should target localized support-envelope offsets only (build/payoff handoff sections) to avoid collateral color shifts.
    - Guardrails:
      - preserve winner policy `pass+floor`,
      - do not regress song_likeness below 58.0,
