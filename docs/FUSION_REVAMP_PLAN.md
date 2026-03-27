@@ -57,6 +57,9 @@ Build fused songs that feel like **one intentional composition**, not two tracks
 - One concrete change per cycle.
 - Every cycle must include:
   1) change, 2) tests, 3) one benchmark run, 4) metric delta capture.
+- Every major cycle refreshes the external research brief:
+  - `python scripts/generate_music_research_brief.py`
+  - review `docs/research/MUSIC_SOTA_TRACKER.md` before selecting the next algorithmic change.
 
 ## Current Benchmark Status (2026-03-26)
 - ✅ Pair1 (`relax_clip` x `treasure_clip`):
