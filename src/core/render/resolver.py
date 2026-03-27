@@ -309,6 +309,18 @@ def _resolve_support_overlay_profile(
         gain_db -= 1.25
         fade_in_sec = min(1.1, max(fade_in_sec * 1.25, target_duration_sec * 0.18))
         fade_out_sec = min(1.25, max(fade_out_sec * 1.2, target_duration_sec * 0.22))
+
+        # Let shortlist risk policy influence resolver envelope in explicit handoffs:
+        # lower incoming support_gain_db (more negative) indicates higher-risk seams,
+        # so apply extra ducking/edge softening there and preserve more identity on low-risk seams.
+        if gain_db <= -11.25:
+            gain_db -= 0.45
+            fade_in_sec = min(1.25, max(fade_in_sec * 1.12, target_duration_sec * 0.2))
+            fade_out_sec = min(1.35, max(fade_out_sec * 1.1, target_duration_sec * 0.24))
+        elif gain_db >= -9.25:
+            gain_db += 0.2
+            fade_in_sec = max(0.2, fade_in_sec * 0.94)
+            fade_out_sec = max(0.24, fade_out_sec * 0.96)
     elif mode in {'same_parent_flow', 'backbone_flow'}:
         gain_db += 0.35
         fade_in_sec = min(fade_in_sec, max(0.18, target_duration_sec * 0.1))
