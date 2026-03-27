@@ -1,23 +1,23 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-26 18:23 EDT (post baseline donor-combo guard + pro rerun)
+Last updated: 2026-03-26 20:23 EDT (post donor-path combo fallback + pro rerun)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Diagnose why baseline still emits only parent-A combo candidates under safe combo gating**
-   - Why: shipped baseline donor-combo filter in `_build_auto_shortlist_variant_configs`, but rerun `quality_push_after_baseline_donor_combo_20260326_1815` still produced baseline `combo_01_verse_payoff` with swaps `['A', 'A']` and `parent_balance=0.0`.
+1. **Raise donor identity without sacrificing song-likeness via intro-heavy fallback combos**
+   - Why: rerun `quality_push_after_baseline_donor_fallback_20260326_202145` now surfaces baseline donor-bearing combo (`combo_01_intro_payoff`, `parent_balance=0.333`), confirming combo construction no longer collapses to all-`A`. But quality regressed (`song_likeness=52.7`, `overall=66.9`) and hard floor still fails.
    - Concrete change target:
-     - instrument/adjust combo construction so baseline can surface at least one safe cross-parent core donor combo candidate when donor opportunities exist but are currently filtered out by per-section representative or combo safety gating.
+     - keep donor-bearing fallback availability, but re-rank/guard baseline combo construction so intro-donor fallback is used only when it does not displace stronger core-structure candidates (or pair intro donor with less destructive companion section).
    - Files likely touched:
      - `ai_dj.py`
      - `tests/test_auto_shortlist_fusion.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Run one pro benchmark and verify floor progress after combo-candidate diagnosis patch**
+1. **Run one pro benchmark and verify floor progress after fallback-reranking patch**
    - Command:
      - `python ai_dj.py fusion runs/quality_push_after_eaa9ee0_20260325_231707/relax_clip.mp3 runs/quality_push_after_eaa9ee0_20260325_231707/treasure_clip.mp3 --arrangement-mode pro --output runs/quality_push_after_<new_commit>_<timestamp>`
    - Success check:
-     - baseline candidate set includes at least one donor-bearing combo or single with `parent_balance > 0`, and `floor_pass_count >= 1` or best `song_likeness >= 55.0`
+     - baseline set still includes at least one donor-bearing candidate (`parent_balance > 0`) while best `song_likeness` recovers to >= `54.2` and trends toward floor (`55.0`).
 
 ## Blocked Tasks
 1. **Promote a pro winner artifact automatically**

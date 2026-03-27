@@ -453,6 +453,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             error_delta = 0.0
         return donor_bias, error_delta
 
+    donor_by_section: dict[int, dict[str, Any]] = {}
     for op in opportunities:
         sec_idx = _section_index_of(op, default=-1)
         if sec_idx < 0:
@@ -460,23 +461,53 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         existing = by_section.get(sec_idx)
         if existing is None or _combo_section_rank(op) < _combo_section_rank(existing):
             by_section[sec_idx] = op
-    ordered_section_ops = [by_section[idx] for idx in sorted(by_section)]
+        if _is_core_donor_op(op):
+            donor_existing = donor_by_section.get(sec_idx)
+            if donor_existing is None or _combo_section_rank(op) < _combo_section_rank(donor_existing):
+                donor_by_section[sec_idx] = op
+
+    section_candidates: dict[int, list[dict[str, Any]]] = {}
+    for sec_idx in sorted(by_section):
+        choices = [by_section[sec_idx]]
+        donor_choice = donor_by_section.get(sec_idx)
+        if donor_choice is not None and _op_identity(donor_choice) != _op_identity(choices[0]):
+            choices.append(donor_choice)
+        section_candidates[sec_idx] = choices
 
     combo_candidates: list[tuple[dict[str, Any], dict[str, Any], float]] = []
-    for left_idx in range(len(ordered_section_ops)):
-        for right_idx in range(left_idx + 1, len(ordered_section_ops)):
-            left = ordered_section_ops[left_idx]
-            right = ordered_section_ops[right_idx]
-            if _section_index_of(left, default=-1) == _section_index_of(right, default=-1):
-                continue
-            combo_error = float(left.get("error_delta", 0.0) or 0.0) + float(right.get("error_delta", 0.0) or 0.0)
-            if combo_error > 1.65:
-                continue
-            combo_candidates.append((left, right, combo_error))
+    seen_combo_pairs: set[tuple[tuple[int, str, str], tuple[int, str, str]]] = set()
+    ordered_sections = sorted(section_candidates)
+    for left_idx in range(len(ordered_sections)):
+        for right_idx in range(left_idx + 1, len(ordered_sections)):
+            left_section = ordered_sections[left_idx]
+            right_section = ordered_sections[right_idx]
+            left_choices = section_candidates[left_section]
+            right_choices = section_candidates[right_section]
+            for left in left_choices:
+                for right in right_choices:
+                    if _section_index_of(left, default=-1) == _section_index_of(right, default=-1):
+                        continue
+                    left_identity = _op_identity(left)
+                    right_identity = _op_identity(right)
+                    pair_identity = tuple(sorted((left_identity, right_identity)))
+                    if pair_identity in seen_combo_pairs:
+                        continue
+                    seen_combo_pairs.add(pair_identity)
+                    combo_error = float(left.get("error_delta", 0.0) or 0.0) + float(right.get("error_delta", 0.0) or 0.0)
+                    if combo_error > 1.65:
+                        continue
+                    combo_candidates.append((left, right, combo_error))
 
     def _combo_has_core_donor(item: tuple[dict[str, Any], dict[str, Any], float]) -> bool:
         left, right, _ = item
         return _is_core_donor_op(left) or _is_core_donor_op(right)
+
+    def _combo_has_any_donor(item: tuple[dict[str, Any], dict[str, Any], float]) -> bool:
+        left, right, _ = item
+        return (
+            str(left.get("alternate_parent") or "") != str(left.get("backbone_parent") or "")
+            or str(right.get("alternate_parent") or "") != str(right.get("backbone_parent") or "")
+        )
 
     def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, float, int, int]:
         left, right, combo_error = item
@@ -500,9 +531,13 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         )
 
     if enforce_baseline_core_donor_combo:
-        donor_combo_candidates = [item for item in combo_candidates if _combo_has_core_donor(item)]
-        if donor_combo_candidates:
-            combo_candidates = donor_combo_candidates
+        core_donor_combo_candidates = [item for item in combo_candidates if _combo_has_core_donor(item)]
+        if core_donor_combo_candidates:
+            combo_candidates = core_donor_combo_candidates
+        else:
+            any_donor_combo_candidates = [item for item in combo_candidates if _combo_has_any_donor(item)]
+            if any_donor_combo_candidates:
+                combo_candidates = any_donor_combo_candidates
 
     combo_candidates.sort(key=_combo_priority)
 

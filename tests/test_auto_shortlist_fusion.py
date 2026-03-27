@@ -428,3 +428,98 @@ def test_build_auto_shortlist_variant_configs_baseline_combo_forces_core_donor_w
 
     assert combo_labels & {'verse', 'build', 'payoff', 'bridge'}
     assert 'B' in combo_parents
+
+
+def test_build_auto_shortlist_variant_configs_baseline_combo_keeps_donor_paths_when_same_parent_options_rank_higher_per_section():
+    def _section_with_ranked_alternates(label: str, donor_window: str, same_parent_window: str):
+        return {
+            'label': label,
+            'selected_parent': 'A',
+            'selected_window_label': f'{label}_selected',
+            'selection_rank': 1,
+            'candidate_shortlist': [
+                {
+                    'rank': 1,
+                    'parent_id': 'A',
+                    'window_label': f'{label}_selected',
+                    'selected': True,
+                    'planner_error': 0.20,
+                    'error_delta_vs_selected': 0.0,
+                    'score_breakdown': {'stretch_ratio': 1.0, 'stretch_gate': 0.0, 'seam_risk': 0.2, 'transition_viability': 0.3},
+                },
+                {
+                    'rank': 2,
+                    'parent_id': 'A',
+                    'window_label': same_parent_window,
+                    'selected': False,
+                    'planner_error': 0.24,
+                    'error_delta_vs_selected': 0.09,
+                    'score_breakdown': {'stretch_ratio': 1.02, 'stretch_gate': 0.0, 'seam_risk': 0.22, 'transition_viability': 0.31},
+                },
+                {
+                    'rank': 3,
+                    'parent_id': 'B',
+                    'window_label': donor_window,
+                    'selected': False,
+                    'planner_error': 0.28,
+                    'error_delta_vs_selected': 0.14,
+                    'score_breakdown': {'stretch_ratio': 1.05, 'stretch_gate': 0.0, 'seam_risk': 0.25, 'transition_viability': 0.35},
+                },
+            ],
+            'cross_parent_best_alternate': {
+                'rank': 3,
+                'parent_id': 'B',
+                'window_label': donor_window,
+                'selected': False,
+                'planner_error': 0.28,
+                'error_delta_vs_selected': 0.14,
+                'score_breakdown': {'stretch_ratio': 1.05, 'stretch_gate': 0.0, 'seam_risk': 0.25, 'transition_viability': 0.35},
+            },
+        }
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'baseline',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [
+                _section_with_ranked_alternates('payoff', 'payoff_donor', 'payoff_same_parent'),
+                _section_with_ranked_alternates('build', 'build_donor', 'build_same_parent'),
+            ],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    combo = next(config for config in configs if config['strategy'] == 'dual_section_alternate')
+    combo_parents = {str(swap.get('alternate_parent') or '') for swap in combo.get('swaps', [])}
+
+    assert 'B' in combo_parents
+
+
+def test_build_auto_shortlist_variant_configs_baseline_combo_falls_back_to_non_core_donor_when_core_donor_is_unavailable():
+    intro_donor = _make_section_with_alternate('intro', 'A', 'phrase_0_2', 'B', 'phrase_6_8')
+    verse_same_parent = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'A', 'phrase_8_10')
+    payoff_same_parent = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'A', 'phrase_10_12')
+
+    # Remove core donor opportunities so baseline has only intro donor support.
+    verse_same_parent['cross_parent_best_alternate'] = None
+    payoff_same_parent['cross_parent_best_alternate'] = None
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'baseline',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [intro_donor, verse_same_parent, payoff_same_parent],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    combo = next(config for config in configs if config['strategy'] == 'dual_section_alternate')
+    combo_labels = {str(swap.get('section_label') or '').strip().lower() for swap in combo.get('swaps', [])}
+    combo_parents = {str(swap.get('alternate_parent') or '') for swap in combo.get('swaps', [])}
+
+    assert 'intro' in combo_labels
+    assert 'B' in combo_parents
