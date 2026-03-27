@@ -319,7 +319,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             "swaps": [],
         }
     ]
-    if max_variants <= 1 or not opportunities:
+    if max_variants <= 1:
         return configs[:max_variants]
 
     def _section_index_of(op: dict[str, Any], *, default: int = -1) -> int:
@@ -378,22 +378,82 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             )
         )
 
-    def _support_gain_db_for_label(section_label: str) -> float:
-        if section_label == "payoff":
-            return -11.0
-        if section_label == "build":
-            return -10.5
-        return -9.5
+    def _support_recipe_for_section(
+        section_label: str,
+        *,
+        arrangement_mode_local: str,
+        error_delta: float,
+        seam_risk: float,
+        transition_viability: float,
+        stretch_ratio: float,
+        selected_parent: str,
+        backbone_parent: str,
+        source_kind: str,
+    ) -> dict[str, Any]:
+        normalized_label = _normalize_section_label(section_label)
+        base_gain = -9.5
+        if normalized_label == "payoff":
+            base_gain = -11.0
+        elif normalized_label == "build":
+            base_gain = -10.5
+        elif normalized_label == "bridge":
+            base_gain = -10.0
 
-    def _support_mode_for_label(section_label: str) -> str:
-        if section_label == "build":
-            return "foreground_counterlayer"
-        return "filtered_counterlayer"
+        stretch_pressure = min(1.0, abs(float(stretch_ratio or 1.0) - 1.0) * 3.0)
+        risk = max(0.0, min(1.0, max(float(seam_risk or 0.0), float(transition_viability or 0.0), stretch_pressure)))
+
+        gain = float(base_gain)
+        if arrangement_mode_local == "adaptive":
+            gain -= 0.25
+        if normalized_label in {"build", "payoff"}:
+            gain -= 0.35
+        if source_kind in {"support_overlay_counterparent", "support_overlay_fallback"}:
+            gain -= 0.20
+
+        if risk >= 0.75:
+            gain -= 1.20
+        elif risk >= 0.55:
+            gain -= 0.70
+        elif risk <= 0.30 and error_delta <= 0.35:
+            gain += 0.35
+
+        if error_delta >= 1.80:
+            gain -= 0.50
+        elif error_delta <= 0.20:
+            gain += 0.20
+
+        if selected_parent and backbone_parent and selected_parent != backbone_parent:
+            gain -= 0.35
+
+        gain = round(max(-14.0, min(-8.0, gain)), 2)
+
+        mode = "filtered_counterlayer"
+        if normalized_label in {"build", "verse"} and risk <= 0.55 and error_delta <= 1.20:
+            mode = "foreground_counterlayer"
+        if risk >= 0.70:
+            mode = "filtered_counterlayer"
+        if selected_parent and backbone_parent and selected_parent != backbone_parent:
+            mode = "filtered_counterlayer"
+
+        policy = {
+            "risk": round(float(risk), 3),
+            "base_gain_db": float(base_gain),
+            "arrangement_mode": arrangement_mode_local or "unknown",
+            "source_kind": source_kind,
+            "error_delta": round(float(error_delta or 0.0), 3),
+        }
+
+        return {
+            "support_gain_db": gain,
+            "support_mode": mode,
+            "support_policy": policy,
+        }
 
     def _collect_core_support_candidates() -> list[dict[str, Any]]:
         diagnostics = getattr(plan, "planning_diagnostics", {}) or {}
         selected_sections = list(diagnostics.get("selected_sections") or [])
         backbone_parent = str(((diagnostics.get("backbone_plan") or {}).get("backbone_parent") or "A"))
+        arrangement_mode_local = str((diagnostics.get("arrangement_mode") or "")).strip().lower()
         raw_candidates: list[dict[str, Any]] = []
 
         for index, section_diag in enumerate(selected_sections):
@@ -436,14 +496,27 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 if stretch_gate > 0.85 or stretch_ratio > 1.30 or seam_risk > 0.92 or transition_viability > 0.95:
                     continue
 
+                recipe = _support_recipe_for_section(
+                    section_label_raw,
+                    arrangement_mode_local=arrangement_mode_local,
+                    error_delta=error_delta,
+                    seam_risk=seam_risk,
+                    transition_viability=transition_viability,
+                    stretch_ratio=stretch_ratio,
+                    selected_parent=selected_parent,
+                    backbone_parent=backbone_parent,
+                    source_kind="support_overlay",
+                )
+
                 raw_candidates.append(
                     {
                         "section_index": index,
                         "section_label": section_label_raw,
                         "support_parent": support_parent,
                         "support_section_label": support_label,
-                        "support_gain_db": _support_gain_db_for_label(section_label),
-                        "support_mode": _support_mode_for_label(section_label),
+                        "support_gain_db": recipe["support_gain_db"],
+                        "support_mode": recipe["support_mode"],
+                        "support_policy": recipe["support_policy"],
                         "selection_rank": int(alt.get("rank") or section_diag.get("selection_rank") or 1),
                         "error_delta": error_delta,
                         "planner_error": float(alt.get("planner_error", 0.0) or 0.0),
@@ -488,15 +561,28 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 if not backbone_parent or selected_parent == backbone_parent:
                     continue
 
+                synthesized_error_delta = 0.85
+                recipe = _support_recipe_for_section(
+                    section_label_raw,
+                    arrangement_mode_local=arrangement_mode_local,
+                    error_delta=synthesized_error_delta,
+                    seam_risk=0.55,
+                    transition_viability=0.52,
+                    stretch_ratio=1.0,
+                    selected_parent=selected_parent,
+                    backbone_parent=backbone_parent,
+                    source_kind="support_overlay_counterparent",
+                )
                 synthesized = {
                     "section_index": index,
                     "section_label": section_label_raw,
                     "support_parent": backbone_parent,
                     "support_section_label": selected_window_label,
-                    "support_gain_db": _support_gain_db_for_label(section_label) - 1.5,
-                    "support_mode": "filtered_counterlayer",
+                    "support_gain_db": recipe["support_gain_db"],
+                    "support_mode": recipe["support_mode"],
+                    "support_policy": recipe["support_policy"],
                     "selection_rank": int(section_diag.get("selection_rank") or 999),
-                    "error_delta": 0.85,
+                    "error_delta": synthesized_error_delta,
                     "planner_error": 0.0,
                     "backbone_parent": backbone_parent,
                     "kind": "support_overlay_counterparent",
@@ -520,13 +606,26 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 error_delta = float(op.get("error_delta", 99.0) or 99.0)
                 if error_delta > 1.35:
                     continue
+                score_breakdown = dict(op.get("score_breakdown") or {})
+                recipe = _support_recipe_for_section(
+                    section_label,
+                    arrangement_mode_local=arrangement_mode_local,
+                    error_delta=error_delta,
+                    seam_risk=float(score_breakdown.get("seam_risk", 0.45) or 0.45),
+                    transition_viability=float(score_breakdown.get("transition_viability", 0.45) or 0.45),
+                    stretch_ratio=float(score_breakdown.get("stretch_ratio", 1.0) or 1.0),
+                    selected_parent=selected_parent,
+                    backbone_parent=backbone_parent,
+                    source_kind="support_overlay_fallback",
+                )
                 synthesized = {
                     "section_index": sec_idx,
                     "section_label": section_label,
                     "support_parent": alt_parent,
                     "support_section_label": str(op.get("alternate_window_label") or ""),
-                    "support_gain_db": _support_gain_db_for_label(section_label),
-                    "support_mode": _support_mode_for_label(section_label),
+                    "support_gain_db": recipe["support_gain_db"],
+                    "support_mode": recipe["support_mode"],
+                    "support_policy": recipe["support_policy"],
                     "selection_rank": int(op.get("selection_rank") or 999),
                     "error_delta": error_delta,
                     "planner_error": float(op.get("planner_error", 0.0) or 0.0),
@@ -553,6 +652,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             best_by_section.values(),
             key=lambda item: (
                 section_priority.get(_normalize_section_label(item.get("section_label")), 9),
+                float(((item.get("support_policy") or {}).get("risk", 0.0) or 0.0)),
                 float(item.get("error_delta", 99.0) or 99.0),
                 int(item.get("selection_rank") or 999),
             ),
@@ -902,6 +1002,8 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
             section.support_gain_db = -10.0
         section.support_mode = str(support.get("support_mode") or "filtered_counterlayer")
 
+        support_policy = dict(support.get("support_policy") or {})
+
         if 0 <= section_index < len(selected_sections):
             diag = dict(selected_sections[section_index])
             diag["support_recipe"] = {
@@ -909,6 +1011,7 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
                 "window_label": section.support_section_label,
                 "gain_db": round(float(section.support_gain_db or -10.0), 3),
                 "mode": section.support_mode,
+                "policy": support_policy,
             }
             selected_sections[section_index] = diag
 
@@ -920,6 +1023,7 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
                 "support_section_label": section.support_section_label,
                 "support_gain_db": round(float(section.support_gain_db or -10.0), 3),
                 "support_mode": section.support_mode,
+                "support_policy": support_policy,
                 "strategy": variant_config.get("strategy"),
                 "kind": support.get("kind"),
                 "planner_error": support.get("planner_error"),

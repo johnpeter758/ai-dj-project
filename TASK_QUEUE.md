@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 11:06 EDT (support-overlay promoted to primary pro-mode candidate path + pair2 rerun)
+Last updated: 2026-03-27 11:20 EDT (adaptive support-policy intelligence patch + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -9,15 +9,25 @@ Owner: execution operator
    - Latest checkpoint:
      - patch: `ai_dj.py::_build_auto_shortlist_variant_configs` now reserves a support-overlay slot for both `arrangement_mode=adaptive` and `arrangement_mode=baseline` whenever support candidates exist (`batch_size >= 3`).
      - effect: support overlays are no longer baseline fallback-only; both mode candidate sets now keep an integrated-support path.
-     - regression: `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_baseline_keeps_support_variant_even_with_core_donor_swaps` added.
+     - patch: replaced rigid support defaults with an adaptive support-policy recipe:
+       - support gain + mode now respond to seam risk, transition viability, stretch pressure, error delta, arrangement mode, and backbone/donor context.
+       - support payloads now include `support_policy` diagnostics for explainable shortlist decisions.
+       - removed rigid early return that skipped support overlays when swap opportunities were absent.
+     - regressions:
+       - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_baseline_keeps_support_variant_even_with_core_donor_swaps`
+       - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk`
      - validation:
-       - `pytest -q tests/test_auto_shortlist_fusion.py -k "variant_configs"` → `15 passed, 4 deselected`.
-       - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py tests/test_core_planner.py tests/test_render_stack.py` → `219 passed, 1 skipped`.
-     - artifact rerun: `runs/quality_push_pair2_support_primary_baseline_20260327_110021`
-       - policy: `pass+floor`, `promotion_blocked=false`
-       - winner: adaptive `dual_section_support` (`support_01_payoff_build_A`)
-       - winner metrics: `song_likeness=58.2`, `groove=64.3`, `structure=92.2`, `transition=53.8`, `overall=69.9`, `selection_score=73.571`
-       - baseline set now includes integrated support variant (`support_01_payoff_B`, gate=pass).
+       - `pytest -q tests/test_auto_shortlist_fusion.py -k "variant_configs or support_policy_adapts"` → `16 passed, 4 deselected`.
+       - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py tests/test_core_planner.py tests/test_render_stack.py` → `220 passed, 1 skipped`.
+     - artifact reruns:
+       - `runs/quality_push_pair2_support_primary_baseline_20260327_110021`
+         - policy: `pass+floor`, `promotion_blocked=false`
+         - winner: adaptive `dual_section_support` (`support_01_payoff_build_A`)
+         - winner metrics: `song_likeness=58.2`, `groove=64.3`, `structure=92.2`, `transition=53.8`, `overall=69.9`, `selection_score=73.571`
+       - `runs/quality_push_pair2_intelligent_support_policy_20260327_111418`
+         - policy: `pass+floor`, `promotion_blocked=false`
+         - winner: adaptive `dual_section_support`
+         - winner metrics: `song_likeness=58.3`, `transition=53.8`, `overall=69.9` (stable pass + slight song-likeness lift).
    - Focus:
      - transition/mix polish on support-entry + release envelopes,
      - preserve floor-pass and anti-medley guardrails while pushing transition above current plateau.

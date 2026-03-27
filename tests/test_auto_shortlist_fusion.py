@@ -612,6 +612,54 @@ def test_build_auto_shortlist_variant_configs_baseline_keeps_support_variant_eve
     assert any(config['strategy'] == 'dual_section_alternate' for config in configs)
 
 
+def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk():
+    def _build_plan_with_risk(*, seam_risk: float, transition_viability: float):
+        build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
+        build['cross_parent_best_alternate'] = {
+            'rank': 2,
+            'parent_id': 'B',
+            'window_label': 'phrase_9_11',
+            'selected': False,
+            'planner_error': 0.31,
+            'error_delta_vs_selected': 0.12,
+            'score_breakdown': {
+                'stretch_ratio': 1.02,
+                'stretch_gate': 0.0,
+                'seam_risk': seam_risk,
+                'transition_viability': transition_viability,
+            },
+        }
+        build['candidate_shortlist'][-1] = dict(build['cross_parent_best_alternate'])
+        return SimpleNamespace(
+            planning_diagnostics={
+                'arrangement_mode': 'baseline',
+                'backbone_plan': {'backbone_parent': 'A'},
+                'selected_sections': [build],
+            },
+            sections=[],
+            planning_notes=[],
+        )
+
+    high_risk_configs = ai_dj._build_auto_shortlist_variant_configs(
+        _build_plan_with_risk(seam_risk=0.84, transition_viability=0.78),
+        batch_size=3,
+        variant_mode='safe',
+    )
+    high_risk_support = next(config for config in high_risk_configs if config['strategy'] == 'single_section_support')['supports'][0]
+
+    low_risk_configs = ai_dj._build_auto_shortlist_variant_configs(
+        _build_plan_with_risk(seam_risk=0.16, transition_viability=0.22),
+        batch_size=3,
+        variant_mode='safe',
+    )
+    low_risk_support = next(config for config in low_risk_configs if config['strategy'] == 'single_section_support')['supports'][0]
+
+    assert high_risk_support['support_policy']['risk'] > low_risk_support['support_policy']['risk']
+    assert high_risk_support['support_mode'] == 'filtered_counterlayer'
+    assert low_risk_support['support_mode'] == 'foreground_counterlayer'
+    assert high_risk_support['support_gain_db'] < low_risk_support['support_gain_db']
+
+
 def test_build_auto_shortlist_variant_configs_adaptive_synthesizes_counterparent_support_when_core_options_are_same_parent_only():
     plan = SimpleNamespace(
         planning_diagnostics={
@@ -698,3 +746,4 @@ def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_dia
     assert diag['support_recipe']['parent_id'] == 'B'
     assert diag['support_recipe']['window_label'] == 'phrase_5_7'
     assert diag['support_recipe']['mode'] == 'filtered_counterlayer'
+    assert isinstance(diag['support_recipe']['policy'], dict)
