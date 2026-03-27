@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 06:29 EDT (support tail vocal-mid notch patch + pair2 rerun)
+Last updated: 2026-03-27 08:15 EDT (support entry vocal-mid notch patch + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -10,6 +10,9 @@ Owner: execution operator
      - patch: `src/core/render/renderer.py::_apply_support_entry_shape` now adds build/payoff release-tail vocal-mid notching (`320-2100 Hz`) for filtered support/counterlayer overlays after tail low-pass shaping.
      - regressions: `tests/test_render_stack.py` includes new build-vs-verse vocal-mid tail notch coverage; full suite remains green (`215 passed, 1 skipped` with planner/shortlist/pro-quality stacks).
      - artifact rerun: `runs/quality_push_pair2_support_tail_mid_notch_20260327_0615` kept stable floor-pass winner (`pass+floor`, adaptive dual-support) with transition holding at `53.8`, song-likeness `58.2`, and slight selection-score lift (`73.461 -> 73.527`).
+    - patch: `_apply_support_entry_shape` now applies build/payoff-only early vocal-presence mid notch blending (`380-2600 Hz`) during filtered support/counterlayer entry (in addition to existing entry duck + dynamic HP).
+    - regressions: `tests/test_render_stack.py::test_apply_support_entry_shape_build_entry_notches_vocal_presence_mids_more_than_verse_entry` added; targeted stack `8 passed`.
+    - artifact rerun: `runs/quality_push_pair2_support_entry_mid_notch_20260327_0815` stayed floor-pass stable with identical winner metrics (`song_likeness=58.2`, `transition=53.8`, `overall=69.8`, `selection_score=73.527`).
    - Focus:
      - section-label-aware support entry/release shaping for build/payoff overlays,
      - raise transition clarity and mix sanity without reducing integrated two-parent identity.

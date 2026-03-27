@@ -1426,6 +1426,29 @@ def test_apply_support_entry_shape_build_tail_notches_vocal_presence_mids_more_t
     assert build_proj < verse_proj * 0.82
 
 
+def test_apply_support_entry_shape_build_entry_notches_vocal_presence_mids_more_than_verse_entry():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    mid_tone = np.sin(2 * np.pi * 1000.0 * t).astype(np.float32)
+    segment = np.vstack([mid_tone, mid_tone])
+    work = Dummy(order_type='section_support', role='filtered_counterlayer', fade_in_sec=0.65, fade_out_sec=0.25, target_duration_sec=seconds)
+
+    build_shaped = _apply_support_entry_shape(segment, sr, work, Dummy(label='build'))
+    verse_shaped = _apply_support_entry_shape(segment, sr, work, Dummy(label='verse'))
+
+    head_slice = slice(int(0.03 * sr), int(0.26 * sr))
+    t_head = t[: head_slice.stop - head_slice.start]
+    carrier = np.sin(2 * np.pi * 1000.0 * t_head)
+    build_proj = np.abs(np.mean(build_shaped[0, head_slice] * carrier))
+    verse_proj = np.abs(np.mean(verse_shaped[0, head_slice] * carrier))
+    assert build_proj < verse_proj * 0.82
+
+
 def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
     sr = 44100
     seconds = 2.0

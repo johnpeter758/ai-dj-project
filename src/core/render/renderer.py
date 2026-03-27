@@ -424,7 +424,15 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
             hp_start = 240.0 if section_label in {'build', 'payoff'} else 200.0
             hp_end = 110.0
             cutoff = np.linspace(hp_start, hp_end, entry_samples, endpoint=True, dtype=np.float32)
-            out[:, :entry_samples] = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
+            intro = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
+            if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
+                # Early donor-support entry is where lead-vocal masking spikes.
+                # Keep support identity but bias first moments away from vocal-presence mids.
+                notched = _bandstop(intro, sr, 380.0, 2600.0)
+                notch_mix = np.linspace(1.0, 0.0, entry_samples, endpoint=True, dtype=np.float32)
+                notch_mix = np.power(notch_mix, np.float32(1.4))[np.newaxis, :]
+                intro = intro * (1.0 - 0.28 * notch_mix) + notched * (0.28 * notch_mix)
+            out[:, :entry_samples] = intro
 
     release_scale = 1.35 if section_label in {'build', 'payoff'} else 1.0
     release_sec = float(
