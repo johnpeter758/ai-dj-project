@@ -472,9 +472,38 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             if candidate_rank < existing_rank:
                 best_by_section[sec_idx] = candidate
 
-        # Fallback: if planner diagnostics did not expose explicit support alternates,
-        # synthesize support overlays from safe donor swap opportunities so adaptive mode
-        # can still emit at least one integrated two-parent candidate.
+        # Fallback stage 1: if explicit alternates are missing, synthesize
+        # counter-parent supports on donor-led core sections so adaptive variants
+        # can become integrated two-parent arrangements instead of A/B handoffs.
+        if not best_by_section:
+            for index, section_diag in enumerate(selected_sections):
+                section_label_raw = section_diag.get("label")
+                section_label = _normalize_section_label(section_label_raw)
+                if section_label not in core_labels:
+                    continue
+                selected_parent = str(section_diag.get("selected_parent") or "").strip()
+                selected_window_label = str(section_diag.get("selected_window_label") or "").strip()
+                if not selected_parent or not selected_window_label:
+                    continue
+                if not backbone_parent or selected_parent == backbone_parent:
+                    continue
+
+                synthesized = {
+                    "section_index": index,
+                    "section_label": section_label_raw,
+                    "support_parent": backbone_parent,
+                    "support_section_label": selected_window_label,
+                    "support_gain_db": _support_gain_db_for_label(section_label) - 1.5,
+                    "support_mode": "filtered_counterlayer",
+                    "selection_rank": int(section_diag.get("selection_rank") or 999),
+                    "error_delta": 0.85,
+                    "planner_error": 0.0,
+                    "backbone_parent": backbone_parent,
+                    "kind": "support_overlay_counterparent",
+                }
+                best_by_section[index] = synthesized
+
+        # Fallback stage 2: if still empty, synthesize supports from safe donor swap opportunities.
         if not best_by_section:
             for op in opportunities:
                 if not _is_core_donor_op(op):
@@ -483,8 +512,9 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 if sec_idx < 0:
                     continue
                 alt_parent = str(op.get("alternate_parent") or "")
+                selected_parent = str(op.get("selected_parent") or "")
                 backbone_parent = str(op.get("backbone_parent") or "")
-                if not alt_parent or alt_parent == backbone_parent:
+                if not alt_parent or alt_parent == backbone_parent or (selected_parent and alt_parent == selected_parent):
                     continue
                 section_label = str(op.get("section_label") or "")
                 error_delta = float(op.get("error_delta", 99.0) or 99.0)
@@ -518,7 +548,16 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 if synthesized_rank < existing_rank:
                     best_by_section[sec_idx] = synthesized
 
-        return [best_by_section[idx] for idx in sorted(best_by_section)]
+        section_priority = {"payoff": 0, "build": 1, "verse": 2, "bridge": 3}
+        ordered = sorted(
+            best_by_section.values(),
+            key=lambda item: (
+                section_priority.get(_normalize_section_label(item.get("section_label")), 9),
+                float(item.get("error_delta", 99.0) or 99.0),
+                int(item.get("selection_rank") or 999),
+            ),
+        )
+        return ordered
 
     support_candidates = _collect_core_support_candidates()
     reserve_combo_slot = max_variants >= 3 and _has_safe_dual_combo(opportunities)

@@ -590,6 +590,34 @@ def test_build_auto_shortlist_variant_configs_adaptive_reserves_support_variant_
     assert any(config['strategy'] == 'dual_section_alternate' for config in configs)
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_synthesizes_counterparent_support_when_core_options_are_same_parent_only():
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [
+                _make_section_with_alternate('intro', 'A', 'phrase_1_3', 'B', 'phrase_1_3'),
+                _make_section_with_alternate('verse', 'A', 'phrase_3_5', 'A', 'phrase_2_4'),
+                _make_section_with_alternate('build', 'B', 'phrase_5_7', 'B', 'phrase_4_6'),
+                _make_section_with_alternate('payoff', 'B', 'phrase_7_11', 'B', 'phrase_6_10'),
+            ],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    support = next(config for config in configs if config['strategy'] == 'single_section_support')
+    payload = support['supports'][0]
+
+    sec_idx = int(payload['section_index'])
+    selected_section = plan.planning_diagnostics['selected_sections'][sec_idx]
+    assert payload['kind'] == 'support_overlay_counterparent'
+    assert payload['support_parent'] == 'A'
+    assert payload['support_parent'] != selected_section['selected_parent']
+    assert payload['support_section_label'] == selected_section['selected_window_label']
+
+
 def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_diagnostics():
     plan = SimpleNamespace(
         sections=[
