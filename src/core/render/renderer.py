@@ -450,8 +450,14 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
         out[:, -release_samples:] *= tail_env[np.newaxis, :]
 
         if role != 'foreground_counterlayer':
+            tail = out[:, -release_samples:]
             cutoff = np.linspace(lp_start_hz, lp_end_hz, release_samples, endpoint=True, dtype=np.float32)
-            out[:, -release_samples:] = _one_pole_lowpass(out[:, -release_samples:], cutoff, sr)
+            tail = _one_pole_lowpass(tail, cutoff, sr)
+            if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
+                # Build/payoff overlays are the highest collision risk with incoming lead vox.
+                # Lightly notch vocal-presence mids in the support release tail.
+                tail = _bandstop(tail, sr, 320.0, 2100.0)
+            out[:, -release_samples:] = tail
 
     return out.astype(np.float32)
 

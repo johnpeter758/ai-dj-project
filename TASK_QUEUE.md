@@ -1,15 +1,15 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 04:27 EDT (support release-tail shaping patch + render stack regression pass)
+Last updated: 2026-03-27 06:29 EDT (support tail vocal-mid notch patch + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
 1. **Continue adaptive dual-support render quality stabilization (post entry-shape patch)**
    - Why: pair2 remains `pass+floor`, and transition quality ticked up (`53.6 -> 53.8`) with stable song-likeness (`58.2`), but mix/transition are still below target polish.
    - Latest checkpoint:
-     - patch: `src/core/render/renderer.py::_apply_support_entry_shape` now includes release-tail shaping for `section_support` (section-aware tail duck + filtered support tail low-pass contour).
-     - regression: `tests/test_render_stack.py` full pass (`60 passed`) including new support-tail coverage.
-     - last artifact run remains `runs/quality_push_pair2_support_entry_shape_20260327_0215`; next pass should re-render pair2 to validate audible tail cleanup.
+     - patch: `src/core/render/renderer.py::_apply_support_entry_shape` now adds build/payoff release-tail vocal-mid notching (`320-2100 Hz`) for filtered support/counterlayer overlays after tail low-pass shaping.
+     - regressions: `tests/test_render_stack.py` includes new build-vs-verse vocal-mid tail notch coverage; full suite remains green (`215 passed, 1 skipped` with planner/shortlist/pro-quality stacks).
+     - artifact rerun: `runs/quality_push_pair2_support_tail_mid_notch_20260327_0615` kept stable floor-pass winner (`pass+floor`, adaptive dual-support) with transition holding at `53.8`, song-likeness `58.2`, and slight selection-score lift (`73.461 -> 73.527`).
    - Focus:
      - section-label-aware support entry/release shaping for build/payoff overlays,
      - raise transition clarity and mix sanity without reducing integrated two-parent identity.
