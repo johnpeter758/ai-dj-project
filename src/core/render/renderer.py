@@ -405,27 +405,53 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
     if role not in {'filtered_support', 'filtered_counterlayer', 'foreground_counterlayer'}:
         return out
 
+    section_label = str(getattr(section, 'label', '') or '').strip().lower()
+
     entry_sec = float(min(max(getattr(work, 'fade_in_sec', 0.0), 0.0) * 1.35, 1.2, max(getattr(work, 'target_duration_sec', 0.0) * 0.45, 0.0)))
     entry_samples = min(out.shape[1], max(0, int(round(entry_sec * sr))))
-    if entry_samples <= 32:
-        return out
+    if entry_samples > 32:
+        role_floor_db = -3.0 if role == 'foreground_counterlayer' else -4.5
+        if section_label in {'build', 'payoff'}:
+            role_floor_db -= 1.0
 
-    section_label = str(getattr(section, 'label', '') or '').strip().lower()
-    role_floor_db = -3.0 if role == 'foreground_counterlayer' else -4.5
-    if section_label in {'build', 'payoff'}:
-        role_floor_db -= 1.0
+        floor = np.float32(10 ** (role_floor_db / 20.0))
+        ramp = np.linspace(0.0, 1.0, entry_samples, endpoint=True, dtype=np.float32)
+        ramp = np.power(ramp, np.float32(1.8))
+        env = floor + (1.0 - floor) * ramp
+        out[:, :entry_samples] *= env[np.newaxis, :]
 
-    floor = np.float32(10 ** (role_floor_db / 20.0))
-    ramp = np.linspace(0.0, 1.0, entry_samples, endpoint=True, dtype=np.float32)
-    ramp = np.power(ramp, np.float32(1.8))
-    env = floor + (1.0 - floor) * ramp
-    out[:, :entry_samples] *= env[np.newaxis, :]
+        if role != 'foreground_counterlayer':
+            hp_start = 240.0 if section_label in {'build', 'payoff'} else 200.0
+            hp_end = 110.0
+            cutoff = np.linspace(hp_start, hp_end, entry_samples, endpoint=True, dtype=np.float32)
+            out[:, :entry_samples] = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
 
-    if role != 'foreground_counterlayer':
-        hp_start = 240.0 if section_label in {'build', 'payoff'} else 200.0
-        hp_end = 110.0
-        cutoff = np.linspace(hp_start, hp_end, entry_samples, endpoint=True, dtype=np.float32)
-        out[:, :entry_samples] = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
+    release_scale = 1.35 if section_label in {'build', 'payoff'} else 1.0
+    release_sec = float(
+        min(
+            max(getattr(work, 'fade_out_sec', 0.0), 0.0) * release_scale,
+            1.35,
+            max(getattr(work, 'target_duration_sec', 0.0) * 0.5, 0.0),
+        )
+    )
+    release_samples = min(out.shape[1], max(0, int(round(release_sec * sr))))
+    if release_samples > 32:
+        if role == 'foreground_counterlayer':
+            tail_floor_db = -2.0 if section_label in {'build', 'payoff'} else -1.0
+            lp_start_hz, lp_end_hz = 9000.0, 5600.0
+        else:
+            tail_floor_db = -4.5 if section_label in {'build', 'payoff'} else -3.0
+            lp_start_hz, lp_end_hz = (7600.0, 3800.0) if section_label in {'build', 'payoff'} else (9000.0, 5200.0)
+
+        release_ramp = np.linspace(0.0, 1.0, release_samples, endpoint=True, dtype=np.float32)
+        release_ramp = np.power(release_ramp, np.float32(1.25))
+        tail_floor = np.float32(10 ** (tail_floor_db / 20.0))
+        tail_env = 1.0 - (1.0 - tail_floor) * release_ramp
+        out[:, -release_samples:] *= tail_env[np.newaxis, :]
+
+        if role != 'foreground_counterlayer':
+            cutoff = np.linspace(lp_start_hz, lp_end_hz, release_samples, endpoint=True, dtype=np.float32)
+            out[:, -release_samples:] = _one_pole_lowpass(out[:, -release_samples:], cutoff, sr)
 
     return out.astype(np.float32)
 

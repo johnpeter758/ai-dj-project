@@ -1350,12 +1350,57 @@ def test_apply_support_entry_shape_is_noop_for_base_work_orders():
     t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
     tone = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
     segment = np.vstack([tone, tone])
-    work = Dummy(order_type='section_base', role='full_mix', fade_in_sec=0.6, target_duration_sec=seconds)
+    work = Dummy(order_type='section_base', role='full_mix', fade_in_sec=0.6, fade_out_sec=0.6, target_duration_sec=seconds)
     section = Dummy(label='payoff')
 
     shaped = _apply_support_entry_shape(segment, sr, work, section)
 
     assert np.allclose(shaped, segment)
+
+
+def test_apply_support_entry_shape_softens_filtered_support_release_tail():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    tone = np.sin(2 * np.pi * 1300.0 * t).astype(np.float32)
+    segment = np.vstack([tone, tone])
+    work = Dummy(order_type='section_support', role='filtered_support', fade_in_sec=0.35, fade_out_sec=0.7, target_duration_sec=seconds)
+    section = Dummy(label='build')
+
+    shaped = _apply_support_entry_shape(segment, sr, work, section)
+
+    mid = shaped[:, int(0.9 * sr): int(1.1 * sr)]
+    tail = shaped[:, int(1.75 * sr): int(1.95 * sr)]
+    mid_rms = float(np.sqrt(np.mean(mid ** 2)))
+    tail_rms = float(np.sqrt(np.mean(tail ** 2)))
+    assert tail_rms < mid_rms * 0.7
+
+
+def test_apply_support_entry_shape_build_tail_filters_more_than_verse_tail():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    high_tone = np.sin(2 * np.pi * 6200.0 * t).astype(np.float32)
+    segment = np.vstack([high_tone, high_tone])
+    work = Dummy(order_type='section_support', role='filtered_support', fade_in_sec=0.3, fade_out_sec=0.65, target_duration_sec=seconds)
+
+    build_shaped = _apply_support_entry_shape(segment, sr, work, Dummy(label='build'))
+    verse_shaped = _apply_support_entry_shape(segment, sr, work, Dummy(label='verse'))
+
+    tail_slice = slice(int(1.78 * sr), int(1.98 * sr))
+    t_tail = t[: tail_slice.stop - tail_slice.start]
+    carrier = np.sin(2 * np.pi * 6200.0 * t_tail)
+    build_proj = np.abs(np.mean(build_shaped[0, tail_slice] * carrier))
+    verse_proj = np.abs(np.mean(verse_shaped[0, tail_slice] * carrier))
+    assert build_proj < verse_proj * 0.8
 
 
 def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
