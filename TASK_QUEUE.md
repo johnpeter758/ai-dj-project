@@ -1,31 +1,30 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-26 21:06 EDT (support-overlay relaxed run produced first floor-pass winner)
+Last updated: 2026-03-26 22:18 EDT (adaptive support fallback shipped + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Promote and lock the first floor-pass winner as revamp checkpoint**
-   - Why: run `quality_push_after_support_overlay_relaxed_20260326_210633` produced `winner_policy=pass+floor` with baseline `support_01_payoff_B` (`song_likeness=56.8`).
+1. **Lift adaptive support-overlay quality from reject -> pass on pair2**
+   - Why: fallback support synthesis now emits adaptive support variants, but latest run (`quality_push_pair2_bc_after_transition_patch_20260326_2215`) still hard-fails with adaptive support candidate stuck at `song_likeness=47.4`, `transition=53.0`, `gate=reject`.
    - Concrete change target:
-     - copy winner artifacts as milestone checkpoint,
-     - add explicit regression coverage that baseline support-overlay candidate remains available when core donor swaps are unavailable,
-     - preserve this path while continuing quality upgrades.
+     - tune support-overlay application for adaptive mode (owner/gain/mode defaults and seam behavior) so support candidates improve transition/coherence instead of collapsing to baseline-like scores,
+     - rerun pair2 to validate adaptive support candidate quality trend.
    - Files likely touched:
-     - `docs/`
-     - `tests/test_auto_shortlist_fusion.py`
-     - optional `ai_dj.py` guardrail constants.
+     - `ai_dj.py` support variant construction/application
+     - `src/core/render/resolver.py` / `src/core/render/renderer.py` support handling
+     - tests in `tests/test_auto_shortlist_fusion.py` and `tests/test_render_stack.py`.
 
 ## Next Task (auto-start immediately after current)
-1. **Run second benchmark (different pair) to check anti-medley + support-overlay generalization**
+1. **Rerun pair2 benchmark after adaptive support-tuning patch and compare adaptive gate_status + floor_pass_count**
    - Command:
-     - `python ai_dj.py fusion <pair2_track_a> <pair2_track_b> --arrangement-mode pro --output runs/quality_push_after_support_overlay_pair2_<timestamp>`
+     - `python ai_dj.py fusion runs/live_fuse_batch_fast_20260325_104746/clips/b.mp3 runs/live_fuse_batch_fast_20260325_104746/clips/c.mp3 --arrangement-mode pro --output runs/quality_push_pair2_bc_after_support_tuning_<timestamp>`
    - Success check:
-     - at least one pass candidate with improved song-likeness trend and no intro-led back-and-forth winner.
+     - adaptive support (or other adaptive integrated candidate) reaches `gate=pass` with `song_likeness >= 55.0`.
 
 ## Blocked Tasks
-1. **Default-enable support-overlay heuristics globally without pair validation**
-   - Blocker: only one known pair has passed floor so far.
-   - Unblock condition: second benchmark pair confirms non-regression.
+1. **Global promotion of support-overlay strategy as default winner path**
+   - Blocker: pair2 remains hard-fail (`floor_pass_count=0`); adaptive support fallback now emits but still rejects.
+   - Unblock condition: second pair reaches pass+floor under same policy.
 
 ## Queue Rules (enforced each cycle)
 - Always keep `Current`, `Next`, and `Blocked` sections updated.

@@ -57,3 +57,19 @@ Build fused songs that feel like **one intentional composition**, not two tracks
 - One concrete change per cycle.
 - Every cycle must include:
   1) change, 2) tests, 3) one benchmark run, 4) metric delta capture.
+
+## Current Benchmark Status (2026-03-26)
+- ✅ Pair1 (`relax_clip` x `treasure_clip`):
+  - run: `runs/quality_push_after_support_overlay_relaxed_20260326_210633`
+  - policy: `pass+floor`
+  - winner: `baseline support_01_payoff_B`
+  - best song_likeness: `56.8`
+- ⚠️ Pair2 (`live_fuse clips b x c`):
+  - run: `runs/quality_push_pair2_bc_after_transition_patch_20260326_2215`
+  - policy: `hard-fail:pass-below-floor`
+  - adaptive now emits integrated support variant (`support_01_build_B`), but it still gates `reject` with low quality (`song_likeness=47.4`, `transition=53.0`).
+  - strongest adaptive alternates still show high song-likeness (`56.6`) but remain gate `reject`.
+  - baseline pass candidates remain below floor (`best song_likeness=52.8`).
+
+### Immediate Focus
+- Tune adaptive support-overlay rendering/ownership so integrated adaptive candidates can convert from `reject` to `pass` without lowering quality floors.

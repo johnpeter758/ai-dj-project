@@ -472,18 +472,65 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             if candidate_rank < existing_rank:
                 best_by_section[sec_idx] = candidate
 
+        # Fallback: if planner diagnostics did not expose explicit support alternates,
+        # synthesize support overlays from safe donor swap opportunities so adaptive mode
+        # can still emit at least one integrated two-parent candidate.
+        if not best_by_section:
+            for op in opportunities:
+                if not _is_core_donor_op(op):
+                    continue
+                sec_idx = _section_index_of(op, default=-1)
+                if sec_idx < 0:
+                    continue
+                alt_parent = str(op.get("alternate_parent") or "")
+                backbone_parent = str(op.get("backbone_parent") or "")
+                if not alt_parent or alt_parent == backbone_parent:
+                    continue
+                section_label = str(op.get("section_label") or "")
+                error_delta = float(op.get("error_delta", 99.0) or 99.0)
+                if error_delta > 1.35:
+                    continue
+                synthesized = {
+                    "section_index": sec_idx,
+                    "section_label": section_label,
+                    "support_parent": alt_parent,
+                    "support_section_label": str(op.get("alternate_window_label") or ""),
+                    "support_gain_db": _support_gain_db_for_label(section_label),
+                    "support_mode": _support_mode_for_label(section_label),
+                    "selection_rank": int(op.get("selection_rank") or 999),
+                    "error_delta": error_delta,
+                    "planner_error": float(op.get("planner_error", 0.0) or 0.0),
+                    "backbone_parent": backbone_parent,
+                    "kind": "support_overlay_fallback",
+                }
+                existing = best_by_section.get(sec_idx)
+                if existing is None:
+                    best_by_section[sec_idx] = synthesized
+                    continue
+                existing_rank = (
+                    float(existing.get("error_delta", 99.0) or 99.0),
+                    int(existing.get("selection_rank") or 999),
+                )
+                synthesized_rank = (
+                    float(synthesized.get("error_delta", 99.0) or 99.0),
+                    int(synthesized.get("selection_rank") or 999),
+                )
+                if synthesized_rank < existing_rank:
+                    best_by_section[sec_idx] = synthesized
+
         return [best_by_section[idx] for idx in sorted(best_by_section)]
 
     support_candidates = _collect_core_support_candidates()
     reserve_combo_slot = max_variants >= 3 and _has_safe_dual_combo(opportunities)
     has_core_donor_swap = any(_is_core_donor_op(op) for op in opportunities)
     arrangement_mode = str(((getattr(plan, "planning_diagnostics", {}) or {}).get("arrangement_mode") or "")).strip().lower()
-    reserve_support_slot = (
-        arrangement_mode == "baseline"
-        and max_variants >= 3
-        and bool(support_candidates)
-        and not has_core_donor_swap
-    )
+    reserve_support_slot = False
+    if arrangement_mode == "baseline":
+        reserve_support_slot = max_variants >= 3 and bool(support_candidates) and not has_core_donor_swap
+    elif arrangement_mode == "adaptive":
+        # Adaptive often clears song-likeness but can still hard-fail as medley-like.
+        # Reserve one support-overlay candidate so at least one variant includes simultaneous two-parent integration.
+        reserve_support_slot = max_variants >= 3 and bool(support_candidates)
 
     max_single_slots = max_variants - len(configs) - (1 if reserve_combo_slot else 0) - (1 if reserve_support_slot else 0)
     max_single_slots = max(0, max_single_slots)
@@ -656,9 +703,11 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
 
     combo_candidates.sort(key=_combo_priority)
 
+    combo_slot_cap = max_variants - (1 if reserve_support_slot else 0)
+    combo_slot_cap = max(1, combo_slot_cap)
     combo_idx = 1
     for left, right, _combo_error in combo_candidates:
-        if len(configs) >= max_variants:
+        if len(configs) >= combo_slot_cap:
             break
         combo_variant_id = f"combo_{combo_idx:02d}_{left.get('section_label')}_{right.get('section_label')}"
         configs.append(

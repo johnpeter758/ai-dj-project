@@ -568,6 +568,28 @@ def test_build_auto_shortlist_variant_configs_baseline_reserves_support_variant_
     assert support_payload.get('support_parent') == 'B'
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_reserves_support_variant_for_integration():
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [
+                _make_section_with_alternate('intro', 'A', 'phrase_0_2', 'B', 'phrase_6_8'),
+                _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10'),
+                _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12'),
+            ],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+
+    assert len(configs) == 3
+    assert any(config['strategy'] == 'single_section_support' for config in configs)
+    assert any(config['strategy'] == 'dual_section_alternate' for config in configs)
+
+
 def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_diagnostics():
     plan = SimpleNamespace(
         sections=[
