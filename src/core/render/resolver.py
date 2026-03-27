@@ -289,6 +289,8 @@ def _resolve_support_overlay_profile(
     support_mode: str | None,
     target_duration_sec: float,
     support_gain_db: float,
+    support_transition_risk: float | None = None,
+    support_foreground_collision_risk: float | None = None,
 ) -> tuple[float, float, float]:
     """Tune support layer gain/edges for cleaner transitions.
 
@@ -310,17 +312,34 @@ def _resolve_support_overlay_profile(
         fade_in_sec = min(1.1, max(fade_in_sec * 1.25, target_duration_sec * 0.18))
         fade_out_sec = min(1.25, max(fade_out_sec * 1.2, target_duration_sec * 0.22))
 
-        # Let shortlist risk policy influence resolver envelope in explicit handoffs:
-        # lower incoming support_gain_db (more negative) indicates higher-risk seams,
-        # so apply extra ducking/edge softening there and preserve more identity on low-risk seams.
-        if gain_db <= -11.25:
+        # Prefer explicit planner seam-risk when available; otherwise infer risk from support gain.
+        risk_signal = support_transition_risk
+        if risk_signal is None:
+            if gain_db <= -11.25:
+                risk_signal = 0.75
+            elif gain_db >= -9.25:
+                risk_signal = 0.30
+            else:
+                risk_signal = 0.52
+        risk_signal = max(0.0, min(1.0, float(risk_signal)))
+
+        collision_signal = support_foreground_collision_risk
+        if collision_signal is None:
+            collision_signal = 0.0
+        collision_signal = max(0.0, min(1.0, float(collision_signal)))
+
+        if risk_signal >= 0.62:
             gain_db -= 0.45
             fade_in_sec = min(1.25, max(fade_in_sec * 1.12, target_duration_sec * 0.2))
             fade_out_sec = min(1.35, max(fade_out_sec * 1.1, target_duration_sec * 0.24))
-        elif gain_db >= -9.25:
+        elif risk_signal <= 0.42:
             gain_db += 0.2
             fade_in_sec = max(0.2, fade_in_sec * 0.94)
             fade_out_sec = max(0.24, fade_out_sec * 0.96)
+
+        if collision_signal >= 0.45:
+            gain_db -= 0.35
+            fade_out_sec = min(1.4, max(fade_out_sec * 1.08, target_duration_sec * 0.25))
     elif mode in {'same_parent_flow', 'backbone_flow'}:
         gain_db += 0.35
         fade_in_sec = min(fade_in_sec, max(0.18, target_duration_sec * 0.1))
@@ -911,6 +930,8 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 support_mode=sec.support_mode,
                 target_duration_sec=target_duration_sec,
                 support_gain_db=float(sec.support_gain_db if sec.support_gain_db is not None else -10.0),
+                support_transition_risk=sec.support_transition_risk,
+                support_foreground_collision_risk=sec.support_foreground_collision_risk,
             )
             work_orders.append(AudioWorkOrder(
                 order_id=f"section_{idx}_support",

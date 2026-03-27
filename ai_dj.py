@@ -1056,6 +1056,26 @@ def _apply_auto_shortlist_variant(plan: Any, variant_config: dict[str, Any] | No
         section.support_mode = str(support.get("support_mode") or "filtered_counterlayer")
 
         support_policy = dict(support.get("support_policy") or {})
+        try:
+            section.support_transition_risk = float(support_policy.get("risk")) if support_policy.get("risk") is not None else None
+        except (TypeError, ValueError):
+            section.support_transition_risk = None
+        try:
+            section.support_foreground_collision_risk = (
+                float(support_policy.get("foreground_collision_risk"))
+                if support_policy.get("foreground_collision_risk") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            section.support_foreground_collision_risk = None
+        try:
+            section.support_transition_viability = (
+                float(support_policy.get("transition_viability"))
+                if support_policy.get("transition_viability") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            section.support_transition_viability = None
 
         if 0 <= section_index < len(selected_sections):
             diag = dict(selected_sections[section_index])

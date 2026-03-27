@@ -759,6 +759,11 @@ def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_dia
                 'support_mode': 'filtered_counterlayer',
                 'kind': 'support_overlay',
                 'error_delta': 2.2,
+                'support_policy': {
+                    'risk': 0.68,
+                    'foreground_collision_risk': 0.41,
+                    'transition_viability': 0.57,
+                },
             }
         ],
     }
@@ -770,6 +775,9 @@ def test_apply_auto_shortlist_variant_applies_support_overlay_to_section_and_dia
     assert section.support_section_label == 'phrase_5_7'
     assert section.support_gain_db == -10.5
     assert section.support_mode == 'filtered_counterlayer'
+    assert section.support_transition_risk == 0.68
+    assert section.support_foreground_collision_risk == 0.41
+    assert section.support_transition_viability == 0.57
 
     diag = updated.planning_diagnostics['selected_sections'][0]
     assert diag['support_recipe']['parent_id'] == 'B'

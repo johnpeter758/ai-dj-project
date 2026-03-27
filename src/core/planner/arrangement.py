@@ -4917,6 +4917,21 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
                 support_section_label=support_recipe['window_label'] if support_recipe is not None else None,
                 support_gain_db=support_recipe['gain_db'] if support_recipe is not None else None,
                 support_mode=support_recipe['mode'] if support_recipe is not None else None,
+                support_transition_risk=(
+                    float((support_recipe.get('score_breakdown') or {}).get('seam_risk', 0.0))
+                    if support_recipe is not None
+                    else None
+                ),
+                support_foreground_collision_risk=(
+                    float((support_recipe.get('score_breakdown') or {}).get('seam_foreground_collision', 0.0))
+                    if support_recipe is not None
+                    else None
+                ),
+                support_transition_viability=(
+                    float((support_recipe.get('score_breakdown') or {}).get('transition_viability', 0.0))
+                    if support_recipe is not None
+                    else None
+                ),
                 backbone_owner=recipe.backbone_owner,
                 donor_support_required=recipe.donor_support_required,
                 motif_anchor_parent=recipe.motif_anchor_parent,

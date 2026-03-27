@@ -484,6 +484,48 @@ def test_resolve_render_plan_handoff_support_profile_uses_gain_as_risk_proxy(tmp
     assert high_risk_support.fade_out_sec > low_risk_support.fade_out_sec
 
 
+def test_resolve_render_plan_handoff_support_profile_prefers_explicit_planner_risk_signal(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 660.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+
+    base_section = PlannedSection(
+        label='build',
+        start_bar=0,
+        bar_count=4,
+        source_parent='A',
+        source_section_label='phrase_0_2',
+        support_parent='B',
+        support_section_label='phrase_0_2',
+        support_mode='filtered_support',
+        transition_mode='arrival_handoff',
+        support_gain_db=-10.0,
+    )
+    high_risk_plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0),
+        sections=[replace(base_section, support_transition_risk=0.8)],
+    )
+    low_risk_plan = ChildArrangementPlan(
+        parents=high_risk_plan.parents,
+        compatibility=high_risk_plan.compatibility,
+        sections=[replace(base_section, support_transition_risk=0.28)],
+    )
+
+    high_risk_manifest = resolve_render_plan(high_risk_plan, a, b)
+    low_risk_manifest = resolve_render_plan(low_risk_plan, a, b)
+    high_risk_support = next(work for work in high_risk_manifest.work_orders if work.order_type == 'section_support')
+    low_risk_support = next(work for work in low_risk_manifest.work_orders if work.order_type == 'section_support')
+
+    assert high_risk_support.gain_db < low_risk_support.gain_db
+    assert high_risk_support.fade_in_sec > low_risk_support.fade_in_sec
+    assert high_risk_support.fade_out_sec > low_risk_support.fade_out_sec
+
+
 def test_resolve_render_plan_support_work_order_tracks_section_transition_mode(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 440.0)

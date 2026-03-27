@@ -56,6 +56,9 @@ class PlannedSection:
     support_section_label: str | None = None
     support_gain_db: float | None = None
     support_mode: str | None = None
+    support_transition_risk: float | None = None
+    support_foreground_collision_risk: float | None = None
+    support_transition_viability: float | None = None
     backbone_owner: str | None = None
     donor_support_required: bool = False
     motif_anchor_parent: str | None = None
