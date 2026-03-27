@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -40,6 +41,87 @@ SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS = 3600
 SIMPLE_FUSE_JOB_TTL_SECONDS = 24 * 60 * 60
 _SIMPLE_FUSE_JOBS: dict[str, dict] = {}
 _SIMPLE_FUSE_LOCK = threading.Lock()
+
+_SIMPLE_FUSE_PIPELINE = [
+    {
+        "id": "uploaded",
+        "title": "Receive and validate files",
+        "detail": "Confirm both inputs are supported audio files and persist them to a run-safe upload folder.",
+    },
+    {
+        "id": "analysis",
+        "title": "Analyze both songs",
+        "detail": "Extract timing, phrasing, and section-level musical fingerprints (SongDNA).",
+    },
+    {
+        "id": "arrangement",
+        "title": "Plan one coherent arrangement",
+        "detail": "Build a section program designed to feel like one intentional song, not back-and-forth snippets.",
+    },
+    {
+        "id": "render",
+        "title": "Render pro-mode candidates",
+        "detail": "Render adaptive and baseline candidates with support overlays and transition ownership rules.",
+    },
+    {
+        "id": "quality_gate",
+        "title": "Apply hard quality gate",
+        "detail": "Score candidates and require pass floors for song-likeness, groove, structure, and gate quality.",
+    },
+    {
+        "id": "mastering",
+        "title": "Master and package output",
+        "detail": "Prepare final playable master artifacts and attach metadata for the UI.",
+    },
+    {
+        "id": "deliver",
+        "title": "Deliver playable result",
+        "detail": "Surface one final output with player/download links.",
+    },
+]
+
+_SIMPLE_FUSE_STEP_INDEX = {step["id"]: idx for idx, step in enumerate(_SIMPLE_FUSE_PIPELINE)}
+_SIMPLE_FUSE_STAGE_TO_STEP = {
+    "uploaded": "uploaded",
+    "queued": "uploaded",
+    "analysis": "analysis",
+    "arrangement": "arrangement",
+    "render": "render",
+    "quality_gate": "quality_gate",
+    "mastering": "mastering",
+    "deliver": "deliver",
+    "complete": "deliver",
+    "failed": "deliver",
+    "fusion": "render",
+}
+_SIMPLE_FUSE_STAGE_PROGRESS = {
+    "uploaded": 10,
+    "analysis": 20,
+    "arrangement": 35,
+    "render": 60,
+    "quality_gate": 82,
+    "mastering": 92,
+    "deliver": 97,
+    "complete": 100,
+    "failed": 100,
+}
+_SIMPLE_FUSE_STAGE_MESSAGES = {
+    "uploaded": "Uploads received. Queueing pro fuse job.",
+    "analysis": "Analyzing both songs for timing, phrasing, and section fingerprints.",
+    "arrangement": "Planning one coherent fused arrangement.",
+    "render": "Rendering pro-mode candidates with adaptive + baseline strategies.",
+    "quality_gate": "Scoring candidates and enforcing hard quality floors.",
+    "mastering": "Mastering and packaging the selected playable output.",
+    "deliver": "Preparing links for playback and download.",
+}
+_SIMPLE_FUSE_STAGE_KEYWORDS = (
+    ("analysis", ("analy", "songdna", "compatibility", "feature extraction")),
+    ("arrangement", ("arrangement", "planner", "section program", "transition mode")),
+    ("render", ("render", "work order", "candidate", "adaptive", "baseline")),
+    ("quality_gate", ("winner_policy", "selection", "floor_pass", "hard-fail", "pass+floor", "gate")),
+    ("mastering", ("master", "child_master", "encode", "mp3")),
+    ("deliver", ("promot", "playable", "share", "output ready")),
+)
 
 
 def _split_labeled_path(raw: str) -> tuple[str | None, str]:
@@ -243,11 +325,83 @@ def _load_json_file(path: Path) -> dict | None:
         return None
 
 
+def _normalize_simple_fuse_stage(stage: str | None) -> str:
+    raw = str(stage or "uploaded").strip().lower().replace("-", "_")
+    return raw if raw in _SIMPLE_FUSE_STAGE_TO_STEP else "uploaded"
+
+
+def _simple_fuse_stage_index(stage: str | None) -> int:
+    normalized = _normalize_simple_fuse_stage(stage)
+    step_id = _SIMPLE_FUSE_STAGE_TO_STEP.get(normalized, "uploaded")
+    return int(_SIMPLE_FUSE_STEP_INDEX.get(step_id, 0))
+
+
+def _simple_fuse_stage_message(stage: str | None) -> str:
+    normalized = _normalize_simple_fuse_stage(stage)
+    return _SIMPLE_FUSE_STAGE_MESSAGES.get(normalized, _SIMPLE_FUSE_STAGE_MESSAGES["analysis"])
+
+
+def _simple_fuse_stage_progress(stage: str | None) -> int:
+    normalized = _normalize_simple_fuse_stage(stage)
+    return int(_SIMPLE_FUSE_STAGE_PROGRESS.get(normalized, 20))
+
+
+def _build_simple_fuse_steps(stage: str | None, status: str | None) -> list[dict]:
+    normalized_stage = _normalize_simple_fuse_stage(stage)
+    active_index = _simple_fuse_stage_index(normalized_stage)
+    final_status = str(status or "running").strip().lower()
+    steps: list[dict] = []
+
+    for idx, template in enumerate(_SIMPLE_FUSE_PIPELINE):
+        state = "pending"
+        if final_status == "done":
+            state = "done"
+        elif idx < active_index:
+            state = "done"
+        elif idx == active_index:
+            state = "error" if final_status == "error" else "running"
+
+        steps.append(
+            {
+                "id": template["id"],
+                "title": template["title"],
+                "detail": template["detail"],
+                "state": state,
+            }
+        )
+
+    return steps
+
+
+def _infer_simple_fuse_stage_from_line(line: str, current_stage: str) -> str:
+    lower = (line or "").strip().lower()
+    if not lower:
+        return current_stage
+
+    detected = current_stage
+    for candidate_stage, keywords in _SIMPLE_FUSE_STAGE_KEYWORDS:
+        if any(keyword in lower for keyword in keywords):
+            detected = candidate_stage
+            break
+
+    if _simple_fuse_stage_index(detected) < _simple_fuse_stage_index(current_stage):
+        return current_stage
+    return detected
+
+
 def _set_simple_fuse_job(job_id: str, **patch) -> dict:
     with _SIMPLE_FUSE_LOCK:
         current = dict(_SIMPLE_FUSE_JOBS.get(job_id) or {})
         current.update(patch)
         current.setdefault("job_id", job_id)
+        current.setdefault("stage", "uploaded")
+        current.setdefault("status", "running")
+        current["steps"] = _build_simple_fuse_steps(current.get("stage"), current.get("status"))
+
+        log_tail = current.get("log_tail") or []
+        if isinstance(log_tail, list):
+            current["log_tail"] = [str(item) for item in log_tail][-80:]
+
         current["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _SIMPLE_FUSE_JOBS[job_id] = current
         return dict(current)
@@ -286,46 +440,136 @@ def _run_simple_fuse_job(job_id: str, song_a_path: Path, song_b_path: Path, run_
         "--output",
         str(fusion_dir),
     ]
+
+    current_stage = "analysis"
+    log_tail = [
+        "Pipeline started.",
+        f"Command: {' '.join(direct_cmd)}",
+    ]
     _set_simple_fuse_job(
         job_id,
         status="running",
-        progress=25,
-        message="Pro fuse started. Rendering adaptive+baseline candidates and promoting the best output.",
-        stage="fusion",
+        progress=_simple_fuse_stage_progress(current_stage),
+        message=_simple_fuse_stage_message(current_stage),
+        stage=current_stage,
+        log_tail=log_tail,
         product_mode="baseline_first",
         product_label="Baseline-first simple fuse",
     )
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             direct_cmd,
             cwd=str(BASE_DIR),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS,
+            bufsize=1,
         )
-    except subprocess.TimeoutExpired:
+    except Exception as exc:
         _set_simple_fuse_job(
             job_id,
             status="error",
             progress=100,
-            message="Deterministic fusion timed out.",
-            error="Fuse failed: deterministic fusion timed out.",
+            message="Failed to start fusion pipeline.",
+            error=f"Fuse failed: could not start fusion command ({exc}).",
             stage="failed",
+            log_tail=log_tail,
         )
         return
 
-    if proc.returncode != 0:
+    started_at = time.monotonic()
+    combined_lines: list[str] = []
+
+    try:
+        while True:
+            if time.monotonic() - started_at > SIMPLE_FUSE_DIRECT_TIMEOUT_SECONDS:
+                proc.kill()
+                _set_simple_fuse_job(
+                    job_id,
+                    status="error",
+                    progress=100,
+                    message="Deterministic fusion timed out.",
+                    error="Fuse failed: deterministic fusion timed out.",
+                    stage="failed",
+                    stdout="".join(combined_lines),
+                    stderr="",
+                    log_tail=log_tail,
+                )
+                return
+
+            line = ""
+            if proc.stdout is not None:
+                line = proc.stdout.readline()
+
+            if line:
+                combined_lines.append(line)
+                stripped = line.rstrip("\n")
+                if stripped:
+                    log_tail.append(stripped)
+                    if len(log_tail) > 80:
+                        log_tail = log_tail[-80:]
+
+                    next_stage = _infer_simple_fuse_stage_from_line(stripped, current_stage)
+                    patch = {"log_tail": log_tail}
+                    if _simple_fuse_stage_index(next_stage) > _simple_fuse_stage_index(current_stage):
+                        current_stage = next_stage
+                        patch.update(
+                            {
+                                "stage": current_stage,
+                                "progress": _simple_fuse_stage_progress(current_stage),
+                                "message": _simple_fuse_stage_message(current_stage),
+                            }
+                        )
+                    _set_simple_fuse_job(job_id, **patch)
+                continue
+
+            if proc.poll() is not None:
+                break
+
+            time.sleep(0.15)
+
+    except Exception as exc:
+        proc.kill()
+        _set_simple_fuse_job(
+            job_id,
+            status="error",
+            progress=100,
+            message="Fusion process crashed unexpectedly.",
+            error=f"Fuse failed while streaming process output: {exc}",
+            stage="failed",
+            stdout="".join(combined_lines),
+            stderr="",
+            log_tail=log_tail,
+        )
+        return
+
+    returncode = proc.returncode
+    stdout_text = "".join(combined_lines)
+
+    if returncode != 0:
         _set_simple_fuse_job(
             job_id,
             status="error",
             progress=100,
             message="Deterministic fusion failed.",
             error="Fuse failed: deterministic fusion did not complete successfully.",
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            stdout=stdout_text,
+            stderr="",
             stage="failed",
+            log_tail=log_tail,
         )
         return
+
+    current_stage = "mastering"
+    _set_simple_fuse_job(
+        job_id,
+        status="running",
+        stage=current_stage,
+        progress=_simple_fuse_stage_progress(current_stage),
+        message=_simple_fuse_stage_message(current_stage),
+        log_tail=log_tail,
+    )
 
     try:
         result = _promote_direct_fusion_output(
@@ -342,11 +586,22 @@ def _run_simple_fuse_job(job_id: str, song_a_path: Path, song_b_path: Path, run_
             progress=100,
             message="Fusion finished but no playable audio artifact was found.",
             error=str(exc),
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            stdout=stdout_text,
+            stderr="",
             stage="failed",
+            log_tail=log_tail,
         )
         return
+
+    current_stage = "deliver"
+    _set_simple_fuse_job(
+        job_id,
+        status="running",
+        stage=current_stage,
+        progress=_simple_fuse_stage_progress(current_stage),
+        message=_simple_fuse_stage_message(current_stage),
+        log_tail=log_tail,
+    )
 
     _set_simple_fuse_job(
         job_id,
@@ -356,8 +611,9 @@ def _run_simple_fuse_job(job_id: str, song_a_path: Path, song_b_path: Path, run_
         stage="complete",
         output_dir=str(outdir),
         result=result,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
+        stdout=stdout_text,
+        stderr="",
+        log_tail=log_tail,
         share_url=f"/share/{job_id}",
     )
 
@@ -1245,6 +1501,11 @@ def start_simple_fuse_job():
         song_b_name=Path(song_b.filename or "song_b").name,
         product_mode="baseline_first",
         product_label="Baseline-first simple fuse",
+        log_tail=[
+            f"Received song_a: {Path(song_a.filename or 'song_a').name}",
+            f"Received song_b: {Path(song_b.filename or 'song_b').name}",
+            "Queued fusion worker.",
+        ],
     )
 
     worker = threading.Thread(
