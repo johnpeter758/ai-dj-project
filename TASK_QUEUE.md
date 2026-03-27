@@ -1,14 +1,18 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 00:20 EDT (pair2 dual-support rerun reached pass+floor)
+Last updated: 2026-03-27 02:27 EDT (support-entry-shape render patch validated on pair2)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Stabilize adaptive dual-support render quality while preserving floor pass**
-   - Why: pair2 now clears hard floor (`song_likeness=58.2`, winner `pass+floor`) but transition/mix quality is still moderate (`transition=53.6`, `mix_sanity=66.2`).
+1. **Continue adaptive dual-support render quality stabilization (post entry-shape patch)**
+   - Why: pair2 remains `pass+floor`, and transition quality ticked up (`53.6 -> 53.8`) with stable song-likeness (`58.2`), but mix/transition are still below target polish.
+   - Latest checkpoint:
+     - patch: `src/core/render/renderer.py::_apply_support_entry_shape` (early duck + dynamic HP contour for `section_support`)
+     - run: `runs/quality_push_pair2_support_entry_shape_20260327_0215`
+     - winner: adaptive `support_01_payoff_build_A`, policy `pass+floor`, overall `69.9`.
    - Focus:
-     - render-side support intensity/shape tuning for payoff+build overlays,
-     - improve transition clarity without losing integrated two-parent identity.
+     - section-label-aware support entry/release shaping for build/payoff overlays,
+     - raise transition clarity and mix sanity without reducing integrated two-parent identity.
    - Files likely touched:
      - `src/core/render/renderer.py`
      - `src/core/render/resolver.py`
@@ -16,7 +20,7 @@ Owner: execution operator
 
 ## Next Task (auto-start immediately after current)
 1. **Promote support-overlay strategy from fallback to primary pro-mode candidate path**
-   - Why: unblock condition is now met with a second floor-pass checkpoint on pair2.
+   - Why: floor-pass behavior is now reproducible across consecutive pair2 reruns.
    - Guardrails:
      - keep anti-medley penalties active,
      - require at least one integrated support candidate in both adaptive and baseline candidate sets,

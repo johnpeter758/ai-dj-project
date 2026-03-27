@@ -396,6 +396,40 @@ def _prepare_role_layer(segment: np.ndarray, sr: int, work, section) -> np.ndarr
     return out.astype(np.float32)
 
 
+def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> np.ndarray:
+    out = segment.astype(np.float32)
+    if str(getattr(work, 'order_type', '') or '') != 'section_support':
+        return out
+
+    role = str(getattr(work, 'role', '') or '')
+    if role not in {'filtered_support', 'filtered_counterlayer', 'foreground_counterlayer'}:
+        return out
+
+    entry_sec = float(min(max(getattr(work, 'fade_in_sec', 0.0), 0.0) * 1.35, 1.2, max(getattr(work, 'target_duration_sec', 0.0) * 0.45, 0.0)))
+    entry_samples = min(out.shape[1], max(0, int(round(entry_sec * sr))))
+    if entry_samples <= 32:
+        return out
+
+    section_label = str(getattr(section, 'label', '') or '').strip().lower()
+    role_floor_db = -3.0 if role == 'foreground_counterlayer' else -4.5
+    if section_label in {'build', 'payoff'}:
+        role_floor_db -= 1.0
+
+    floor = np.float32(10 ** (role_floor_db / 20.0))
+    ramp = np.linspace(0.0, 1.0, entry_samples, endpoint=True, dtype=np.float32)
+    ramp = np.power(ramp, np.float32(1.8))
+    env = floor + (1.0 - floor) * ramp
+    out[:, :entry_samples] *= env[np.newaxis, :]
+
+    if role != 'foreground_counterlayer':
+        hp_start = 240.0 if section_label in {'build', 'payoff'} else 200.0
+        hp_end = 110.0
+        cutoff = np.linspace(hp_start, hp_end, entry_samples, endpoint=True, dtype=np.float32)
+        out[:, :entry_samples] = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
+
+    return out.astype(np.float32)
+
+
 def _compress_bus(audio: np.ndarray, threshold_db: float = -18.0, ratio: float = 2.0, makeup_db: float = 1.0) -> np.ndarray:
     if audio.size == 0:
         return audio.astype(np.float32)
@@ -594,6 +628,7 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
         segment = _extract(audio, sr, work.source_start_sec, work.source_end_sec)
         segment = _fit_to_duration(segment, sr, work.target_duration_sec, work.stretch_ratio)
         segment = _prepare_role_layer(segment, sr, work, section_map[work.section_index])
+        segment = _apply_support_entry_shape(segment, sr, work, section_map[work.section_index])
         segment = _section_mix_cleanup(segment, sr, work, section_map[work.section_index])
         segment = _cue_safe_transition_anchor(segment, sr, work.fade_in_sec)
         segment = _apply_gain_db(segment, work.gain_db)

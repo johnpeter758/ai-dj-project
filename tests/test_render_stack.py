@@ -14,6 +14,7 @@ from src.core.render.manifest import ResolvedRenderPlan
 from src.core.render.resolver import _available_snap_grid
 from src.core.render.renderer import (
     _apply_transition_sonics,
+    _apply_support_entry_shape,
     _cue_safe_transition_anchor,
     _find_cue_safe_head_offset_samples,
     _finalize_master,
@@ -1315,6 +1316,46 @@ def test_adaptive_overlap_carve_db_stays_strong_for_dense_lead_handoffs():
 
     assert carve_db > 6.0
 
+
+
+def test_apply_support_entry_shape_ducks_filtered_support_intro_energy():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    tone = np.sin(2 * np.pi * 700.0 * t).astype(np.float32)
+    segment = np.vstack([tone, tone])
+    work = Dummy(order_type='section_support', role='filtered_support', fade_in_sec=0.6, target_duration_sec=seconds)
+    section = Dummy(label='payoff')
+
+    shaped = _apply_support_entry_shape(segment, sr, work, section)
+
+    early = shaped[:, : int(0.18 * sr)]
+    late = shaped[:, int(1.2 * sr): int(1.5 * sr)]
+    early_rms = float(np.sqrt(np.mean(early ** 2)))
+    late_rms = float(np.sqrt(np.mean(late ** 2)))
+    assert early_rms < late_rms * 0.8
+
+
+def test_apply_support_entry_shape_is_noop_for_base_work_orders():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 1.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    tone = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+    segment = np.vstack([tone, tone])
+    work = Dummy(order_type='section_base', role='full_mix', fade_in_sec=0.6, target_duration_sec=seconds)
+    section = Dummy(label='payoff')
+
+    shaped = _apply_support_entry_shape(segment, sr, work, section)
+
+    assert np.allclose(shaped, segment)
 
 
 def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
