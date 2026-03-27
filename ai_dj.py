@@ -564,11 +564,9 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
     has_core_donor_swap = any(_is_core_donor_op(op) for op in opportunities)
     arrangement_mode = str(((getattr(plan, "planning_diagnostics", {}) or {}).get("arrangement_mode") or "")).strip().lower()
     reserve_support_slot = False
-    if arrangement_mode == "baseline":
-        reserve_support_slot = max_variants >= 3 and bool(support_candidates) and not has_core_donor_swap
-    elif arrangement_mode == "adaptive":
-        # Adaptive often clears song-likeness but can still hard-fail as medley-like.
-        # Reserve one support-overlay candidate so at least one variant includes simultaneous two-parent integration.
+    if arrangement_mode in {"baseline", "adaptive"}:
+        # Promote support overlays from fallback behavior into the primary pro-mode search path.
+        # Guardrail: always keep at least one integrated support candidate in both baseline and adaptive sets.
         reserve_support_slot = max_variants >= 3 and bool(support_candidates)
 
     max_single_slots = max_variants - len(configs) - (1 if reserve_combo_slot else 0) - (1 if reserve_support_slot else 0)

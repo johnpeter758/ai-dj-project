@@ -590,6 +590,28 @@ def test_build_auto_shortlist_variant_configs_adaptive_reserves_support_variant_
     assert any(config['strategy'] == 'dual_section_alternate' for config in configs)
 
 
+def test_build_auto_shortlist_variant_configs_baseline_keeps_support_variant_even_with_core_donor_swaps():
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'baseline',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [
+                _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10'),
+                _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11'),
+                _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12'),
+            ],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+
+    assert len(configs) == 3
+    assert any(config['strategy'] in {'single_section_support', 'dual_section_support'} for config in configs)
+    assert any(config['strategy'] == 'dual_section_alternate' for config in configs)
+
+
 def test_build_auto_shortlist_variant_configs_adaptive_synthesizes_counterparent_support_when_core_options_are_same_parent_only():
     plan = SimpleNamespace(
         planning_diagnostics={

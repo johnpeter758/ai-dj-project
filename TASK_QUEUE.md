@@ -1,41 +1,43 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 10:23 EDT (transition-aware support entry/tail notch patch + pair2 rerun)
+Last updated: 2026-03-27 11:06 EDT (support-overlay promoted to primary pro-mode candidate path + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Continue adaptive dual-support render quality stabilization (post entry-shape patch)**
-   - Why: pair2 remains `pass+floor`, and transition quality ticked up (`53.6 -> 53.8`) with stable song-likeness (`58.2`), but mix/transition are still below target polish.
+1. **Raise transition quality now that support overlays are first-class in both pro candidate sets**
+   - Why: pair2 is floor-pass stable, but transition remains the bottleneck (`53.8`) despite repeated render-shaping gains.
    - Latest checkpoint:
-     - patch: `src/core/render/renderer.py::_apply_support_entry_shape` now adds build/payoff release-tail vocal-mid notching (`320-2100 Hz`) for filtered support/counterlayer overlays after tail low-pass shaping.
-     - regressions: `tests/test_render_stack.py` includes new build-vs-verse vocal-mid tail notch coverage; full suite remains green (`215 passed, 1 skipped` with planner/shortlist/pro-quality stacks).
-     - artifact rerun: `runs/quality_push_pair2_support_tail_mid_notch_20260327_0615` kept stable floor-pass winner (`pass+floor`, adaptive dual-support) with transition holding at `53.8`, song-likeness `58.2`, and slight selection-score lift (`73.461 -> 73.527`).
-    - patch: `_apply_support_entry_shape` now applies build/payoff-only early vocal-presence mid notch blending (`380-2600 Hz`) during filtered support/counterlayer entry (in addition to existing entry duck + dynamic HP).
-    - regressions: `tests/test_render_stack.py::test_apply_support_entry_shape_build_entry_notches_vocal_presence_mids_more_than_verse_entry` added; targeted stack `8 passed`.
-    - artifact rerun: `runs/quality_push_pair2_support_entry_mid_notch_20260327_0815` stayed floor-pass stable with identical winner metrics (`song_likeness=58.2`, `transition=53.8`, `overall=69.8`, `selection_score=73.527`).
-    - patch: `_apply_support_entry_shape` now uses transition-mode-aware vocal-presence notch shaping on build/payoff support entry+release (stronger on `arrival_handoff`/`single_owner_handoff`, lighter on `same_parent_flow`/`backbone_flow`) to reduce hard-handoff clutter without over-ducking flow sections.
-    - regressions: `tests/test_render_stack.py` now covers entry/tail notch intensity differences between handoff and same-parent transitions.
-    - artifact rerun: `runs/quality_push_pair2_support_transition_aware_notch_20260327_101743` remained floor-pass stable (`pass+floor`, adaptive dual-support) with unchanged headline metrics (`song_likeness=58.2`, `transition=53.8`, `overall=69.9`) and slight selection-score lift (`73.527 -> 73.571`).
+     - patch: `ai_dj.py::_build_auto_shortlist_variant_configs` now reserves a support-overlay slot for both `arrangement_mode=adaptive` and `arrangement_mode=baseline` whenever support candidates exist (`batch_size >= 3`).
+     - effect: support overlays are no longer baseline fallback-only; both mode candidate sets now keep an integrated-support path.
+     - regression: `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_baseline_keeps_support_variant_even_with_core_donor_swaps` added.
+     - validation:
+       - `pytest -q tests/test_auto_shortlist_fusion.py -k "variant_configs"` → `15 passed, 4 deselected`.
+       - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py tests/test_core_planner.py tests/test_render_stack.py` → `219 passed, 1 skipped`.
+     - artifact rerun: `runs/quality_push_pair2_support_primary_baseline_20260327_110021`
+       - policy: `pass+floor`, `promotion_blocked=false`
+       - winner: adaptive `dual_section_support` (`support_01_payoff_build_A`)
+       - winner metrics: `song_likeness=58.2`, `groove=64.3`, `structure=92.2`, `transition=53.8`, `overall=69.9`, `selection_score=73.571`
+       - baseline set now includes integrated support variant (`support_01_payoff_B`, gate=pass).
    - Focus:
-     - section-label-aware support entry/release shaping for build/payoff overlays,
-     - raise transition clarity and mix sanity without reducing integrated two-parent identity.
+     - transition/mix polish on support-entry + release envelopes,
+     - preserve floor-pass and anti-medley guardrails while pushing transition above current plateau.
    - Files likely touched:
      - `src/core/render/renderer.py`
      - `src/core/render/resolver.py`
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Promote support-overlay strategy from fallback to primary pro-mode candidate path**
-   - Why: floor-pass behavior is now reproducible across consecutive pair2 reruns.
+1. **Run wide multi-pair regression/listening sweep once transition lift patch lands**
+   - Why: support strategy is now represented in both mode sets; next risk is overfitting pair2.
    - Guardrails:
-     - keep anti-medley penalties active,
-     - require at least one integrated support candidate in both adaptive and baseline candidate sets,
-     - preserve hard-floor gating.
+     - keep hard-floor promotion gating unchanged,
+     - capture per-pair deltas (`song_likeness`, `transition`, `overall`, winner policy),
+     - block promotion if regressions reintroduce medley behavior.
 
 ## Blocked Tasks
-1. **Wide regression sweep + artifact listening review across additional pairs**
-   - Blocker: render-tuning pass not yet complete after pair2 dual-support floor-pass.
-   - Unblock condition: transition/mix tuning patch lands with tests and no regressions on pair2.
+1. **Ship-level confidence pass across additional pair catalog**
+   - Blocker: transition bottleneck still plateaued at `53.8` on pair2.
+   - Unblock condition: transition-focused render patch lands with tests and pair2 stays `pass+floor`.
 
 ## Queue Rules (enforced each cycle)
 - Always keep `Current`, `Next`, and `Blocked` sections updated.
