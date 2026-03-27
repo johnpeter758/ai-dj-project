@@ -859,23 +859,76 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         combo_idx += 1
 
     if reserve_support_slot and support_candidates and len(configs) < max_variants:
+        def _support_section_name(item: dict[str, Any]) -> str:
+            return _normalize_section_label(item.get("section_label"))
+
+        def _support_risk(item: dict[str, Any]) -> float:
+            policy = dict(item.get("support_policy") or {})
+            return float(policy.get("risk", 0.0) or 0.0)
+
+        def _best_dual_support_pair(items: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+            if len(items) < 2:
+                return None
+            best_pair: tuple[dict[str, Any], dict[str, Any]] | None = None
+            best_rank: tuple[Any, ...] | None = None
+
+            for left_idx in range(len(items)):
+                for right_idx in range(left_idx + 1, len(items)):
+                    left = items[left_idx]
+                    right = items[right_idx]
+                    if _section_index_of(left, default=-1) == _section_index_of(right, default=-1):
+                        continue
+
+                    left_label = _support_section_name(left)
+                    right_label = _support_section_name(right)
+                    has_payoff = left_label == "payoff" or right_label == "payoff"
+                    has_build = left_label == "build" or right_label == "build"
+
+                    left_risk = _support_risk(left)
+                    right_risk = _support_risk(right)
+                    max_risk = max(left_risk, right_risk)
+                    mean_risk = (left_risk + right_risk) / 2.0
+
+                    has_payoff_build = has_payoff and has_build and max_risk <= 0.85
+                    payoff_preferred = has_payoff and max_risk <= 0.92
+
+                    error_sum = float(left.get("error_delta", 99.0) or 99.0) + float(right.get("error_delta", 99.0) or 99.0)
+                    section_span = abs(_section_index_of(left, default=0) - _section_index_of(right, default=0))
+                    same_parent_penalty = 0 if str(left.get("support_parent") or "") != str(right.get("support_parent") or "") else 1
+
+                    rank = (
+                        0 if has_payoff_build else 1,
+                        0 if payoff_preferred else 1,
+                        round(max_risk, 4),
+                        round(mean_risk, 4),
+                        round(error_sum, 4),
+                        same_parent_penalty,
+                        -section_span,
+                    )
+                    if best_rank is None or rank < best_rank:
+                        best_rank = rank
+                        best_pair = (left, right)
+
+            return best_pair
+
         if arrangement_mode == "adaptive" and len(support_candidates) >= 2:
-            primary = support_candidates[0]
-            secondary = support_candidates[1]
-            primary_label = str(primary.get("section_label") or "section")
-            secondary_label = str(secondary.get("section_label") or "section")
-            support_parent = str(primary.get("support_parent") or secondary.get("support_parent") or "X")
-            configs.append(
-                {
-                    "variant_id": f"support_01_{primary_label}_{secondary_label}_{support_parent}",
-                    "label": f"{primary_label}+{secondary_label} integrated support",
-                    "strategy": "dual_section_support",
-                    "variant_mode": variant_mode,
-                    "swaps": [],
-                    "supports": [primary, secondary],
-                }
-            )
-        else:
+            chosen_pair = _best_dual_support_pair(support_candidates)
+            if chosen_pair is not None:
+                primary, secondary = chosen_pair
+                primary_label = str(primary.get("section_label") or "section")
+                secondary_label = str(secondary.get("section_label") or "section")
+                support_parent = str(primary.get("support_parent") or secondary.get("support_parent") or "X")
+                configs.append(
+                    {
+                        "variant_id": f"support_01_{primary_label}_{secondary_label}_{support_parent}",
+                        "label": f"{primary_label}+{secondary_label} integrated support",
+                        "strategy": "dual_section_support",
+                        "variant_mode": variant_mode,
+                        "swaps": [],
+                        "supports": [primary, secondary],
+                    }
+                )
+        if len(configs) < max_variants and (arrangement_mode != "adaptive" or len(configs) == 1):
             support_idx = 1
             for support in support_candidates:
                 if len(configs) >= max_variants:

@@ -1,53 +1,48 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 11:20 EDT (adaptive support-policy intelligence patch + pair2 rerun)
+Last updated: 2026-03-27 12:14 EDT (intelligent dual-support pairing + adaptive support policy)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Raise transition quality now that support overlays are first-class in both pro candidate sets**
-   - Why: pair2 is floor-pass stable, but transition remains the bottleneck (`53.8`) despite repeated render-shaping gains.
+1. **Raise transition quality while preserving pass+floor stability**
+   - Why: pair2 remains stable floor-pass, but transition score is still plateaued at `53.8`.
    - Latest checkpoint:
-     - patch: `ai_dj.py::_build_auto_shortlist_variant_configs` now reserves a support-overlay slot for both `arrangement_mode=adaptive` and `arrangement_mode=baseline` whenever support candidates exist (`batch_size >= 3`).
-     - effect: support overlays are no longer baseline fallback-only; both mode candidate sets now keep an integrated-support path.
-     - patch: replaced rigid support defaults with an adaptive support-policy recipe:
-       - support gain + mode now respond to seam risk, transition viability, stretch pressure, error delta, arrangement mode, and backbone/donor context.
-       - support payloads now include `support_policy` diagnostics for explainable shortlist decisions.
-       - removed rigid early return that skipped support overlays when swap opportunities were absent.
+     - patch: support decisions now use adaptive `support_policy` (risk + context aware gain/mode) rather than rigid per-label defaults.
+     - patch: adaptive dual-support pairing now uses pair scoring (payoff/build preference with hard risk caps, max/mean risk, error sum, section span, parent diversity) instead of blindly taking first two support candidates.
+     - patch: removed rigid shortlist early-return that skipped support overlays when swap opportunities were empty.
      - regressions:
-       - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_baseline_keeps_support_variant_even_with_core_donor_swaps`
        - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk`
+       - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_dual_support_avoids_extreme_risk_payoff_pair`
      - validation:
-       - `pytest -q tests/test_auto_shortlist_fusion.py -k "variant_configs or support_policy_adapts"` → `16 passed, 4 deselected`.
-       - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py tests/test_core_planner.py tests/test_render_stack.py` → `220 passed, 1 skipped`.
+       - `pytest -q tests/test_auto_shortlist_fusion.py -k "variant_configs or support_policy_adapts or avoids_extreme_risk_payoff_pair"` → `17 passed, 4 deselected`.
+       - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py tests/test_core_planner.py tests/test_render_stack.py` → `221 passed, 1 skipped`.
      - artifact reruns:
-       - `runs/quality_push_pair2_support_primary_baseline_20260327_110021`
-         - policy: `pass+floor`, `promotion_blocked=false`
-         - winner: adaptive `dual_section_support` (`support_01_payoff_build_A`)
-         - winner metrics: `song_likeness=58.2`, `groove=64.3`, `structure=92.2`, `transition=53.8`, `overall=69.9`, `selection_score=73.571`
        - `runs/quality_push_pair2_intelligent_support_policy_20260327_111418`
          - policy: `pass+floor`, `promotion_blocked=false`
-         - winner: adaptive `dual_section_support`
-         - winner metrics: `song_likeness=58.3`, `transition=53.8`, `overall=69.9` (stable pass + slight song-likeness lift).
+         - winner metrics: `song_likeness=58.3`, `transition=53.8`, `overall=69.9`.
+       - `runs/quality_push_pair2_intelligent_dual_pairing_20260327_121042`
+         - policy: `pass+floor`, `promotion_blocked=false`
+         - winner metrics: `song_likeness=58.3`, `transition=53.8`, `overall=69.9`, `selection_score=73.607` (selection-score lift vs prior 73.571).
    - Focus:
-     - transition/mix polish on support-entry + release envelopes,
-     - preserve floor-pass and anti-medley guardrails while pushing transition above current plateau.
+     - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
+     - keep anti-medley penalties and hard-floor gate untouched.
    - Files likely touched:
      - `src/core/render/renderer.py`
      - `src/core/render/resolver.py`
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Run wide multi-pair regression/listening sweep once transition lift patch lands**
-   - Why: support strategy is now represented in both mode sets; next risk is overfitting pair2.
+1. **Transition-lift render patch (support envelope timing + handoff de-clutter) and pair2 rerun**
+   - Why: shortlist intelligence improved selection confidence; audible transition remains bottleneck.
    - Guardrails:
-     - keep hard-floor promotion gating unchanged,
-     - capture per-pair deltas (`song_likeness`, `transition`, `overall`, winner policy),
-     - block promotion if regressions reintroduce medley behavior.
+     - preserve winner policy `pass+floor`,
+     - do not regress song_likeness below 58.0,
+     - keep integrated support as winning path.
 
 ## Blocked Tasks
-1. **Ship-level confidence pass across additional pair catalog**
-   - Blocker: transition bottleneck still plateaued at `53.8` on pair2.
-   - Unblock condition: transition-focused render patch lands with tests and pair2 stays `pass+floor`.
+1. **Wide multi-pair ship-confidence sweep**
+   - Blocker: transition bottleneck still plateaued at `53.8`.
+   - Unblock condition: transition-focused render patch lands and pair2 remains stable under floor gates.
 
 ## Queue Rules (enforced each cycle)
 - Always keep `Current`, `Next`, and `Blocked` sections updated.
