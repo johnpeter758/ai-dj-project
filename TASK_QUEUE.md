@@ -1,29 +1,31 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-26 23:33 EDT (adaptive dual-support variant patch validated)
+Last updated: 2026-03-27 00:20 EDT (pair2 dual-support rerun reached pass+floor)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Rerun pair2 benchmark after adaptive dual-support variant patch**
-   - Why: dual-support candidate generation is now implemented/validated in shortlist config logic, but real-run impact on floor crossing is not measured yet.
-   - Command:
-     - `python ai_dj.py fusion runs/live_fuse_batch_fast_20260325_104746/clips/b.mp3 runs/live_fuse_batch_fast_20260325_104746/clips/c.mp3 --arrangement-mode pro --output runs/quality_push_pair2_bc_after_dual_support_<timestamp>`
-   - Success check:
-     - adaptive pass candidate reaches `song_likeness >= 55.0` while keeping gate `pass`.
+1. **Stabilize adaptive dual-support render quality while preserving floor pass**
+   - Why: pair2 now clears hard floor (`song_likeness=58.2`, winner `pass+floor`) but transition/mix quality is still moderate (`transition=53.6`, `mix_sanity=66.2`).
+   - Focus:
+     - render-side support intensity/shape tuning for payoff+build overlays,
+     - improve transition clarity without losing integrated two-parent identity.
+   - Files likely touched:
+     - `src/core/render/renderer.py`
+     - `src/core/render/resolver.py`
+     - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Tune adaptive support intensity/placement only if rerun remains below floor**
-   - Focus:
-     - preserve reduced medley risk from counterparent supports,
-     - raise song-likeness via support gain/section targeting tweaks without introducing vocal crowding.
-   - Files likely touched:
-     - `ai_dj.py`
-     - `tests/test_auto_shortlist_fusion.py`
+1. **Promote support-overlay strategy from fallback to primary pro-mode candidate path**
+   - Why: unblock condition is now met with a second floor-pass checkpoint on pair2.
+   - Guardrails:
+     - keep anti-medley penalties active,
+     - require at least one integrated support candidate in both adaptive and baseline candidate sets,
+     - preserve hard-floor gating.
 
 ## Blocked Tasks
-1. **Global promotion of support-overlay strategy as default winner path**
-   - Blocker: pair2 still has not demonstrated a second stable `pass+floor` result under unchanged policy.
-   - Unblock condition: pair2 rerun with dual-support path reaches `song_likeness >= 55.0` and floor-pass count > 0.
+1. **Wide regression sweep + artifact listening review across additional pairs**
+   - Blocker: render-tuning pass not yet complete after pair2 dual-support floor-pass.
+   - Unblock condition: transition/mix tuning patch lands with tests and no regressions on pair2.
 
 ## Queue Rules (enforced each cycle)
 - Always keep `Current`, `Next`, and `Blocked` sections updated.
