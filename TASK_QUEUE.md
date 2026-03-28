@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 18:20 EDT (transition-intelligence render experiment benchmarked + rolled back)
+Last updated: 2026-03-27 20:15 EDT (section-specific handoff support-envelope offsets benchmarked + rolled back)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -43,6 +43,10 @@ Owner: execution operator
         - experiment: renderer-side dynamic transition-intelligence shaping (spectral-density-driven entry/tail filter/notch modulation).
         - outcome: no transition lift (`transition=53.6`), selection-score regression (`73.611` vs `73.685`), floor stability held (`pass+floor`, `song_likeness=58.4`, `overall=70.0`).
         - action: experiment rolled back (no code promoted) to preserve best-known branch state.
+      - `runs/quality_push_pair2_label_handoff_offsets_20260327_2015`
+        - experiment: resolver-side section-specific handoff support-envelope offsets (build vs payoff gain/fade shaping).
+        - outcome: winner path and headline metrics unchanged vs best-known checkpoint (`pass+floor`, adaptive dual-support, `song_likeness=58.5`, `transition=53.7`, `overall=70.0`, `selection_score=73.685`).
+        - action: experiment rolled back (no code promoted) to avoid adding complexity without measurable lift.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -52,8 +56,8 @@ Owner: execution operator
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Push transition over 53.8 via section-specific support envelope offsets (build vs payoff) and rerun pair2**
-   - Why: broad renderer transition-intelligence modulation regressed selection score; next pass should target localized support-envelope offsets only (build/payoff handoff sections) to avoid collateral color shifts.
+1. **Push transition over 53.8 via planner-risk bucket tuning for payoff handoffs (without global color shift) and rerun pair2**
+   - Why: localized build/payoff envelope offsets produced no measurable lift; next lever is tighter payoff-only risk/collision bucket thresholds so only the most crowded payoff handoffs get extra cleanup.
    - Guardrails:
      - preserve winner policy `pass+floor`,
      - do not regress song_likeness below 58.0,
