@@ -822,6 +822,29 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         if donor_choice is not None and _op_identity(donor_choice) != _op_identity(primary):
             choices.append(donor_choice)
 
+        # Transition-targeted candidate admission: for explicit handoff sections,
+        # admit one additional lower-crowding section-local alternate even when it
+        # is not the lowest-error option. This widens proposal search toward
+        # cleaner handoff windows before combo ranking decides final pairs.
+        if _is_handoff_mode(primary):
+            primary_error = float(primary.get("error_delta", 99.0) or 99.0)
+            primary_pressure = _handoff_crowding_pressure(primary)
+            seen_choice_ids = {_op_identity(choice) for choice in choices}
+            relief_candidates = [
+                item
+                for item in opportunities_by_section.get(sec_idx, [])
+                if _is_handoff_mode(item)
+                and _op_identity(item) not in seen_choice_ids
+                and float(item.get("error_delta", 99.0) or 99.0) <= primary_error + 0.36
+            ]
+            if relief_candidates:
+                relief_choice = min(relief_candidates, key=_chain_candidate_rank)
+                relief_pressure = _handoff_crowding_pressure(relief_choice)
+                relief_error = float(relief_choice.get("error_delta", 99.0) or 99.0)
+                pressure_delta = primary_pressure - relief_pressure
+                if pressure_delta >= 0.14 and relief_error <= primary_error + 0.30:
+                    choices.append(relief_choice)
+
         # Proposal synthesis: for handoff sections, expand owner-window generation to
         # nearby handoff neighborhoods (radius 2) instead of only immediate adjacency.
         # This lets planner search discover low-crowding ownership bridges that are
