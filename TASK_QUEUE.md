@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 14:15 EDT (planner handoff-chain low-crowding candidate ranking landed + pair2 rerun; transition plateau still active)
+Last updated: 2026-03-28 16:15 EDT (planner two-hop handoff ownership-bridge synthesis landed + pair2 rerun; transition plateau still active)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -156,6 +156,17 @@ Owner: execution operator
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `236 passed, 1 skipped`.
         - outcome: pair2 rerun held stable (`pass+floor`) with unchanged winner path/headline metrics (`support_01_payoff_build_A`, `song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
         - action: keep patch/tests as a planner search-quality guardrail; next lever should expand ownership-window generation beyond same-parent adjacency (current plateau persists).
+      - `runs/quality_push_pair2_twohop_bridge_20260328_1615`
+        - patch: expanded handoff owner-window proposal synthesis from adjacent-only (`±1`) to handoff neighborhood radius (`±2`) and added two-hop owner-bridge preference for same-owner handoff combos.
+        - implementation detail:
+          - `ai_dj.py::_build_auto_shortlist_variant_configs` now tracks nearest handoff-parent distance for each section and can promote materially lower-crowding bridge candidates before primary choices when within error budget.
+          - combo ranking now adds `ownership_bridge_combo` (`same alternate parent`, handoff-bearing, section gap `<=2`) and switches to lower-pressure preference for those bridge combos.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_prefers_two_hop_handoff_owner_bridge_over_higher_crowding_primary_parent`.
+        - validation:
+          - `pytest -q tests/test_auto_shortlist_fusion.py -k "two_hop_handoff_owner_bridge or lower_crowding_handoff_chain_candidate or generated_same_owner_handoff_chain_candidate"` → `3 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `237 passed, 1 skipped`.
+        - outcome: pair2 rerun remained stable (`pass+floor`) with unchanged winner/headline metrics (`support_01_payoff_build_A`, `song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep patch/tests as structure-search expansion; next lever should shift from owner-window topology into transition-targeted candidate admission (currently search diversity up, plateau unchanged).
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.

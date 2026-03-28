@@ -822,32 +822,54 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         if donor_choice is not None and _op_identity(donor_choice) != _op_identity(primary):
             choices.append(donor_choice)
 
-        # Proposal synthesis: if the primary choice for a handoff section cannot form
-        # a contiguous same-owner chain, include the best nearby handoff alternate
-        # that can. Ranking logic then decides if this chain candidate wins.
+        # Proposal synthesis: for handoff sections, expand owner-window generation to
+        # nearby handoff neighborhoods (radius 2) instead of only immediate adjacency.
+        # This lets planner search discover low-crowding ownership bridges that are
+        # one section away from direct adjacency constraints.
         if _is_handoff_mode(primary):
-            adjacent_handoff_parents: set[str] = set()
-            for neighbor_idx in (sec_idx - 1, sec_idx + 1):
-                for neighbor in opportunities_by_section.get(neighbor_idx, []):
-                    if not _is_handoff_mode(neighbor):
-                        continue
-                    parent = str(neighbor.get("alternate_parent") or "")
-                    if parent:
-                        adjacent_handoff_parents.add(parent)
+            handoff_parent_distance: dict[str, int] = {}
+            for radius in (1, 2):
+                for neighbor_idx in (sec_idx - radius, sec_idx + radius):
+                    for neighbor in opportunities_by_section.get(neighbor_idx, []):
+                        if not _is_handoff_mode(neighbor):
+                            continue
+                        parent = str(neighbor.get("alternate_parent") or "")
+                        if not parent:
+                            continue
+                        prior = handoff_parent_distance.get(parent)
+                        if prior is None or radius < prior:
+                            handoff_parent_distance[parent] = radius
 
-            if adjacent_handoff_parents:
+            if handoff_parent_distance:
                 primary_error = float(primary.get("error_delta", 99.0) or 99.0)
+                primary_pressure = _handoff_crowding_pressure(primary)
+                seen_choice_ids = {_op_identity(choice) for choice in choices}
                 chain_candidates = [
                     item
                     for item in opportunities_by_section.get(sec_idx, [])
                     if _is_handoff_mode(item)
-                    and str(item.get("alternate_parent") or "") in adjacent_handoff_parents
-                    and _op_identity(item) not in {_op_identity(choice) for choice in choices}
+                    and str(item.get("alternate_parent") or "") in handoff_parent_distance
+                    and _op_identity(item) not in seen_choice_ids
                     and float(item.get("error_delta", 99.0) or 99.0) <= primary_error + 0.28
                 ]
                 if chain_candidates:
-                    chain_choice = min(chain_candidates, key=_chain_candidate_rank)
-                    choices.append(chain_choice)
+                    chain_choice = min(
+                        chain_candidates,
+                        key=lambda item: (
+                            handoff_parent_distance.get(str(item.get("alternate_parent") or ""), 9),
+                            *_chain_candidate_rank(item),
+                        ),
+                    )
+                    chain_pressure = _handoff_crowding_pressure(chain_choice)
+                    chain_error = float(chain_choice.get("error_delta", 99.0) or 99.0)
+                    pressure_delta = primary_pressure - chain_pressure
+
+                    # If the synthesized handoff-owner bridge is materially less crowded
+                    # and still near the primary error floor, promote it before primary.
+                    if pressure_delta >= 0.12 and chain_error <= primary_error + 0.18:
+                        choices.insert(0, chain_choice)
+                    else:
+                        choices.append(chain_choice)
 
         section_candidates[sec_idx] = choices
 
@@ -910,7 +932,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             base_pressure = min(1.0, base_pressure + 0.12)
         return base_pressure
 
-    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, int, float, int, float, int, int]:
+    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, int, int, float, int, float, int, int]:
         left, right, combo_error = item
         left_label = _normalize_section_label(left.get("section_label"))
         right_label = _normalize_section_label(right.get("section_label"))
@@ -938,13 +960,16 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             and str(left.get("alternate_parent") or "") == str(right.get("alternate_parent") or "")
         )
         ownership_chain_combo = contiguous_sections and same_alt_parent and has_any_handoff
+        ownership_bridge_combo = (section_gap <= 2) and same_alt_parent and has_any_handoff
+        pressure_rank = round(handoff_pressure_sum, 4) if ownership_bridge_combo else -round(handoff_pressure_sum, 4)
         return (
             0 if (prefer_core_donor_combo and has_core_donor) else 1,
             0 if has_handoff_build_or_payoff else 1,
             0 if ownership_chain_combo else 1,
+            0 if ownership_bridge_combo else 1,
             0 if has_payoff_build else 1,
             0 if has_payoff else 1,
-            -round(handoff_pressure_sum, 4),
+            pressure_rank,
             intro_outro_penalty,
             combo_error,
             0 if has_build else 1,
