@@ -535,6 +535,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     {
                         "section_index": index,
                         "section_label": section_label_raw,
+                        "transition_mode": section_diag.get("transition_mode"),
                         "support_parent": support_parent,
                         "support_section_label": support_label,
                         "support_gain_db": recipe["support_gain_db"],
@@ -599,6 +600,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 synthesized = {
                     "section_index": index,
                     "section_label": section_label_raw,
+                    "transition_mode": section_diag.get("transition_mode"),
                     "support_parent": backbone_parent,
                     "support_section_label": selected_window_label,
                     "support_gain_db": recipe["support_gain_db"],
@@ -644,6 +646,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 synthesized = {
                     "section_index": sec_idx,
                     "section_label": section_label,
+                    "transition_mode": op.get("transition_mode"),
                     "support_parent": alt_parent,
                     "support_section_label": str(op.get("alternate_window_label") or ""),
                     "support_gain_db": recipe["support_gain_db"],
@@ -889,6 +892,24 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             policy = dict(item.get("support_policy") or {})
             return float(policy.get("risk", 0.0) or 0.0)
 
+        def _support_transition_mode(item: dict[str, Any]) -> str:
+            return str(item.get("transition_mode") or "").strip().lower().replace("-", "_")
+
+        def _support_handoff_pressure(item: dict[str, Any]) -> float:
+            policy = dict(item.get("support_policy") or {})
+            mode = _support_transition_mode(item)
+            base_pressure = max(
+                float(policy.get("risk", 0.0) or 0.0),
+                float(policy.get("foreground_collision_risk", 0.0) or 0.0),
+                min(1.0, 1.0 - float(policy.get("transition_viability", 0.0) or 0.0)),
+            )
+            label = _support_section_name(item)
+            if label in {"build", "payoff"}:
+                base_pressure = min(1.0, base_pressure + 0.07)
+            if mode in {"arrival_handoff", "single_owner_handoff"}:
+                base_pressure = min(1.0, base_pressure + 0.12)
+            return base_pressure
+
         def _best_dual_support_pair(items: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
             if len(items) < 2:
                 return None
@@ -912,6 +933,17 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     max_risk = max(left_risk, right_risk)
                     mean_risk = (left_risk + right_risk) / 2.0
 
+                    left_mode = _support_transition_mode(left)
+                    right_mode = _support_transition_mode(right)
+                    left_handoff = left_mode in {"arrival_handoff", "single_owner_handoff"}
+                    right_handoff = right_mode in {"arrival_handoff", "single_owner_handoff"}
+                    has_any_handoff = left_handoff or right_handoff
+                    has_handoff_build_or_payoff = (
+                        (left_handoff and left_label in {"build", "payoff"})
+                        or (right_handoff and right_label in {"build", "payoff"})
+                    )
+                    handoff_pressure_sum = _support_handoff_pressure(left) + _support_handoff_pressure(right)
+
                     has_payoff_build = has_payoff and has_build and max_risk <= 0.85
                     payoff_preferred = has_payoff and max_risk <= 0.92
 
@@ -920,8 +952,11 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     same_parent_penalty = 0 if str(left.get("support_parent") or "") != str(right.get("support_parent") or "") else 1
 
                     rank = (
+                        0 if has_handoff_build_or_payoff else 1,
+                        0 if has_any_handoff else 1,
                         0 if has_payoff_build else 1,
                         0 if payoff_preferred else 1,
+                        -round(handoff_pressure_sum, 4),
                         round(max_risk, 4),
                         round(mean_risk, 4),
                         round(error_sum, 4),

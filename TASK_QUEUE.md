@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 04:15 EDT (renderer crowding-conditioned support notch tuning + pair2 rerun)
+Last updated: 2026-03-28 06:15 EDT (planner handoff-weighted dual-support pairing + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -73,6 +73,15 @@ Owner: execution operator
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `229 passed, 1 skipped`.
         - outcome: floor stability held (`pass+floor`) but winner headline metrics were unchanged (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
         - action: keep patch/tests for targeted handoff control; next step should shift leverage toward planner-level section structure/search (transition plateau persists despite resolver+renderer crowding tuning).
+      - `runs/quality_push_pair2_handoff_weighted_dual_support_20260328_0615`
+        - patch: planner shortlist dual-support pair ranking now consumes section `transition_mode` and prioritizes handoff-bearing build/payoff supports before lower-risk flow-only pairs.
+        - implementation detail: `ai_dj.py::_build_auto_shortlist_variant_configs` now persists `transition_mode` in support candidate payloads and adds a handoff-pressure rank term (`max(policy risk/collision/low viability)` + section/mode boosts) in `_best_dual_support_pair`.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_dual_support_prioritizes_handoff_sections`.
+        - validation:
+          - `pytest -q tests/test_auto_shortlist_fusion.py -k "adaptive_dual_support_prioritizes_handoff_sections or adaptive_dual_support_avoids_extreme_risk_payoff_pair or support_policy_adapts_to_transition_risk"` → `3 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `230 passed, 1 skipped`.
+        - outcome: floor stability held and winner path remained adaptive dual-support (`support_01_payoff_build_A`) with unchanged headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep planner pairing patch/tests; next lever remains deeper structure search changes (section-window/ownership choices), not additional support-envelope tweaks.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
