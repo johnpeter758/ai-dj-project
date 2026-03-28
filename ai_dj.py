@@ -796,8 +796,17 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         mode = str(op.get("transition_mode") or "").strip().lower().replace("-", "_")
         return mode in {"arrival_handoff", "single_owner_handoff"}
 
-    def _chain_candidate_rank(op: dict[str, Any]) -> tuple[float, int, float, int]:
+    def _handoff_crowding_pressure(op: dict[str, Any]) -> float:
+        score_breakdown = dict(op.get("score_breakdown") or {})
+        seam_risk = float(score_breakdown.get("seam_risk", 0.0) or 0.0)
+        transition_error = float(score_breakdown.get("transition_viability", 0.0) or 0.0)
+        stretch_ratio = float(score_breakdown.get("stretch_ratio", 1.0) or 1.0)
+        stretch_pressure = min(1.0, abs(stretch_ratio - 1.0) * 3.0)
+        return max(seam_risk, transition_error, stretch_pressure)
+
+    def _chain_candidate_rank(op: dict[str, Any]) -> tuple[float, float, int, float, int]:
         return (
+            _handoff_crowding_pressure(op),
             float(op.get("error_delta", 99.0) or 99.0),
             int(op.get("selection_rank") or 999),
             float(op.get("planner_error", 99.0) or 99.0),
@@ -827,12 +836,14 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                         adjacent_handoff_parents.add(parent)
 
             if adjacent_handoff_parents:
+                primary_error = float(primary.get("error_delta", 99.0) or 99.0)
                 chain_candidates = [
                     item
                     for item in opportunities_by_section.get(sec_idx, [])
                     if _is_handoff_mode(item)
                     and str(item.get("alternate_parent") or "") in adjacent_handoff_parents
                     and _op_identity(item) not in {_op_identity(choice) for choice in choices}
+                    and float(item.get("error_delta", 99.0) or 99.0) <= primary_error + 0.28
                 ]
                 if chain_candidates:
                     chain_choice = min(chain_candidates, key=_chain_candidate_rank)
