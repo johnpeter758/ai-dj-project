@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 06:15 EDT (planner handoff-weighted dual-support pairing + pair2 rerun)
+Last updated: 2026-03-28 10:15 EDT (planner ownership-chain combo priority + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -82,10 +82,31 @@ Owner: execution operator
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `230 passed, 1 skipped`.
         - outcome: floor stability held and winner path remained adaptive dual-support (`support_01_payoff_build_A`) with unchanged headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
         - action: keep planner pairing patch/tests; next lever remains deeper structure search changes (section-window/ownership choices), not additional support-envelope tweaks.
+      - `runs/quality_push_pair2_combo_handoff_priority_20260328_0815`
+        - patch: planner combo (`dual_section_alternate`) ranking now propagates section `transition_mode` from opportunity collection and adds handoff-pressure priority (`seam_risk`, transition error, stretch pressure, section+mode boosts) so payoff/build handoff-bearing combos rank ahead of lower-pressure flow combos when budget is tight.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_prefers_handoff_payoff_combo_over_lower_error_flow_combo`.
+        - validation:
+          - `pytest -q tests/test_auto_shortlist_fusion.py -k "prefers_handoff_payoff_combo_over_lower_error_flow_combo or prioritizes_payoff_combo_when_budget_is_one_combo_slot or prefers_payoff_build_combo_over_payoff_verse_when_single_combo_slot"` → `3 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `231 passed, 1 skipped`.
+        - outcome: pair2 rerun held `pass+floor`; winner remained adaptive dual-support (`support_01_payoff_build_A`) with unchanged headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep planner patch/tests for structure search quality; next leverage remains deeper section-window ownership proposal generation (not ranking-only adjustments).
+      - `runs/quality_push_pair2_handoff_ownership_chain_20260328_1004`
+        - patch: shortlist combo ranking now explicitly rewards contiguous same-owner handoff chains (adjacent sections with same alternate parent + handoff mode) so pro search favors cleaner ownership blocks over lower-error split ownership swaps.
+        - implementation detail: `ai_dj.py::_build_auto_shortlist_variant_configs` adds `ownership_chain_combo` priority in `_combo_priority` (after handoff-bearing core pressure, before raw error) using `section_index` adjacency + shared `alternate_parent` + handoff transition modes.
+        - regressions:
+          - updated `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_prefers_contiguous_handoff_combo_over_lower_error_noncontiguous_combo`.
+          - added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_prefers_contiguous_same_owner_handoff_combo_over_lower_error_split_combo`.
+        - validation:
+          - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_core_planner.py` → `146 passed, 1 skipped`.
+          - `pytest -q tests/test_auto_shortlist_fusion.py tests/test_core_planner.py tests/test_render_stack.py tests/test_pro_fusion_quality.py` → `232 passed, 1 skipped`.
+        - outcome: pair2 rerun preserved winner policy `pass+floor` and support winner path; headline metrics unchanged vs `20260328_0415` (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep ownership-chain ranking guard (minimal/reversible), then target upstream proposal generation (explicit handoff-cluster candidate synthesis before ranking) since ranking-only changes still plateau transition.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
    - Files likely touched:
+     - `ai_dj.py`
+     - `tests/test_auto_shortlist_fusion.py`
      - `src/core/render/renderer.py`
      - `src/core/render/resolver.py`
      - `tests/test_render_stack.py`

@@ -286,6 +286,7 @@ def _collect_plan_variant_opportunities(plan: Any) -> list[dict[str, Any]]:
                 {
                     "section_index": index,
                     "section_label": section_diag.get("label"),
+                    "transition_mode": section_diag.get("transition_mode"),
                     "selected_parent": selected_parent,
                     "selected_window_label": selected_label,
                     "alternate_parent": alternate_parent,
@@ -830,7 +831,25 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         right_label = _normalize_section_label(right.get("section_label"))
         return left_label in {"intro", "outro"} or right_label in {"intro", "outro"}
 
-    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, float, int, int]:
+    def _op_transition_mode(op: dict[str, Any]) -> str:
+        return str(op.get("transition_mode") or "").strip().lower().replace("-", "_")
+
+    def _op_handoff_pressure(op: dict[str, Any]) -> float:
+        score_breakdown = dict(op.get("score_breakdown") or {})
+        seam_risk = float(score_breakdown.get("seam_risk", 0.0) or 0.0)
+        transition_error = float(score_breakdown.get("transition_viability", 0.0) or 0.0)
+        stretch_ratio = float(score_breakdown.get("stretch_ratio", 1.0) or 1.0)
+        stretch_pressure = min(1.0, abs(stretch_ratio - 1.0) * 3.0)
+        base_pressure = max(seam_risk, transition_error, stretch_pressure)
+
+        section_label = _normalize_section_label(op.get("section_label"))
+        if section_label in {"build", "payoff"}:
+            base_pressure = min(1.0, base_pressure + 0.06)
+        if _op_transition_mode(op) in {"arrival_handoff", "single_owner_handoff"}:
+            base_pressure = min(1.0, base_pressure + 0.12)
+        return base_pressure
+
+    def _combo_priority(item: tuple[dict[str, Any], dict[str, Any], float]) -> tuple[int, int, int, int, int, float, int, float, int, int]:
         left, right, combo_error = item
         left_label = _normalize_section_label(left.get("section_label"))
         right_label = _normalize_section_label(right.get("section_label"))
@@ -838,13 +857,33 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         has_build = left_label == "build" or right_label == "build"
         has_payoff_build = has_payoff and has_build
         has_core_donor = _combo_has_core_donor(item)
+        left_mode = _op_transition_mode(left)
+        right_mode = _op_transition_mode(right)
+        left_handoff = left_mode in {"arrival_handoff", "single_owner_handoff"}
+        right_handoff = right_mode in {"arrival_handoff", "single_owner_handoff"}
+        has_any_handoff = left_handoff or right_handoff
+        has_handoff_build_or_payoff = (
+            (left_handoff and left_label in {"build", "payoff"})
+            or (right_handoff and right_label in {"build", "payoff"})
+        )
+        handoff_pressure_sum = _op_handoff_pressure(left) + _op_handoff_pressure(right)
         intro_outro_penalty = int(left_label in {"intro", "outro"}) + int(right_label in {"intro", "outro"})
         left_idx = int(left.get("section_index", 0) or 0)
         right_idx = int(right.get("section_index", 0) or 0)
+        section_gap = abs(left_idx - right_idx)
+        contiguous_sections = section_gap == 1
+        same_alt_parent = (
+            str(left.get("alternate_parent") or "")
+            and str(left.get("alternate_parent") or "") == str(right.get("alternate_parent") or "")
+        )
+        ownership_chain_combo = contiguous_sections and same_alt_parent and has_any_handoff
         return (
             0 if (prefer_core_donor_combo and has_core_donor) else 1,
+            0 if has_handoff_build_or_payoff else 1,
+            0 if ownership_chain_combo else 1,
             0 if has_payoff_build else 1,
             0 if has_payoff else 1,
+            -round(handoff_pressure_sum, 4),
             intro_outro_penalty,
             combo_error,
             0 if has_build else 1,
