@@ -526,6 +526,48 @@ def test_resolve_render_plan_handoff_support_profile_prefers_explicit_planner_ri
     assert high_risk_support.fade_out_sec > low_risk_support.fade_out_sec
 
 
+def test_resolve_render_plan_handoff_support_profile_tightens_high_crowding_build_handoffs(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 660.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+
+    base_section = PlannedSection(
+        label='build',
+        start_bar=0,
+        bar_count=4,
+        source_parent='A',
+        source_section_label='phrase_0_2',
+        support_parent='B',
+        support_section_label='phrase_0_2',
+        support_mode='filtered_support',
+        transition_mode='arrival_handoff',
+        support_gain_db=-10.0,
+    )
+    crowded_plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0),
+        sections=[replace(base_section, support_transition_risk=0.78, support_foreground_collision_risk=0.66, support_transition_viability=0.25)],
+    )
+    clean_plan = ChildArrangementPlan(
+        parents=crowded_plan.parents,
+        compatibility=crowded_plan.compatibility,
+        sections=[replace(base_section, support_transition_risk=0.32, support_foreground_collision_risk=0.2, support_transition_viability=0.82)],
+    )
+
+    crowded_manifest = resolve_render_plan(crowded_plan, a, b)
+    clean_manifest = resolve_render_plan(clean_plan, a, b)
+    crowded_support = next(work for work in crowded_manifest.work_orders if work.order_type == 'section_support')
+    clean_support = next(work for work in clean_manifest.work_orders if work.order_type == 'section_support')
+
+    assert crowded_support.gain_db < clean_support.gain_db
+    assert crowded_support.fade_in_sec > clean_support.fade_in_sec
+    assert crowded_support.fade_out_sec > clean_support.fade_out_sec
+
+
 def test_resolve_render_plan_handoff_support_profile_tightens_low_viability_payoff_handoffs(tmp_path: Path):
     p1 = write_sine(tmp_path / 'a.wav', 220.0)
     p2 = write_sine(tmp_path / 'b.wav', 660.0)

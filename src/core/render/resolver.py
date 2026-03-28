@@ -347,6 +347,24 @@ def _resolve_support_overlay_profile(
             gain_db -= 0.35
             fade_out_sec = min(1.4, max(fade_out_sec * 1.08, target_duration_sec * 0.25))
 
+        # Convert calibrated planner signals into a single crowding pressure for handoff shaping.
+        # This allows build/payoff handoffs with genuinely bad seams to get stronger cleanup
+        # while leaving healthy handoffs mostly untouched.
+        crowding_pressure = (
+            (risk_signal * 0.45)
+            + (collision_signal * 0.35)
+            + ((1.0 - viability_signal) * 0.20)
+        )
+
+        if crowding_pressure >= 0.64:
+            gain_db -= 0.28
+            fade_in_sec = min(1.32, max(fade_in_sec * 1.08, target_duration_sec * 0.21))
+            fade_out_sec = min(1.42, max(fade_out_sec * 1.1, target_duration_sec * 0.26))
+
+        if label == 'build' and crowding_pressure >= 0.7:
+            gain_db -= 0.18
+            fade_out_sec = min(1.46, max(fade_out_sec * 1.05, target_duration_sec * 0.27))
+
         # Payoff handoffs are where lingering support clutter hurts perceived transition the most.
         # Tighten only crowded + low-viability payoff arrivals so we avoid global color shifts.
         if label == 'payoff' and risk_signal >= 0.56 and collision_signal >= 0.42 and viability_signal <= 0.45:

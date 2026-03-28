@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 00:24 EDT (planner viability calibration pass + pair2 rerun)
+Last updated: 2026-03-28 02:22 EDT (resolver crowding-pressure handoff tuning + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -57,6 +57,12 @@ Owner: execution operator
         - outcome: floor stability held (`pass+floor`) and winner remained adaptive dual-support (`support_01_payoff_build_A`); winner support policy now shows crowded payoff/build handoffs (`collision≈0.61/0.60`, `transition_viability≈0.389/0.400`).
         - metrics: `song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729` (selection/overall lift vs prior best `73.685`/`70.0`, transition unchanged).
         - action: keep patch; next step is render-side handoff envelope threshold tuning to convert calibrated planner signals into measurable transition lift.
+      - `runs/quality_push_pair2_handoff_crowding_tuning_20260328_0216`
+        - patch: resolver support handoff shaping now computes `crowding_pressure = 0.45*risk + 0.35*collision + 0.20*(1-viability)` and applies extra duck/fade tightening when pressure is elevated, including a stronger build-specific bucket for very crowded handoffs.
+        - regressions: added `tests/test_render_stack.py::test_resolve_render_plan_handoff_support_profile_tightens_high_crowding_build_handoffs`.
+        - validation: `pytest -q tests/test_render_stack.py -k "handoff_support_profile"` → `5 passed`; `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `227 passed, 1 skipped`.
+        - outcome: floor stability held (`pass+floor`) with unchanged winner path and headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep patch/tests; next lever is renderer-side dynamic notch/HPF intensity keyed off the same planner crowding signals (resolver envelope-only tuning did not lift transition).
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
