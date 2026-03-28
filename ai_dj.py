@@ -994,7 +994,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     chain_mismatch_penalty = 0
                     if contiguous_pair and has_payoff_build:
                         if left_handoff != right_handoff:
-                            chain_mismatch_penalty = 2
+                            chain_mismatch_penalty = 3 if max_risk >= 0.50 else 2
                         elif not same_transition_mode:
                             chain_mismatch_penalty = 1
 

@@ -778,6 +778,39 @@ def test_build_auto_shortlist_variant_configs_adaptive_dual_support_avoids_mixed
     assert set(labels) != {'build', 'payoff'}
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_dual_support_penalizes_high_risk_mixed_handoff_chain():
+    verse = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
+    payoff = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12')
+
+    build['transition_mode'] = 'single_owner_handoff'
+    payoff['transition_mode'] = 'same_parent_flow'
+
+    # Keep the build/payoff pair viable but above the high-risk mismatch threshold.
+    build['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.58, 'transition_viability': 0.58})
+    payoff['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.53, 'transition_viability': 0.53})
+    verse['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.28, 'transition_viability': 0.29})
+
+    for sec in (verse, build, payoff):
+        sec['candidate_shortlist'][-1] = dict(sec['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [verse, build, payoff],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    dual_support = next(config for config in configs if config['strategy'] == 'dual_section_support')
+    labels = {str(item.get('section_label') or '').strip().lower() for item in dual_support['supports']}
+
+    assert labels != {'build', 'payoff'}
+
+
 def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk():
     def _build_plan_with_risk(*, seam_risk: float, transition_viability: float):
         build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
