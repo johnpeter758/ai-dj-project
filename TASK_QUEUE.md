@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 23:34 EDT (nightly checkpoint: regression suite pass + GitHub push)
+Last updated: 2026-03-28 00:24 EDT (planner viability calibration pass + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -52,6 +52,11 @@ Owner: execution operator
         - patch: resolver support profile now includes payoff-only low-viability handoff bucket (`risk+collision` high and `transition_viability` low) for extra duck/fade cleanup.
         - outcome: floor stability held (`pass+floor`) but winner metrics were unchanged (`song_likeness=58.5`, `transition=53.7`, `overall=70.0`, `selection_score=73.685`).
         - action: keep patch + tests; next step is planner-side viability calibration so payoff-specific bucket activates only on truly crowded handoffs in pair2.
+      - `runs/quality_push_pair2_viability_calibration_20260328_0015`
+        - patch: support policy calibration now records planner-aligned `transition_error`, calibrated `transition_viability` (health-style), and `foreground_collision_risk` for shortlist-generated support overlays.
+        - outcome: floor stability held (`pass+floor`) and winner remained adaptive dual-support (`support_01_payoff_build_A`); winner support policy now shows crowded payoff/build handoffs (`collision≈0.61/0.60`, `transition_viability≈0.389/0.400`).
+        - metrics: `song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729` (selection/overall lift vs prior best `73.685`/`70.0`, transition unchanged).
+        - action: keep patch; next step is render-side handoff envelope threshold tuning to convert calibrated planner signals into measurable transition lift.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -61,8 +66,8 @@ Owner: execution operator
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Push transition over 53.8 via planner viability/risk calibration for payoff handoffs and rerun pair2**
-   - Why: payoff-only resolver viability bucket landed but pair2 winner metrics stayed flat, indicating planner seam signals are not yet driving the new bucket on the winning path.
+1. **Push transition over 53.8 via render-side handoff envelope tuning using calibrated planner collision/viability signals**
+   - Why: planner-side support policy calibration now feeds richer crowding/viability signals into winning pair2 support overlays, but transition remains at `53.7`.
    - Guardrails:
      - preserve winner policy `pass+floor`,
      - do not regress song_likeness below 58.0,

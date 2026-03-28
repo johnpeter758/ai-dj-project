@@ -400,7 +400,27 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             base_gain = -10.0
 
         stretch_pressure = min(1.0, abs(float(stretch_ratio or 1.0) - 1.0) * 3.0)
-        risk = max(0.0, min(1.0, max(float(seam_risk or 0.0), float(transition_viability or 0.0), stretch_pressure)))
+        transition_error = max(0.0, min(1.0, float(transition_viability or 0.0)))
+        risk = max(0.0, min(1.0, max(float(seam_risk or 0.0), transition_error, stretch_pressure)))
+
+        transition_health = 1.0 - transition_error
+        crowding_pressure = max(float(seam_risk or 0.0), risk, min(1.0, float(error_delta or 0.0) / 2.0), stretch_pressure)
+        viability_penalty = 0.0
+        if normalized_label == "payoff":
+            viability_penalty += 0.22 * max(0.0, crowding_pressure - 0.50)
+        elif normalized_label == "build":
+            viability_penalty += 0.12 * max(0.0, crowding_pressure - 0.56)
+        if selected_parent and backbone_parent and selected_parent != backbone_parent:
+            viability_penalty += 0.08
+        calibrated_transition_viability = max(0.0, min(1.0, transition_health - viability_penalty))
+
+        collision_risk = max(
+            float(seam_risk or 0.0),
+            min(1.0, 1.0 - calibrated_transition_viability),
+            min(1.0, 0.55 * risk + 0.35 * float(seam_risk or 0.0)),
+        )
+        if normalized_label == "payoff" and risk >= 0.58:
+            collision_risk = min(1.0, collision_risk + 0.08)
 
         gain = float(base_gain)
         if arrangement_mode_local == "adaptive":
@@ -437,6 +457,9 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
 
         policy = {
             "risk": round(float(risk), 3),
+            "foreground_collision_risk": round(float(collision_risk), 3),
+            "transition_viability": round(float(calibrated_transition_viability), 3),
+            "transition_error": round(float(transition_error), 3),
             "base_gain_db": float(base_gain),
             "arrangement_mode": arrangement_mode_local or "unknown",
             "source_kind": source_kind,

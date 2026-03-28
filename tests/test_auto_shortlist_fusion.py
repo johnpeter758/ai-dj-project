@@ -687,6 +687,9 @@ def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transitio
     assert high_risk_support['support_mode'] == 'filtered_counterlayer'
     assert low_risk_support['support_mode'] == 'foreground_counterlayer'
     assert high_risk_support['support_gain_db'] < low_risk_support['support_gain_db']
+    assert high_risk_support['support_policy']['transition_viability'] < low_risk_support['support_policy']['transition_viability']
+    assert high_risk_support['support_policy']['foreground_collision_risk'] > low_risk_support['support_policy']['foreground_collision_risk']
+    assert high_risk_support['support_policy']['transition_error'] > low_risk_support['support_policy']['transition_error']
 
 
 def test_build_auto_shortlist_variant_configs_adaptive_synthesizes_counterparent_support_when_core_options_are_same_parent_only():
