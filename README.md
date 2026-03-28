@@ -2,6 +2,10 @@
 
 VocalFusion's codebase for turning two parent songs into one intentional child arrangement.
 
+## Product definition
+
+For the canonical scope and permanent design rules, see [`docs/VOCALFUSION_PRODUCT_DEFINITION.md`](docs/VOCALFUSION_PRODUCT_DEFINITION.md).
+
 ## The VocalFusion pyramid
 
 GitHub should be read top-down as a hierarchy, not as a flat bag of modules.

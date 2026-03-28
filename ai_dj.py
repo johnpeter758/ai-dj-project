@@ -23,6 +23,14 @@ from src.feedback_learning import build_feedback_learning_summary, write_feedbac
 
 LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity", "song_likeness")
 
+# VocalFusion permanent design rules (product definition guardrails):
+# 1) Keep only musically necessary elements active at any moment.
+# 2) Every section should serve a clear purpose (setup/build/tension/release/swap/peak/outro).
+VOCALFUSION_PERMANENT_DESIGN_RULES = (
+    "Only musically necessary elements should be active at any point in time.",
+    "Every section must have a purpose: setup, build, tension, release, swap, peak, or outro.",
+)
+
 
 LISTENER_AGENT_COMPONENT_WEIGHTS = {
     "overall_score": 0.32,
