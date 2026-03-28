@@ -1,10 +1,27 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 10:35 EDT (adaptive dual-support transition-chain smoothing + pair2 rerun)
+Last updated: 2026-03-28 12:07 EDT (Song Birth phase-12 integration test + benchmark sweep landed; transition plateau task still active)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Break transition plateau via structure/planner levers while preserving pass+floor stability**
+1. **Complete Song Birth integration (phase 9 + phase 12) and restore audible quality lift**
+   - Newly shipped baseline architecture (all pushed):
+     - `docs/VOCALFUSION_PRODUCT_DEFINITION.md` + README anchor + design-rule constants (`512e6b4`)
+     - `song_dna.py` + `tests/test_song_dna.py` (`512e6b4`)
+     - `match_finder.py` + `tests/test_match_finder.py` (`4bc3d63`)
+     - `ai_dj_timeline.py`, `arrangement_plan.py`, `dsp.py`, `stem_usage.py`, `energy_arc.py`, `mix_intelligence.py`, `mix_refiner.py` + tests (`4dc64f7`)
+   - Validation snapshot:
+     - `pytest` full targeted suite → `260 passed, 1 skipped`.
+     - `./.venv/bin/python -m pytest -q tests/test_song_birth_integration.py` → `1 passed` (new phase-12 integration coverage).
+   - Phase-12 integration + benchmark sweep (2026-03-28 12:06 EDT):
+     - added `tests/test_song_birth_integration.py` (lightweight end-to-end fusion+listen orchestration flow validating artifact outputs + listen score schema).
+     - added `scripts/run_song_birth_benchmark.py` (single deterministic pass; uses real pair2 clips when present, otherwise explicit demo fallback with logged reason).
+     - benchmark artifact: `runs/song_birth_phase12_20260328_120611/song_birth_benchmark_summary.json`.
+     - outcome: `mode=real`, `passed=true`, artifacts present (`render_manifest.json`, `child_raw.wav`, `child_master.wav`, `listen_report.json`), summary notes empty.
+   - Remaining high-leverage gap:
+     - wire `mixing_v2.py` orchestration artifacts into the real audio-quality acceptance loop (pair2 benchmark + listening gate), then iterate until outputs stop sounding like DJ song switching while preserving `pass+floor` constraints.
+
+2. **Break transition plateau via structure/planner levers while preserving pass+floor stability**
    - Why: resolver+renderer crowding tuning held floor-pass and selection stability, but pair2 transition remains stuck in the `53.6-53.8` band.
    - Latest checkpoint:
      - patch: support decisions now use adaptive `support_policy` (risk + context aware gain/mode) rather than rigid per-label defaults.
