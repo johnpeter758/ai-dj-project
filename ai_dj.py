@@ -778,10 +778,12 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         return donor_bias, error_delta
 
     donor_by_section: dict[int, dict[str, Any]] = {}
+    opportunities_by_section: dict[int, list[dict[str, Any]]] = {}
     for op in opportunities:
         sec_idx = _section_index_of(op, default=-1)
         if sec_idx < 0:
             continue
+        opportunities_by_section.setdefault(sec_idx, []).append(op)
         existing = by_section.get(sec_idx)
         if existing is None or _combo_section_rank(op) < _combo_section_rank(existing):
             by_section[sec_idx] = op
@@ -790,12 +792,52 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             if donor_existing is None or _combo_section_rank(op) < _combo_section_rank(donor_existing):
                 donor_by_section[sec_idx] = op
 
+    def _is_handoff_mode(op: dict[str, Any]) -> bool:
+        mode = str(op.get("transition_mode") or "").strip().lower().replace("-", "_")
+        return mode in {"arrival_handoff", "single_owner_handoff"}
+
+    def _chain_candidate_rank(op: dict[str, Any]) -> tuple[float, int, float, int]:
+        return (
+            float(op.get("error_delta", 99.0) or 99.0),
+            int(op.get("selection_rank") or 999),
+            float(op.get("planner_error", 99.0) or 99.0),
+            _section_index_of(op, default=999),
+        )
+
     section_candidates: dict[int, list[dict[str, Any]]] = {}
     for sec_idx in sorted(by_section):
-        choices = [by_section[sec_idx]]
+        primary = by_section[sec_idx]
+        choices = [primary]
+
         donor_choice = donor_by_section.get(sec_idx)
-        if donor_choice is not None and _op_identity(donor_choice) != _op_identity(choices[0]):
+        if donor_choice is not None and _op_identity(donor_choice) != _op_identity(primary):
             choices.append(donor_choice)
+
+        # Proposal synthesis: if the primary choice for a handoff section cannot form
+        # a contiguous same-owner chain, include the best nearby handoff alternate
+        # that can. Ranking logic then decides if this chain candidate wins.
+        if _is_handoff_mode(primary):
+            adjacent_handoff_parents: set[str] = set()
+            for neighbor_idx in (sec_idx - 1, sec_idx + 1):
+                for neighbor in opportunities_by_section.get(neighbor_idx, []):
+                    if not _is_handoff_mode(neighbor):
+                        continue
+                    parent = str(neighbor.get("alternate_parent") or "")
+                    if parent:
+                        adjacent_handoff_parents.add(parent)
+
+            if adjacent_handoff_parents:
+                chain_candidates = [
+                    item
+                    for item in opportunities_by_section.get(sec_idx, [])
+                    if _is_handoff_mode(item)
+                    and str(item.get("alternate_parent") or "") in adjacent_handoff_parents
+                    and _op_identity(item) not in {_op_identity(choice) for choice in choices}
+                ]
+                if chain_candidates:
+                    chain_choice = min(chain_candidates, key=_chain_candidate_rank)
+                    choices.append(chain_choice)
+
         section_candidates[sec_idx] = choices
 
     combo_candidates: list[tuple[dict[str, Any], dict[str, Any], float]] = []

@@ -432,6 +432,67 @@ def test_build_auto_shortlist_variant_configs_prefers_contiguous_same_owner_hand
     assert combo_labels == {'bridge', 'payoff'}
 
 
+def test_build_auto_shortlist_variant_configs_prefers_generated_same_owner_handoff_chain_candidate_over_lower_error_split_handoff_combo():
+    verse = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'C', 'phrase_8_10')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'C', 'phrase_9_11')
+    payoff = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12')
+
+    verse['transition_mode'] = 'single_owner_handoff'
+    build['transition_mode'] = 'arrival_handoff'
+    payoff['transition_mode'] = 'arrival_handoff'
+
+    # Build primary alternate points at C with slightly lower error, but a B alternate exists in shortlist.
+    build['cross_parent_best_alternate']['parent_id'] = 'C'
+    build['cross_parent_best_alternate']['window_label'] = 'phrase_9_11_c'
+    build['cross_parent_best_alternate']['error_delta_vs_selected'] = 0.08
+    build['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.42, 'transition_viability': 0.38})
+    build['candidate_shortlist'][-1] = dict(build['cross_parent_best_alternate'])
+    build['candidate_shortlist'].append(
+        {
+            'rank': 3,
+            'parent_id': 'B',
+            'window_label': 'phrase_9_11_b',
+            'selected': False,
+            'planner_error': 0.39,
+            'error_delta_vs_selected': 0.11,
+            'score_breakdown': {
+                'stretch_ratio': 1.04,
+                'stretch_gate': 0.0,
+                'seam_risk': 0.44,
+                'transition_viability': 0.40,
+            },
+        }
+    )
+
+    payoff['cross_parent_best_alternate']['parent_id'] = 'B'
+    payoff['cross_parent_best_alternate']['window_label'] = 'phrase_10_12_b'
+    payoff['cross_parent_best_alternate']['error_delta_vs_selected'] = 0.10
+    payoff['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.45, 'transition_viability': 0.41})
+    payoff['candidate_shortlist'][-1] = dict(payoff['cross_parent_best_alternate'])
+
+    # Keep verse as a viable but less relevant option so build+payoff is still the intended combo family.
+    verse['cross_parent_best_alternate']['error_delta_vs_selected'] = 0.13
+    verse['candidate_shortlist'][-1] = dict(verse['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [verse, build, payoff],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    combo = next(config for config in configs if config['strategy'] == 'dual_section_alternate')
+    combo_labels = {str(swap.get('section_label') or '').strip().lower() for swap in combo.get('swaps', [])}
+    combo_parents = {str(swap.get('alternate_parent') or '').strip() for swap in combo.get('swaps', [])}
+
+    assert combo_labels == {'build', 'payoff'}
+    assert combo_parents == {'B'}
+
+
+
 def test_build_auto_shortlist_variant_configs_forces_core_donor_single_before_same_parent_fallback():
     payoff_same_parent = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'A', 'phrase_10_12')
     verse_donor = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
