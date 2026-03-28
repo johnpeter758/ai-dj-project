@@ -986,11 +986,23 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     has_payoff_build = has_payoff and has_build and max_risk <= 0.85
                     payoff_preferred = has_payoff and max_risk <= 0.92
 
+                    left_section_idx = _section_index_of(left, default=0)
+                    right_section_idx = _section_index_of(right, default=0)
+                    section_span = abs(left_section_idx - right_section_idx)
+                    contiguous_pair = section_span == 1
+                    same_transition_mode = bool(left_mode and left_mode == right_mode)
+                    chain_mismatch_penalty = 0
+                    if contiguous_pair and has_payoff_build:
+                        if left_handoff != right_handoff:
+                            chain_mismatch_penalty = 2
+                        elif not same_transition_mode:
+                            chain_mismatch_penalty = 1
+
                     error_sum = float(left.get("error_delta", 99.0) or 99.0) + float(right.get("error_delta", 99.0) or 99.0)
-                    section_span = abs(_section_index_of(left, default=0) - _section_index_of(right, default=0))
                     same_parent_penalty = 0 if str(left.get("support_parent") or "") != str(right.get("support_parent") or "") else 1
 
                     rank = (
+                        chain_mismatch_penalty,
                         0 if has_handoff_build_or_payoff else 1,
                         0 if has_any_handoff else 1,
                         0 if has_payoff_build else 1,

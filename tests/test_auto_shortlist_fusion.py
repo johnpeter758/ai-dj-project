@@ -744,6 +744,40 @@ def test_build_auto_shortlist_variant_configs_adaptive_dual_support_prioritizes_
     assert 'build' in labels
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_dual_support_avoids_mixed_handoff_chain_for_contiguous_build_payoff():
+    verse = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
+    payoff = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'B', 'phrase_10_12')
+
+    # Keep all risks in-range so pairing choice is driven by chain smoothness.
+    verse['transition_mode'] = 'same_parent_flow'
+    build['transition_mode'] = 'single_owner_handoff'
+    payoff['transition_mode'] = 'same_parent_flow'
+
+    verse['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.22, 'transition_viability': 0.26})
+    build['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.24, 'transition_viability': 0.30})
+    payoff['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.23, 'transition_viability': 0.27})
+
+    for sec in (verse, build, payoff):
+        sec['candidate_shortlist'][-1] = dict(sec['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [verse, build, payoff],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    dual_support = next(config for config in configs if config['strategy'] == 'dual_section_support')
+    labels = [str(item.get('section_label') or '').strip().lower() for item in dual_support['supports']]
+
+    assert set(labels) != {'build', 'payoff'}
+
+
 def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk():
     def _build_plan_with_risk(*, seam_risk: float, transition_viability: float):
         build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')

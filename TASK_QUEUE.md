@@ -90,6 +90,16 @@ Owner: execution operator
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `231 passed, 1 skipped`.
         - outcome: pair2 rerun held `pass+floor`; winner remained adaptive dual-support (`support_01_payoff_build_A`) with unchanged headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
         - action: keep planner patch/tests for structure search quality; next leverage remains deeper section-window ownership proposal generation (not ranking-only adjustments).
+      - `runs/quality_push_pair2_contiguous_handoff_combo_20260328_1015`
+        - patch: planner combo ranking now adds contiguous ownership-chain preference for handoff-bearing combos (`adjacent section_index`, same `alternate_parent`, explicit handoff mode) so shortlist favors structurally coherent handoff chains over split/noncontiguous alternatives when errors are close.
+        - regressions: added
+          - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_prefers_contiguous_handoff_combo_over_lower_error_noncontiguous_combo`
+          - `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_prefers_contiguous_same_owner_handoff_combo_over_lower_error_split_combo`
+        - validation:
+          - `pytest -q tests/test_auto_shortlist_fusion.py -k "contiguous_handoff_combo or same_owner_handoff_combo or prefers_handoff_payoff_combo_over_lower_error_flow_combo or prioritizes_payoff_combo_when_budget_is_one_combo_slot or prefers_payoff_build_combo_over_payoff_verse_when_single_combo_slot"` → `4 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `232 passed, 1 skipped`.
+        - outcome: pair2 rerun held `pass+floor`; winner remained adaptive dual-support (`support_01_payoff_build_A`) with unchanged headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep contiguous ownership-chain priority patch/tests; next leverage remains deeper section-window ownership proposal generation because ranking-only refinements are stable but transition plateau persists.
       - `runs/quality_push_pair2_handoff_ownership_chain_20260328_1004`
         - patch: shortlist combo ranking now explicitly rewards contiguous same-owner handoff chains (adjacent sections with same alternate parent + handoff mode) so pro search favors cleaner ownership blocks over lower-error split ownership swaps.
         - implementation detail: `ai_dj.py::_build_auto_shortlist_variant_configs` adds `ownership_chain_combo` priority in `_combo_priority` (after handoff-bearing core pressure, before raw error) using `section_index` adjacency + shared `alternate_parent` + handoff transition modes.
