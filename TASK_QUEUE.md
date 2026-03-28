@@ -1,11 +1,11 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 02:22 EDT (resolver crowding-pressure handoff tuning + pair2 rerun)
+Last updated: 2026-03-28 04:15 EDT (renderer crowding-conditioned support notch tuning + pair2 rerun)
 Owner: execution operator
 
 ## Current Task (active now)
-1. **Raise transition quality while preserving pass+floor stability**
-   - Why: pair2 remains stable floor-pass, but transition score is still stuck in the `53.6-53.8` band.
+1. **Break transition plateau via structure/planner levers while preserving pass+floor stability**
+   - Why: resolver+renderer crowding tuning held floor-pass and selection stability, but pair2 transition remains stuck in the `53.6-53.8` band.
    - Latest checkpoint:
      - patch: support decisions now use adaptive `support_policy` (risk + context aware gain/mode) rather than rigid per-label defaults.
      - patch: adaptive dual-support pairing now uses pair scoring (payoff/build preference with hard risk caps, max/mean risk, error sum, section span, parent diversity) instead of blindly taking first two support candidates.
@@ -63,6 +63,16 @@ Owner: execution operator
         - validation: `pytest -q tests/test_render_stack.py -k "handoff_support_profile"` → `5 passed`; `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `227 passed, 1 skipped`.
         - outcome: floor stability held (`pass+floor`) with unchanged winner path and headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
         - action: keep patch/tests; next lever is renderer-side dynamic notch/HPF intensity keyed off the same planner crowding signals (resolver envelope-only tuning did not lift transition).
+      - `runs/quality_push_pair2_renderer_crowding_notch_20260328_0415`
+        - patch: renderer `section_support` entry/tail shaping is now crowding-conditioned for handoff transitions using resolved support gain as a risk proxy (dynamic handoff HPF start/end, notch bandwidth, notch depth, and tail LP end-frequency tightening for build/payoff).
+        - regressions: added
+          - `tests/test_render_stack.py::test_apply_support_entry_shape_build_entry_notches_high_crowding_handoff_more_than_low_crowding_handoff`
+          - `tests/test_render_stack.py::test_apply_support_entry_shape_build_tail_notches_high_crowding_handoff_more_than_low_crowding_handoff`
+        - validation:
+          - `pytest -q tests/test_render_stack.py -k "support_entry_shape"` → `10 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `229 passed, 1 skipped`.
+        - outcome: floor stability held (`pass+floor`) but winner headline metrics were unchanged (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
+        - action: keep patch/tests for targeted handoff control; next step should shift leverage toward planner-level section structure/search (transition plateau persists despite resolver+renderer crowding tuning).
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -72,8 +82,8 @@ Owner: execution operator
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Push transition over 53.8 via render-side handoff envelope tuning using calibrated planner collision/viability signals**
-   - Why: planner-side support policy calibration now feeds richer crowding/viability signals into winning pair2 support overlays, but transition remains at `53.7`.
+1. **Structure/planner pivot: improve section-level ownership/transition plan before render shaping**
+   - Why: two consecutive crowding-focused render/resolver passes held quality gates but did not move transition; highest leverage is now upstream section planning.
    - Guardrails:
      - preserve winner policy `pass+floor`,
      - do not regress song_likeness below 58.0,

@@ -408,6 +408,16 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
     section_label = str(getattr(section, 'label', '') or '').strip().lower()
     transition_mode = _normalize_transition_mode_token(getattr(section, 'transition_mode', None))
 
+    support_gain_db = float(getattr(work, 'gain_db', -10.0) or -10.0)
+    # Use resolved support gain as a crowding proxy for handoff transitions.
+    # Lower gain generally means resolver detected a higher-risk seam and already ducked harder.
+    if support_gain_db <= -12.0:
+        crowding_intensity = 1.0
+    elif support_gain_db >= -9.0:
+        crowding_intensity = 0.0
+    else:
+        crowding_intensity = float(np.clip((-9.0 - support_gain_db) / 3.0, 0.0, 1.0))
+
     entry_sec = float(min(max(getattr(work, 'fade_in_sec', 0.0), 0.0) * 1.35, 1.2, max(getattr(work, 'target_duration_sec', 0.0) * 0.45, 0.0)))
     entry_samples = min(out.shape[1], max(0, int(round(entry_sec * sr))))
     if entry_samples > 32:
@@ -424,6 +434,9 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
         if role != 'foreground_counterlayer':
             hp_start = 240.0 if section_label in {'build', 'payoff'} else 200.0
             hp_end = 110.0
+            if transition_mode in {'arrival_handoff', 'single_owner_handoff'} and section_label in {'build', 'payoff'}:
+                hp_start += 70.0 * crowding_intensity
+                hp_end += 16.0 * crowding_intensity
             cutoff = np.linspace(hp_start, hp_end, entry_samples, endpoint=True, dtype=np.float32)
             intro = _one_pole_highpass(out[:, :entry_samples], cutoff, sr)
             if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
@@ -433,8 +446,9 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
                 notch_low_hz, notch_high_hz = 380.0, 2600.0
                 notch_strength = 0.28
                 if transition_mode in {'arrival_handoff', 'single_owner_handoff'}:
-                    notch_low_hz, notch_high_hz = 340.0, 2900.0
-                    notch_strength = 0.36
+                    notch_low_hz = 340.0 - (20.0 * crowding_intensity)
+                    notch_high_hz = 2900.0 + (250.0 * crowding_intensity)
+                    notch_strength = 0.30 + (0.16 * crowding_intensity)
                 elif transition_mode in {'same_parent_flow', 'backbone_flow'}:
                     notch_low_hz, notch_high_hz = 420.0, 2350.0
                     notch_strength = 0.22
@@ -469,6 +483,8 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
 
         if role != 'foreground_counterlayer':
             tail = out[:, -release_samples:]
+            if transition_mode in {'arrival_handoff', 'single_owner_handoff'} and section_label in {'build', 'payoff'}:
+                lp_end_hz = max(3000.0, lp_end_hz - (420.0 * crowding_intensity))
             cutoff = np.linspace(lp_start_hz, lp_end_hz, release_samples, endpoint=True, dtype=np.float32)
             tail = _one_pole_lowpass(tail, cutoff, sr)
             if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
@@ -477,8 +493,9 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
                 notch_low_hz, notch_high_hz = 320.0, 2100.0
                 notch_strength = 1.0
                 if transition_mode in {'arrival_handoff', 'single_owner_handoff'}:
-                    notch_low_hz, notch_high_hz = 300.0, 2350.0
-                    notch_strength = 1.0
+                    notch_low_hz = 310.0 - (20.0 * crowding_intensity)
+                    notch_high_hz = 2250.0 + (220.0 * crowding_intensity)
+                    notch_strength = 0.78 + (0.22 * crowding_intensity)
                 elif transition_mode in {'same_parent_flow', 'backbone_flow'}:
                     notch_low_hz, notch_high_hz = 360.0, 1950.0
                     notch_strength = 0.65
