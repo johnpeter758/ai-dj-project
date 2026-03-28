@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 20:15 EDT (section-specific handoff support-envelope offsets benchmarked + rolled back)
+Last updated: 2026-03-27 22:22 EDT (payoff handoff viability-bucket tuning benchmarked)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -47,6 +47,10 @@ Owner: execution operator
         - experiment: resolver-side section-specific handoff support-envelope offsets (build vs payoff gain/fade shaping).
         - outcome: winner path and headline metrics unchanged vs best-known checkpoint (`pass+floor`, adaptive dual-support, `song_likeness=58.5`, `transition=53.7`, `overall=70.0`, `selection_score=73.685`).
         - action: experiment rolled back (no code promoted) to avoid adding complexity without measurable lift.
+      - `runs/quality_push_pair2_payoff_viability_bucket_20260327_2215`
+        - patch: resolver support profile now includes payoff-only low-viability handoff bucket (`risk+collision` high and `transition_viability` low) for extra duck/fade cleanup.
+        - outcome: floor stability held (`pass+floor`) but winner metrics were unchanged (`song_likeness=58.5`, `transition=53.7`, `overall=70.0`, `selection_score=73.685`).
+        - action: keep patch + tests; next step is planner-side viability calibration so payoff-specific bucket activates only on truly crowded handoffs in pair2.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -56,8 +60,8 @@ Owner: execution operator
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Push transition over 53.8 via planner-risk bucket tuning for payoff handoffs (without global color shift) and rerun pair2**
-   - Why: localized build/payoff envelope offsets produced no measurable lift; next lever is tighter payoff-only risk/collision bucket thresholds so only the most crowded payoff handoffs get extra cleanup.
+1. **Push transition over 53.8 via planner viability/risk calibration for payoff handoffs and rerun pair2**
+   - Why: payoff-only resolver viability bucket landed but pair2 winner metrics stayed flat, indicating planner seam signals are not yet driving the new bucket on the winning path.
    - Guardrails:
      - preserve winner policy `pass+floor`,
      - do not regress song_likeness below 58.0,

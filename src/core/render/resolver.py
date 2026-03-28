@@ -291,6 +291,7 @@ def _resolve_support_overlay_profile(
     support_gain_db: float,
     support_transition_risk: float | None = None,
     support_foreground_collision_risk: float | None = None,
+    support_transition_viability: float | None = None,
 ) -> tuple[float, float, float]:
     """Tune support layer gain/edges for cleaner transitions.
 
@@ -328,6 +329,11 @@ def _resolve_support_overlay_profile(
             collision_signal = 0.0
         collision_signal = max(0.0, min(1.0, float(collision_signal)))
 
+        viability_signal = support_transition_viability
+        if viability_signal is None:
+            viability_signal = 0.5
+        viability_signal = max(0.0, min(1.0, float(viability_signal)))
+
         if risk_signal >= 0.62:
             gain_db -= 0.45
             fade_in_sec = min(1.25, max(fade_in_sec * 1.12, target_duration_sec * 0.2))
@@ -340,6 +346,13 @@ def _resolve_support_overlay_profile(
         if collision_signal >= 0.45:
             gain_db -= 0.35
             fade_out_sec = min(1.4, max(fade_out_sec * 1.08, target_duration_sec * 0.25))
+
+        # Payoff handoffs are where lingering support clutter hurts perceived transition the most.
+        # Tighten only crowded + low-viability payoff arrivals so we avoid global color shifts.
+        if label == 'payoff' and risk_signal >= 0.56 and collision_signal >= 0.42 and viability_signal <= 0.45:
+            gain_db -= 0.4
+            fade_in_sec = min(1.35, max(fade_in_sec * 1.1, target_duration_sec * 0.22))
+            fade_out_sec = min(1.45, max(fade_out_sec * 1.12, target_duration_sec * 0.27))
     elif mode in {'same_parent_flow', 'backbone_flow'}:
         gain_db += 0.35
         fade_in_sec = min(fade_in_sec, max(0.18, target_duration_sec * 0.1))
@@ -932,6 +945,7 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
                 support_gain_db=float(sec.support_gain_db if sec.support_gain_db is not None else -10.0),
                 support_transition_risk=sec.support_transition_risk,
                 support_foreground_collision_risk=sec.support_foreground_collision_risk,
+                support_transition_viability=sec.support_transition_viability,
             )
             work_orders.append(AudioWorkOrder(
                 order_id=f"section_{idx}_support",
