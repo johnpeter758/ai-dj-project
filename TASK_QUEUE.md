@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-27 22:22 EDT (payoff handoff viability-bucket tuning benchmarked)
+Last updated: 2026-03-27 23:34 EDT (nightly checkpoint: regression suite pass + GitHub push)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -24,6 +24,7 @@ Owner: execution operator
        - `pytest -q tests/test_render_stack.py -k "handoff_support_profile"` → `3 passed`.
        - `pytest -q tests/test_auto_shortlist_fusion.py -k "applies_support_overlay_to_section_and_diagnostics"` → `1 passed`.
        - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `225 passed, 1 skipped`.
+       - `./.venv/bin/python -m pytest -q tests/test_pro_fusion_quality.py tests/test_render_stack.py tests/test_core_planner.py` (nightly sanity rerun) → `205 passed, 1 skipped`.
      - artifact reruns:
        - `runs/quality_push_pair2_intelligent_support_policy_20260327_111418`
          - policy: `pass+floor`, `promotion_blocked=false`
