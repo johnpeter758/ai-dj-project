@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 12:12 EDT (planner handoff continuity parent-rank pivot shipped + phase-12 benchmark rerun; baseline fully stable, transition plateau unchanged)
+Last updated: 2026-03-29 12:23 EDT (adaptive multi-support shortlist topology candidate shipped + phase-12 benchmark rerun; baseline stable, no measurable delta yet)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -257,6 +257,18 @@ Owner: execution operator
           - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `246 passed, 1 skipped`.
         - artifact rerun: `runs/song_birth_phase12_20260329_120831/song_birth_benchmark_summary.json` matched baseline `runs/song_birth_phase12_20260329_041752/song_birth_benchmark_summary.json` exactly (`pass+floor`; winner adaptive; `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
         - action: keep patch/tests; next pass should shift to shortlist generation breadth (e.g., 3-support adaptive candidate and owner-run-length constraints) because pair-ranking perturbations are no longer moving benchmark outputs.
+      - 2026-03-29 12:15 ET adaptive multi-support shortlist topology pass
+        - patch: expanded adaptive support-slot generation in `ai_dj.py::_build_auto_shortlist_variant_configs` with `_best_triple_support_group`, enabling a `multi_section_support` variant (3 supports) when support breadth is available.
+        - implementation detail:
+          - triple-candidate admission is constrained to broader support sets (`>=4` candidates), requires handoff-bearing build+payoff coverage, unique section indexes, and risk cap (`max_risk <= 0.92`).
+          - ranking favors same-parent continuity around handoff seams (`dominant_parent_count >= 2`), higher handoff participation, lower crowding pressure, lower risk/error, and tighter span.
+          - existing dual-support behavior remains unchanged as fallback when no qualifying triple group exists.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_multi_support_prefers_handoff_continuity_triplet_when_available`.
+        - validation:
+          - `./.venv/bin/python -m pytest -q tests/test_auto_shortlist_fusion.py -k "adaptive_multi_support_prefers_handoff_continuity_triplet_when_available or prefers_same_parent_handoff_payoff_pair_for_continuity or prefers_lower_crowding_handoff_payoff_pair"` → `3 passed`.
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `247 passed, 1 skipped`.
+        - artifact rerun: `runs/song_birth_phase12_20260329_121839/song_birth_benchmark_summary.json` remained unchanged vs baseline (`pass+floor`; adaptive winner; `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
+        - action: keep topology-expansion patch/tests; next pass should enforce owner-run-length constraints or handoff-cluster quotas in candidate generation to force winner-path perturbation while preserving floor/similarity guardrails.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -285,3 +297,27 @@ Owner: execution operator
 - When current task is done, move next -> current immediately.
 - If blocked, document blocker and continue with next highest-value task.
 - Never end a cycle without updating this file.
+
+### 2026-03-29 — Advanced 24/7 reliability stack landed
+- Added durable autopilot orchestrator: `scripts/autopilot_orchestrator.py`
+  - resumable state JSON (`runs/autopilot/state.json`)
+  - overlap lock (`state.json.lock`)
+  - bounded `--single-cycle` mode for cron
+  - deterministic failure recording + `next_step` pointers
+  - `AUTOPILOT_STOP` stop-switch support
+- Added champion/challenger gate: `scripts/champion_gate.py`
+  - benchmark discovery + explicit benchmark input support
+  - guardrails (`overall_pass`, `gating_pass`, song-likeness floor, score floor)
+  - measurable delta threshold (`--min-delta`) before promotion
+  - champion pointer/history persistence (`runs/champion/current.json`, `runs/champion/history.json`)
+- Added gateway-mesh artifacts:
+  - `config/litellm.reliability.yaml`
+  - `docs/gateway-mesh-readiness.md`
+- Added tests:
+  - `tests/test_autopilot_orchestrator.py`
+  - `tests/test_champion_gate.py`
+  - `tests/conftest.py`
+- Validation:
+  - `./.venv/bin/pytest -q tests/test_autopilot_orchestrator.py tests/test_champion_gate.py`
+- Next highest-leverage step:
+  - wire `scripts/champion_gate.py` directly into post-benchmark completion so every successful benchmark run auto-evaluates promotion.

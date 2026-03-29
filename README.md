@@ -202,6 +202,49 @@ To inspect the available `{placeholder}` fields for `--change-command` and `--te
 python3 scripts/closed_loop_listener_runner.py --print-template-fields
 ```
 
+## 24/7 advanced autopilot
+
+### Run one bounded cycle (cron-safe)
+
+```bash
+python3 scripts/autopilot_orchestrator.py \
+  --command "./.venv/bin/python scripts/run_song_birth_benchmark.py" \
+  --single-cycle \
+  --state-path runs/autopilot/state.json
+```
+
+### Run continuous loop with checkpointing
+
+```bash
+python3 scripts/autopilot_orchestrator.py \
+  --command "./.venv/bin/python scripts/run_song_birth_benchmark.py" \
+  --sleep-seconds 90 \
+  --state-path runs/autopilot/state.json
+```
+
+### Stop safely
+
+```bash
+touch AUTOPILOT_STOP
+```
+
+### Evaluate challenger promotion
+
+```bash
+python3 scripts/champion_gate.py \
+  --benchmarks-dir runs \
+  --champion-pointer runs/champion/current.json \
+  --champion-history runs/champion/history.json \
+  --min-song-likeness 80 \
+  --min-score 70 \
+  --min-delta 0.5
+```
+
+### Gateway mesh readiness
+
+- Reliability template: `config/litellm.reliability.yaml`
+- Ops runbook: `docs/gateway-mesh-readiness.md`
+
 ## Current checkpoint highlights
 
 - deterministic render v1 stack exists and is tested

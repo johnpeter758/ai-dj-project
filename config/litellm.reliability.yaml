@@ -1,0 +1,41 @@
+# LiteLLM reliability template for VocalFusion gateway mesh.
+# Copy and adapt values for your deployment.
+
+model_list:
+  - model_name: vocalfusion_primary
+    litellm_params:
+      model: ollama/llama3.2
+      api_base: http://127.0.0.1:11434
+      timeout: 45
+      stream_timeout: 60
+  - model_name: vocalfusion_cloud_fallback
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 45
+
+router_settings:
+  routing_strategy: latency-based-routing
+  num_retries: 3
+  retry_after: 1
+  timeout: 50
+  allowed_fails: 2
+  cooldown_time: 30
+  default_litellm_params:
+    max_retries: 2
+
+  # Circuit-style behavior: quickly pull unhealthy lane out of rotation.
+  fallbacks:
+    - vocalfusion_primary:
+        - vocalfusion_cloud_fallback
+
+  # Optional hard fallback for global provider outages.
+  context_window_fallbacks:
+    - vocalfusion_cloud_fallback:
+        - vocalfusion_primary
+
+litellm_settings:
+  set_verbose: false
+  drop_params: true
+  success_callback: []
+  failure_callback: []
