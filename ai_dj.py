@@ -1126,7 +1126,16 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                             chain_mismatch_penalty = 1
 
                     error_sum = float(left.get("error_delta", 99.0) or 99.0) + float(right.get("error_delta", 99.0) or 99.0)
-                    same_parent_penalty = 0 if str(left.get("support_parent") or "") != str(right.get("support_parent") or "") else 1
+                    left_parent = str(left.get("support_parent") or "")
+                    right_parent = str(right.get("support_parent") or "")
+                    same_parent = bool(left_parent and left_parent == right_parent)
+
+                    # For handoff-bearing build/payoff support pairs, bias toward
+                    # survivable same-parent continuity; elsewhere keep parent diversity.
+                    if has_handoff_build_or_payoff:
+                        parent_relation_rank = 0 if same_parent else 1
+                    else:
+                        parent_relation_rank = 0 if not same_parent else 1
 
                     # For handoff-bearing support pairs, prefer tighter section span so
                     # integrated support reinforces local continuity instead of sounding
@@ -1154,7 +1163,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                         round(max_risk, 4),
                         round(mean_risk, 4),
                         round(error_sum, 4),
-                        same_parent_penalty,
+                        parent_relation_rank,
                         span_rank,
                     )
                     if best_rank is None or rank < best_rank:

@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 10:24 EDT (planner multi-relief handoff candidate admission shipped + phase-12 benchmark rerun; baseline stable, transition seam gap still open)
+Last updated: 2026-03-29 12:12 EDT (planner handoff continuity parent-rank pivot shipped + phase-12 benchmark rerun; baseline fully stable, transition plateau unchanged)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -248,6 +248,15 @@ Owner: execution operator
           - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `245 passed, 1 skipped`.
         - artifact rerun: `runs/song_birth_phase12_20260329_101759/song_birth_benchmark_summary.json` remained stable (`pass+floor`, adaptive winner `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
         - action: keep patch/tests; next pass should target planner candidate diversity that can perturb winner path (e.g., handoff relief parent-diversity quotas or support-pair gating), since current plateau remains despite broader admission.
+      - 2026-03-29 12:08 ET planner handoff continuity parent-rank pivot
+        - patch: adjusted adaptive dual-support pair ranking in `ai_dj.py::_build_auto_shortlist_variant_configs` so handoff-bearing build/payoff support pairs now prefer same-parent continuity before tie-breaks, while non-handoff pairing keeps parent-diversity preference.
+        - rationale: reduce handoff source-switch feel in integrated-support windows by biasing survivable ownership continuity exactly where transition seams are most exposed.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_same_parent_handoff_payoff_pair_for_continuity`.
+        - validation:
+          - `./.venv/bin/python -m pytest -q tests/test_auto_shortlist_fusion.py -k "prefers_same_parent_handoff_payoff_pair_for_continuity or prefers_lower_crowding_handoff_payoff_pair or prefers_local_handoff_span_over_wide_span"` → `3 passed`.
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `246 passed, 1 skipped`.
+        - artifact rerun: `runs/song_birth_phase12_20260329_120831/song_birth_benchmark_summary.json` matched baseline `runs/song_birth_phase12_20260329_041752/song_birth_benchmark_summary.json` exactly (`pass+floor`; winner adaptive; `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
+        - action: keep patch/tests; next pass should shift to shortlist generation breadth (e.g., 3-support adaptive candidate and owner-run-length constraints) because pair-ranking perturbations are no longer moving benchmark outputs.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
@@ -259,17 +268,17 @@ Owner: execution operator
      - `tests/test_render_stack.py`
 
 ## Next Task (auto-start immediately after current)
-1. **Structure/planner pivot: improve section-level ownership/transition plan before render shaping**
-   - Why: two consecutive crowding-focused render/resolver passes held quality gates but did not move transition; highest leverage is now upstream section planning.
+1. **Shortlist-generation pivot: break adaptive winner lock with broader support topology candidates**
+   - Why: repeated pair-ranking perturbations (including same-parent continuity bias) pass all gates but still produce byte-identical phase-12 winner/metrics.
    - Guardrails:
      - preserve winner policy `pass+floor`,
-     - do not regress song_likeness below 58.0,
-     - target transition `>53.8` while keeping integrated support as winning path.
+     - do not regress song_likeness below 80.0 on phase-12 benchmark,
+     - require measurable benchmark delta versus `song_birth_phase12_20260329_041752` (winner path, selection score, or transition score).
 
 ## Blocked Tasks
 1. **Wide multi-pair ship-confidence sweep**
-   - Blocker: transition bottleneck still plateaued at `53.8`.
-   - Unblock condition: transition-focused render patch lands and pair2 remains stable under floor gates.
+   - Blocker: phase-12 pair2 outputs are currently locked to the same adaptive winner/score vector despite multiple planner+render ranking refinements; no measurable delta to justify wider sweep yet.
+   - Unblock condition: land a shortlist-generation change that produces a measurable phase-12 delta versus `song_birth_phase12_20260329_041752` while preserving `pass+floor` and song-likeness guardrails.
 
 ## Queue Rules (enforced each cycle)
 - Always keep `Current`, `Next`, and `Blocked` sections updated.

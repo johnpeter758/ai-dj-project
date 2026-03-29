@@ -1208,6 +1208,39 @@ def test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_lowe
     assert 'payoff-high' not in labels
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_same_parent_handoff_payoff_pair_for_continuity():
+    payoff_same = _make_section_with_alternate('payoff-same', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
+    payoff_split = _make_section_with_alternate('payoff-split', 'A', 'phrase_4_6', 'C', 'phrase_10_12')
+
+    for sec in (payoff_same, build, payoff_split):
+        sec['transition_mode'] = 'arrival_handoff'
+        sec['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.26, 'transition_viability': 0.30})
+        sec['candidate_shortlist'][-1] = dict(sec['cross_parent_best_alternate'])
+
+    payoff_split['cross_parent_best_alternate']['planner_error'] = payoff_same['cross_parent_best_alternate']['planner_error']
+    payoff_split['cross_parent_best_alternate']['error_delta_vs_selected'] = payoff_same['cross_parent_best_alternate']['error_delta_vs_selected']
+    payoff_split['candidate_shortlist'][-1] = dict(payoff_split['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [payoff_same, build, payoff_split],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    dual_support = next(config for config in configs if config['strategy'] == 'dual_section_support')
+    by_label = {str(item.get('section_label') or '').strip().lower(): str(item.get('support_parent') or '') for item in dual_support['supports']}
+
+    assert by_label.get('build') == 'B'
+    assert by_label.get('payoff-same') == 'B'
+    assert 'payoff-split' not in by_label
+
+
 def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk():
     def _build_plan_with_risk(*, seam_risk: float, transition_viability: float):
         build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
