@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 02:15 EDT (pair2 phase-12 benchmark sweep rerun completed; baseline remains stable while transition seam gap persists)
+Last updated: 2026-03-29 04:17 EDT (planner risk→render crowding wiring pass shipped + phase-12 benchmark rerun; baseline remains stable while transition seam gap persists)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -205,6 +205,15 @@ Owner: execution operator
         - fusion policy/result: `pass+floor`, adaptive winner unchanged (`selection_score=73.729`, `overall=70.1`).
         - listen gate result: `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`.
         - action: baseline remains stable; next high-leverage pass should target integrated-support transition seam cleanup in structure/planner+render coordination while preserving current floor/similarity margins.
+      - 2026-03-29 04:15 ET planner→render crowding signal wiring pass
+        - patch: `ResolvedSection` now carries support seam diagnostics (`support_transition_risk`, `support_foreground_collision_risk`, `support_transition_viability`) through resolver output, and renderer support entry/tail shaping now prefers these explicit signals over support-gain proxy when computing handoff crowding intensity.
+        - rationale: keep render cleanup aligned with planner seam intent in handoff-sensitive build/payoff sections instead of inferring risk only from post-resolver gain.
+        - regressions: added `tests/test_render_stack.py::test_apply_support_entry_shape_prefers_explicit_section_crowding_signals_over_gain_proxy`.
+        - validation:
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py -k "support_entry_shape or handoff_support_profile"` → `16 passed`.
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `242 passed, 1 skipped`.
+        - artifact rerun: `runs/song_birth_phase12_20260329_041752/song_birth_benchmark_summary.json` remained stable (`pass+floor`, `selection_score=73.729`, listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
+        - action: keep patch/tests; next pass should tune handoff-specific support release contour against explicit crowding buckets to target transition lift without reducing song-likeness.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.

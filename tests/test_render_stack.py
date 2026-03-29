@@ -1819,6 +1819,53 @@ def test_apply_support_entry_shape_build_tail_notches_high_crowding_handoff_more
     assert high_proj < low_proj * 0.93
 
 
+def test_apply_support_entry_shape_prefers_explicit_section_crowding_signals_over_gain_proxy():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    mid_tone = np.sin(2 * np.pi * 1000.0 * t).astype(np.float32)
+    segment = np.vstack([mid_tone, mid_tone])
+
+    # Keep support gain identical so only section-level crowding signals can drive stronger cleanup.
+    work = Dummy(
+        order_type='section_support',
+        role='filtered_support',
+        gain_db=-10.2,
+        fade_in_sec=0.65,
+        fade_out_sec=0.45,
+        target_duration_sec=seconds,
+    )
+
+    high_section = Dummy(
+        label='build',
+        transition_mode='arrival_handoff',
+        support_transition_risk=0.86,
+        support_foreground_collision_risk=0.74,
+        support_transition_viability=0.22,
+    )
+    low_section = Dummy(
+        label='build',
+        transition_mode='arrival_handoff',
+        support_transition_risk=0.28,
+        support_foreground_collision_risk=0.14,
+        support_transition_viability=0.84,
+    )
+
+    high = _apply_support_entry_shape(segment, sr, work, high_section)
+    low = _apply_support_entry_shape(segment, sr, work, low_section)
+
+    head_slice = slice(int(0.03 * sr), int(0.26 * sr))
+    t_head = t[: head_slice.stop - head_slice.start]
+    carrier = np.sin(2 * np.pi * 1000.0 * t_head)
+    high_proj = np.abs(np.mean(high[0, head_slice] * carrier))
+    low_proj = np.abs(np.mean(low[0, head_slice] * carrier))
+    assert high_proj < low_proj * 0.92
+
+
 def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
     sr = 44100
     seconds = 2.0

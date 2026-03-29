@@ -72,6 +72,9 @@ class ResolvedSection:
     transition_in: TransitionType | None = None
     transition_out: TransitionType | None = None
     transition_mode: str | None = None
+    support_transition_risk: float | None = None
+    support_foreground_collision_risk: float | None = None
+    support_transition_viability: float | None = None
     stretch_ratio: float = 1.0
     semitone_shift: float = 0.0
     warnings: list[str] = field(default_factory=list)

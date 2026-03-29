@@ -409,14 +409,25 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
     transition_mode = _normalize_transition_mode_token(getattr(section, 'transition_mode', None))
 
     support_gain_db = float(getattr(work, 'gain_db', -10.0) or -10.0)
-    # Use resolved support gain as a crowding proxy for handoff transitions.
-    # Lower gain generally means resolver detected a higher-risk seam and already ducked harder.
-    if support_gain_db <= -12.0:
-        crowding_intensity = 1.0
-    elif support_gain_db >= -9.0:
-        crowding_intensity = 0.0
+    # Prefer explicit planner seam signals carried through resolved sections for handoff crowding.
+    # Fall back to support-gain proxy when explicit signals are absent.
+    risk_signal = getattr(section, 'support_transition_risk', None)
+    collision_signal = getattr(section, 'support_foreground_collision_risk', None)
+    viability_signal = getattr(section, 'support_transition_viability', None)
+
+    explicit_signals = risk_signal is not None or collision_signal is not None or viability_signal is not None
+    if explicit_signals:
+        risk = float(np.clip(0.0 if risk_signal is None else risk_signal, 0.0, 1.0))
+        collision = float(np.clip(0.0 if collision_signal is None else collision_signal, 0.0, 1.0))
+        viability = float(np.clip(0.5 if viability_signal is None else viability_signal, 0.0, 1.0))
+        crowding_intensity = float(np.clip((risk * 0.45) + (collision * 0.35) + ((1.0 - viability) * 0.20), 0.0, 1.0))
     else:
-        crowding_intensity = float(np.clip((-9.0 - support_gain_db) / 3.0, 0.0, 1.0))
+        if support_gain_db <= -12.0:
+            crowding_intensity = 1.0
+        elif support_gain_db >= -9.0:
+            crowding_intensity = 0.0
+        else:
+            crowding_intensity = float(np.clip((-9.0 - support_gain_db) / 3.0, 0.0, 1.0))
 
     entry_sec = float(min(max(getattr(work, 'fade_in_sec', 0.0), 0.0) * 1.35, 1.2, max(getattr(work, 'target_duration_sec', 0.0) * 0.45, 0.0)))
     entry_samples = min(out.shape[1], max(0, int(round(entry_sec * sr))))
