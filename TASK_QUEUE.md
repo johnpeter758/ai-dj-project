@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 04:17 EDT (planner risk→render crowding wiring pass shipped + phase-12 benchmark rerun; baseline remains stable while transition seam gap persists)
+Last updated: 2026-03-29 06:20 EDT (renderer handoff release-contour crowding pass shipped + phase-12 benchmark rerun; baseline stable, transition seam gap still open)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -214,6 +214,17 @@ Owner: execution operator
           - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `242 passed, 1 skipped`.
         - artifact rerun: `runs/song_birth_phase12_20260329_041752/song_birth_benchmark_summary.json` remained stable (`pass+floor`, `selection_score=73.729`, listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
         - action: keep patch/tests; next pass should tune handoff-specific support release contour against explicit crowding buckets to target transition lift without reducing song-likeness.
+      - 2026-03-29 06:15 ET renderer handoff release-contour crowding pass
+        - patch: `src/core/render/renderer.py::_apply_support_entry_shape` now applies handoff build/payoff release contours that explicitly scale with crowding intensity when section-level seam diagnostics are present.
+        - implementation detail:
+          - added crowding-aware release-envelope shaping (`release_curve_exp`, deeper `tail_floor_db`, early-release duck contour) for `arrival_handoff` / `single_owner_handoff` filtered support layers in build/payoff sections.
+          - strengthened handoff tail low-pass tightening under high crowding (`lp_end_hz` floor now reaches deeper cleanup bucket) while leaving flow sections unchanged.
+        - regressions: added `tests/test_render_stack.py::test_apply_support_entry_shape_handoff_release_contour_ducks_high_crowding_earlier_than_low_crowding`.
+        - validation:
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py -k "support_entry_shape_prefers_explicit_section_crowding_signals_over_gain_proxy or handoff_release_contour_ducks_high_crowding_earlier_than_low_crowding"` → `2 passed`.
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `243 passed, 1 skipped`.
+        - artifact rerun: `runs/song_birth_phase12_20260329_061742/song_birth_benchmark_summary.json` remained stable (`pass+floor`, winner adaptive, `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
+        - action: keep patch/tests; next pass should pivot back upstream to planner-side section ownership/proposal moves because renderer-only contour tuning preserved quality floor but did not lift transition.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.

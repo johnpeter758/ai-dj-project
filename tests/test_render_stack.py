@@ -1866,6 +1866,52 @@ def test_apply_support_entry_shape_prefers_explicit_section_crowding_signals_ove
     assert high_proj < low_proj * 0.92
 
 
+def test_apply_support_entry_shape_handoff_release_contour_ducks_high_crowding_earlier_than_low_crowding():
+    class Dummy:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    sr = 44100
+    seconds = 2.0
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False, dtype=np.float32)
+    mid_tone = np.sin(2 * np.pi * 1000.0 * t).astype(np.float32)
+    segment = np.vstack([mid_tone, mid_tone])
+
+    work = Dummy(
+        order_type='section_support',
+        role='filtered_support',
+        gain_db=-10.1,
+        fade_in_sec=0.4,
+        fade_out_sec=0.7,
+        target_duration_sec=seconds,
+    )
+
+    high_section = Dummy(
+        label='payoff',
+        transition_mode='single_owner_handoff',
+        support_transition_risk=0.88,
+        support_foreground_collision_risk=0.76,
+        support_transition_viability=0.2,
+    )
+    low_section = Dummy(
+        label='payoff',
+        transition_mode='single_owner_handoff',
+        support_transition_risk=0.24,
+        support_foreground_collision_risk=0.12,
+        support_transition_viability=0.86,
+    )
+
+    high = _apply_support_entry_shape(segment, sr, work, high_section)
+    low = _apply_support_entry_shape(segment, sr, work, low_section)
+
+    early_release = slice(int(1.10 * sr), int(1.32 * sr))
+    t_release = t[: early_release.stop - early_release.start]
+    carrier = np.sin(2 * np.pi * 1000.0 * t_release)
+    high_proj = np.abs(np.mean(high[0, early_release] * carrier))
+    low_proj = np.abs(np.mean(low[0, early_release] * carrier))
+    assert high_proj < low_proj * 0.9
+
+
 def test_find_cue_safe_head_offset_samples_detects_delayed_attack_inside_fade_window():
     sr = 44100
     seconds = 2.0

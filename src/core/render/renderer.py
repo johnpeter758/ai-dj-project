@@ -479,6 +479,7 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
     )
     release_samples = min(out.shape[1], max(0, int(round(release_sec * sr))))
     if release_samples > 32:
+        handoff_build_payoff = transition_mode in {'arrival_handoff', 'single_owner_handoff'} and section_label in {'build', 'payoff'}
         if role == 'foreground_counterlayer':
             tail_floor_db = -2.0 if section_label in {'build', 'payoff'} else -1.0
             lp_start_hz, lp_end_hz = 9000.0, 5600.0
@@ -486,16 +487,30 @@ def _apply_support_entry_shape(segment: np.ndarray, sr: int, work, section) -> n
             tail_floor_db = -4.5 if section_label in {'build', 'payoff'} else -3.0
             lp_start_hz, lp_end_hz = (7600.0, 3800.0) if section_label in {'build', 'payoff'} else (9000.0, 5200.0)
 
+        release_curve_exp = 1.25
+        if handoff_build_payoff and role in {'filtered_support', 'filtered_counterlayer'}:
+            release_curve_exp += 0.35 + (0.45 * crowding_intensity)
+            tail_floor_db -= 0.6 + (0.8 * crowding_intensity)
+
         release_ramp = np.linspace(0.0, 1.0, release_samples, endpoint=True, dtype=np.float32)
-        release_ramp = np.power(release_ramp, np.float32(1.25))
+        release_ramp = np.power(release_ramp, np.float32(release_curve_exp))
         tail_floor = np.float32(10 ** (tail_floor_db / 20.0))
         tail_env = 1.0 - (1.0 - tail_floor) * release_ramp
+
+        if handoff_build_payoff and role in {'filtered_support', 'filtered_counterlayer'}:
+            contour = np.linspace(0.0, 1.0, release_samples, endpoint=True, dtype=np.float32)
+            contour = np.power(contour, np.float32(0.9))
+            early_duck_db = 0.8 + (1.6 * crowding_intensity)
+            early_duck = np.float32(10 ** (-early_duck_db / 20.0))
+            contour_env = early_duck + (1.0 - early_duck) * contour
+            tail_env *= contour_env
+
         out[:, -release_samples:] *= tail_env[np.newaxis, :]
 
         if role != 'foreground_counterlayer':
             tail = out[:, -release_samples:]
-            if transition_mode in {'arrival_handoff', 'single_owner_handoff'} and section_label in {'build', 'payoff'}:
-                lp_end_hz = max(3000.0, lp_end_hz - (420.0 * crowding_intensity))
+            if handoff_build_payoff:
+                lp_end_hz = max(2800.0, lp_end_hz - (520.0 * crowding_intensity))
             cutoff = np.linspace(lp_start_hz, lp_end_hz, release_samples, endpoint=True, dtype=np.float32)
             tail = _one_pole_lowpass(tail, cutoff, sr)
             if section_label in {'build', 'payoff'} and role in {'filtered_support', 'filtered_counterlayer'}:
