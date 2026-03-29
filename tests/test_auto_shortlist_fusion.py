@@ -1058,6 +1058,41 @@ def test_build_auto_shortlist_variant_configs_adaptive_dual_support_penalizes_hi
     assert labels != {'build', 'payoff'}
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_local_handoff_span_over_wide_span():
+    verse = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'C', 'phrase_12_14')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
+    intro = _make_section_with_alternate('intro', 'A', 'phrase_0_2', 'B', 'phrase_6_8')
+    outro = _make_section_with_alternate('outro', 'A', 'phrase_14_16', 'B', 'phrase_18_20')
+    bridge = _make_section_with_alternate('bridge', 'A', 'phrase_8_10', 'C', 'phrase_16_18')
+
+    verse['transition_mode'] = 'same_parent_flow'
+    build['transition_mode'] = 'arrival_handoff'
+    bridge['transition_mode'] = 'same_parent_flow'
+
+    verse['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.34, 'transition_viability': 0.36})
+    build['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.35, 'transition_viability': 0.37})
+    bridge['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.34, 'transition_viability': 0.36})
+
+    for sec in (verse, build, bridge):
+        sec['candidate_shortlist'][-1] = dict(sec['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [verse, build, intro, outro, bridge],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    dual_support = next(config for config in configs if config['strategy'] == 'dual_section_support')
+    labels = {str(item.get('section_label') or '').strip().lower() for item in dual_support['supports']}
+
+    assert labels == {'verse', 'build'}
+
+
 def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk():
     def _build_plan_with_risk(*, seam_risk: float, transition_viability: float):
         build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')

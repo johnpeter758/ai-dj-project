@@ -1110,6 +1110,12 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     error_sum = float(left.get("error_delta", 99.0) or 99.0) + float(right.get("error_delta", 99.0) or 99.0)
                     same_parent_penalty = 0 if str(left.get("support_parent") or "") != str(right.get("support_parent") or "") else 1
 
+                    # For handoff-bearing support pairs, prefer tighter section span so
+                    # integrated support reinforces local continuity instead of sounding
+                    # like long-distance source switching. Keep wider-span preference for
+                    # non-handoff pairs to preserve arrangement breadth exploration.
+                    span_rank = section_span if has_handoff_build_or_payoff else -section_span
+
                     rank = (
                         chain_mismatch_penalty,
                         0 if has_handoff_build_or_payoff else 1,
@@ -1121,7 +1127,7 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                         round(mean_risk, 4),
                         round(error_sum, 4),
                         same_parent_penalty,
-                        -section_span,
+                        span_rank,
                     )
                     if best_rank is None or rank < best_rank:
                         best_rank = rank

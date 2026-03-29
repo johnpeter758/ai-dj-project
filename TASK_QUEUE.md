@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 20:15 EDT (winner-promotion transition-lift guardrail landed + pair2 rerun; transition plateau still active)
+Last updated: 2026-03-29 00:15 EDT (planner dual-support local-span handoff preference landed + regression coverage; plateau work continues)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -191,6 +191,14 @@ Owner: execution operator
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `240 passed, 1 skipped`.
         - outcome: pair2 rerun remained stable (`pass+floor`) with unchanged winner/headline metrics (`support_01_payoff_build_A`, `song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`); promotion did not trigger because higher-transition baseline candidates still failed guardrails via large song-likeness loss.
         - action: keep patch/tests; next leverage should increase transition on integrated-support candidates themselves (or raise baseline song-likeness) so promotion path can activate with real quality gains.
+      - 2026-03-29 00:15 ET focused planner pass (no artifact rerun yet)
+        - patch: adjusted adaptive dual-support pair ranking in `ai_dj.py::_build_auto_shortlist_variant_configs` to prefer tighter local section span for handoff-bearing support pairs (while preserving wide-span exploration for non-handoff pairs).
+        - rationale: avoid long-distance support pairing during handoff-sensitive passages that can read as source switching instead of local continuity.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_local_handoff_span_over_wide_span`.
+        - validation:
+          - `pytest -q tests/test_auto_shortlist_fusion.py -k "adaptive_dual_support_prefers_local_handoff_span_over_wide_span or adaptive_dual_support_penalizes_high_risk_mixed_handoff_chain or adaptive_dual_support_avoids_mixed_handoff_chain_for_contiguous_build_payoff"` → `3 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `241 passed, 1 skipped`.
+        - action: run next pair2 quality artifact sweep to verify whether local-span handoff pairing moves transition off the `53.7` plateau without floor regressions.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
