@@ -332,6 +332,79 @@ def test_select_pro_fusion_winner_penalizes_high_seam_risk_in_final_sort():
     assert policy == "pass+floor"
 
 
+def test_select_pro_fusion_winner_promotes_real_transition_lift_within_structure_guardrails():
+    baseline_winner = {
+        "selection_score": 94.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 85.0,
+            "song_likeness": {"score": 76.0},
+            "groove": {"score": 72.0},
+            "structure": {"score": 73.0},
+            "transition": {"score": 70.0},
+        },
+    }
+    transition_lift = {
+        "selection_score": 92.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 84.0,
+            "song_likeness": {"score": 75.4},
+            "groove": {"score": 71.0},
+            "structure": {"score": 71.6},
+            "transition": {"score": 72.1},
+        },
+    }
+
+    winner, policy, _counts = ai_dj._select_pro_fusion_winner(
+        [baseline_winner, transition_lift],
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
+    )
+
+    assert winner is transition_lift
+    assert policy == "pass+floor"
+
+
+def test_select_pro_fusion_winner_does_not_promote_transition_lift_when_structure_drop_is_too_large():
+    baseline_winner = {
+        "selection_score": 94.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 85.0,
+            "song_likeness": {"score": 76.0},
+            "groove": {"score": 72.0},
+            "structure": {"score": 73.0},
+            "transition": {"score": 70.0},
+        },
+    }
+    too_costly_transition_lift = {
+        "selection_score": 93.0,
+        "listen_report": {
+            "gating": {"status": "pass"},
+            "overall_score": 84.0,
+            "song_likeness": {"score": 75.9},
+            "groove": {"score": 71.0},
+            "structure": {"score": 70.7},
+            "transition": {"score": 72.3},
+        },
+    }
+
+    winner, policy, _counts = ai_dj._select_pro_fusion_winner(
+        [baseline_winner, too_costly_transition_lift],
+        min_song_likeness=55.0,
+        min_groove=60.0,
+        min_structure=58.0,
+        min_boundary_recovery=0.45,
+        min_role_plausibility=0.48,
+    )
+
+    assert winner is baseline_winner
+    assert policy == "pass+floor"
+
 
 def test_pro_fusion_selection_score_penalizes_medley_like_outputs_with_low_integration():
     base = {

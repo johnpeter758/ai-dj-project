@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-28 18:15 EDT (planner transition-relief candidate admission landed + pair2 rerun; transition plateau still active)
+Last updated: 2026-03-28 20:15 EDT (winner-promotion transition-lift guardrail landed + pair2 rerun; transition plateau still active)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -178,6 +178,19 @@ Owner: execution operator
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `238 passed, 1 skipped`.
         - outcome: pair2 rerun held `pass+floor`; winner remained adaptive dual-support (`support_01_payoff_build_A`) with unchanged headline metrics (`song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`).
         - action: keep patch/tests as a transition-targeted admission guardrail; next leverage should move to gating/promotions that can surface non-support shortlist winners when transition gain is real.
+      - `runs/quality_push_pair2_transition_promotion_20260328_2015`
+        - patch: added floor-pass winner promotion guardrail in `ai_dj.py::_select_pro_fusion_winner` to allow real transition-lift candidates to win when they stay close on structure/song-likeness/adjusted selection.
+        - implementation detail:
+          - baseline winner still comes from existing structure-first sort (`_winner_sort_key`), then promotion checks require meaningful transition lift (`>= +1.4`) while bounding regressions (`structure drop <=2.0`, `song_likeness drop <=1.2`, `adjusted-selection drop <=4.0`).
+          - this enables promotion-level leverage without weakening hard-floor gating or medley penalties.
+        - regressions: added
+          - `tests/test_pro_fusion_quality.py::test_select_pro_fusion_winner_promotes_real_transition_lift_within_structure_guardrails`
+          - `tests/test_pro_fusion_quality.py::test_select_pro_fusion_winner_does_not_promote_transition_lift_when_structure_drop_is_too_large`
+        - validation:
+          - `pytest -q tests/test_pro_fusion_quality.py -k "select_pro_fusion_winner"` → `8 passed`.
+          - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `240 passed, 1 skipped`.
+        - outcome: pair2 rerun remained stable (`pass+floor`) with unchanged winner/headline metrics (`support_01_payoff_build_A`, `song_likeness=58.5`, `transition=53.7`, `overall=70.1`, `selection_score=73.729`); promotion did not trigger because higher-transition baseline candidates still failed guardrails via large song-likeness loss.
+        - action: keep patch/tests; next leverage should increase transition on integrated-support candidates themselves (or raise baseline song-likeness) so promotion path can activate with real quality gains.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.

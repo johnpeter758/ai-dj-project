@@ -1583,6 +1583,65 @@ def _select_pro_fusion_winner(
 
     if floor_pass_candidates:
         winner = max(floor_pass_candidates, key=_winner_sort_key)
+
+        # Transition-lift promotion guardrail:
+        # if another floor-pass candidate yields a meaningful transition gain,
+        # keep structural quality near the winner while allowing it to promote.
+        winner_report = winner.get("listen_report") or {}
+        winner_structure = _safe_metric((winner_report.get("structure") or {}).get("score"), default=0.0)
+        winner_transition = _safe_metric((winner_report.get("transition") or {}).get("score"), default=0.0)
+        winner_song_likeness = _safe_metric((winner_report.get("song_likeness") or {}).get("score"), default=0.0)
+        winner_adjusted_selection = _safe_metric(winner.get("selection_score"), default=0.0) - _seam_risk_penalty(winner_report)
+
+        transition_gain_threshold = 1.4
+        max_structure_drop = 2.0
+        max_song_likeness_drop = 1.2
+        max_adjusted_selection_drop = 4.0
+
+        promoted: dict[str, Any] | None = None
+        for candidate in floor_pass_candidates:
+            if candidate is winner:
+                continue
+            report = candidate.get("listen_report") or {}
+            candidate_structure = _safe_metric((report.get("structure") or {}).get("score"), default=0.0)
+            candidate_transition = _safe_metric((report.get("transition") or {}).get("score"), default=0.0)
+            candidate_song_likeness = _safe_metric((report.get("song_likeness") or {}).get("score"), default=0.0)
+            candidate_adjusted_selection = _safe_metric(candidate.get("selection_score"), default=0.0) - _seam_risk_penalty(report)
+
+            if candidate_transition < (winner_transition + transition_gain_threshold):
+                continue
+            if candidate_structure < (winner_structure - max_structure_drop):
+                continue
+            if candidate_song_likeness < (winner_song_likeness - max_song_likeness_drop):
+                continue
+            if candidate_adjusted_selection < (winner_adjusted_selection - max_adjusted_selection_drop):
+                continue
+
+            if promoted is None:
+                promoted = candidate
+                continue
+
+            promoted_report = promoted.get("listen_report") or {}
+            promoted_transition = _safe_metric((promoted_report.get("transition") or {}).get("score"), default=0.0)
+            promoted_structure = _safe_metric((promoted_report.get("structure") or {}).get("score"), default=0.0)
+            promoted_adjusted_selection = _safe_metric(promoted.get("selection_score"), default=0.0) - _seam_risk_penalty(promoted_report)
+
+            # Prefer strongest transition lift first, then stronger structure,
+            # then adjusted selection as a final tie-break.
+            if (
+                candidate_transition,
+                candidate_structure,
+                candidate_adjusted_selection,
+            ) > (
+                promoted_transition,
+                promoted_structure,
+                promoted_adjusted_selection,
+            ):
+                promoted = candidate
+
+        if promoted is not None:
+            winner = promoted
+
         return winner, "pass+floor", counts
 
     if pass_candidates:
