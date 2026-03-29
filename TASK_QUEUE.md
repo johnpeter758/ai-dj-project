@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 00:15 EDT (planner dual-support local-span handoff preference landed + regression coverage; plateau work continues)
+Last updated: 2026-03-29 02:15 EDT (pair2 phase-12 benchmark sweep rerun completed; baseline remains stable while transition seam gap persists)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -199,6 +199,12 @@ Owner: execution operator
           - `pytest -q tests/test_auto_shortlist_fusion.py -k "adaptive_dual_support_prefers_local_handoff_span_over_wide_span or adaptive_dual_support_penalizes_high_risk_mixed_handoff_chain or adaptive_dual_support_avoids_mixed_handoff_chain_for_contiguous_build_payoff"` → `3 passed`.
           - `pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `241 passed, 1 skipped`.
         - action: run next pair2 quality artifact sweep to verify whether local-span handoff pairing moves transition off the `53.7` plateau without floor regressions.
+      - `runs/song_birth_phase12_20260329_021537`
+        - checkpoint: executed phase-12 pair2 benchmark sweep after the local-span handoff-pairing planner patch.
+        - command: `./.venv/bin/python scripts/run_song_birth_benchmark.py`.
+        - fusion policy/result: `pass+floor`, adaptive winner unchanged (`selection_score=73.729`, `overall=70.1`).
+        - listen gate result: `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`.
+        - action: baseline remains stable; next high-leverage pass should target integrated-support transition seam cleanup in structure/planner+render coordination while preserving current floor/similarity margins.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.
