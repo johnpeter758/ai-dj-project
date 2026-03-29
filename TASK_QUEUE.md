@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 06:20 EDT (renderer handoff release-contour crowding pass shipped + phase-12 benchmark rerun; baseline stable, transition seam gap still open)
+Last updated: 2026-03-29 08:22 EDT (planner handoff pair crowding-rank pivot shipped + phase-12 benchmark rerun; baseline stable, transition seam gap still open)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -225,6 +225,17 @@ Owner: execution operator
           - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `243 passed, 1 skipped`.
         - artifact rerun: `runs/song_birth_phase12_20260329_061742/song_birth_benchmark_summary.json` remained stable (`pass+floor`, winner adaptive, `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
         - action: keep patch/tests; next pass should pivot back upstream to planner-side section ownership/proposal moves because renderer-only contour tuning preserved quality floor but did not lift transition.
+      - 2026-03-29 08:15 ET planner dual-support handoff crowding-rank pivot
+        - patch: `ai_dj.py::_build_auto_shortlist_variant_configs` (`_best_dual_support_pair`) now ranks handoff-bearing build/payoff support pairs by **lower** crowding pressure first instead of preferring higher-pressure pairs.
+        - implementation detail:
+          - introduced `pressure_rank` split: handoff build/payoff pairs use ascending pressure rank (cleaner seam preference), non-handoff pairs keep prior descending-pressure exploration behavior.
+          - kept existing guardrails (chain mismatch penalties, payoff/build preference, risk/error/span terms) intact.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_lower_crowding_handoff_payoff_pair`.
+        - validation:
+          - `./.venv/bin/python -m pytest -q tests/test_auto_shortlist_fusion.py -k "adaptive_dual_support_prefers_lower_crowding_handoff_payoff_pair or adaptive_dual_support_prefers_local_handoff_span_over_wide_span or adaptive_dual_support_penalizes_high_risk_mixed_handoff_chain or adaptive_dual_support_avoids_mixed_handoff_chain_for_contiguous_build_payoff"` → `4 passed`.
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `244 passed, 1 skipped`.
+        - artifact rerun: `runs/song_birth_phase12_20260329_081841/song_birth_benchmark_summary.json` remained stable (`pass+floor`, winner adaptive, `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
+        - action: keep patch/tests; next pass should widen planner-side transition-relief candidate admission for payoff/build handoff sections (error-budgeted multi-candidate) to try lifting transition while preserving current similarity/floor margins.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.

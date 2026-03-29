@@ -1093,6 +1093,40 @@ def test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_loca
     assert labels == {'verse', 'build'}
 
 
+def test_build_auto_shortlist_variant_configs_adaptive_dual_support_prefers_lower_crowding_handoff_payoff_pair():
+    payoff_low = _make_section_with_alternate('payoff-low', 'A', 'phrase_2_4', 'B', 'phrase_8_10')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')
+    payoff_high = _make_section_with_alternate('payoff-high', 'A', 'phrase_4_6', 'B', 'phrase_10_12')
+
+    for sec in (payoff_low, build, payoff_high):
+        sec['transition_mode'] = 'arrival_handoff'
+
+    payoff_low['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.18, 'transition_viability': 0.22})
+    build['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.26, 'transition_viability': 0.30})
+    payoff_high['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.74, 'transition_viability': 0.72})
+
+    for sec in (payoff_low, build, payoff_high):
+        sec['candidate_shortlist'][-1] = dict(sec['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'arrangement_mode': 'adaptive',
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [payoff_low, build, payoff_high],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    dual_support = next(config for config in configs if config['strategy'] == 'dual_section_support')
+    labels = {str(item.get('section_label') or '').strip().lower() for item in dual_support['supports']}
+
+    assert 'build' in labels
+    assert 'payoff-low' in labels
+    assert 'payoff-high' not in labels
+
+
 def test_build_auto_shortlist_variant_configs_support_policy_adapts_to_transition_risk():
     def _build_plan_with_risk(*, seam_risk: float, transition_viability: float):
         build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'B', 'phrase_9_11')

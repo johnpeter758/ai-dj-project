@@ -1116,13 +1116,23 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                     # non-handoff pairs to preserve arrangement breadth exploration.
                     span_rank = section_span if has_handoff_build_or_payoff else -section_span
 
+                    # For handoff-bearing build/payoff support pairs, prioritize lower
+                    # crowding pressure so planner picks cleaner local ownership seams.
+                    # Non-handoff pairs keep the prior exploratory bias toward richer
+                    # pressure contexts.
+                    pressure_rank = (
+                        round(handoff_pressure_sum, 4)
+                        if has_handoff_build_or_payoff
+                        else -round(handoff_pressure_sum, 4)
+                    )
+
                     rank = (
                         chain_mismatch_penalty,
                         0 if has_handoff_build_or_payoff else 1,
                         0 if has_any_handoff else 1,
                         0 if has_payoff_build else 1,
                         0 if payoff_preferred else 1,
-                        -round(handoff_pressure_sum, 4),
+                        pressure_rank,
                         round(max_risk, 4),
                         round(mean_risk, 4),
                         round(error_sum, 4),
