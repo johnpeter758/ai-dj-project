@@ -1,6 +1,6 @@
 # VocalFusion Task Queue
 
-Last updated: 2026-03-29 08:22 EDT (planner handoff pair crowding-rank pivot shipped + phase-12 benchmark rerun; baseline stable, transition seam gap still open)
+Last updated: 2026-03-29 10:24 EDT (planner multi-relief handoff candidate admission shipped + phase-12 benchmark rerun; baseline stable, transition seam gap still open)
 Owner: execution operator
 
 ## Current Task (active now)
@@ -236,6 +236,18 @@ Owner: execution operator
           - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `244 passed, 1 skipped`.
         - artifact rerun: `runs/song_birth_phase12_20260329_081841/song_birth_benchmark_summary.json` remained stable (`pass+floor`, winner adaptive, `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
         - action: keep patch/tests; next pass should widen planner-side transition-relief candidate admission for payoff/build handoff sections (error-budgeted multi-candidate) to try lifting transition while preserving current similarity/floor margins.
+      - 2026-03-29 10:15 ET planner multi-relief handoff candidate-admission pass
+        - patch: widened section-local transition-relief admission in `ai_dj.py::_build_auto_shortlist_variant_configs` so explicit handoff sections can admit additional low-crowding alternates before combo ranking.
+        - implementation detail:
+          - build/payoff handoff sections can now admit up to two relief candidates (instead of one) when they clear pressure/error guardrails.
+          - first relief keeps prior budget (`pressure_delta >= 0.14`, `error <= primary + 0.30`); second relief requires stricter thresholds (`pressure_delta >= 0.20`, `error <= primary + 0.24`) to avoid drift.
+          - non-build/payoff handoff sections keep one-relief behavior.
+        - regressions: added `tests/test_auto_shortlist_fusion.py::test_build_auto_shortlist_variant_configs_allows_second_relief_candidate_for_build_handoff_when_budget_is_strict`.
+        - validation:
+          - `./.venv/bin/python -m pytest -q tests/test_auto_shortlist_fusion.py -k "section_local_transition_relief_candidate or allows_second_relief_candidate_for_build_handoff_when_budget_is_strict or two_hop_handoff_owner_bridge"` → `3 passed`.
+          - `./.venv/bin/python -m pytest -q tests/test_render_stack.py tests/test_core_planner.py tests/test_auto_shortlist_fusion.py tests/test_pro_fusion_quality.py` → `245 passed, 1 skipped`.
+        - artifact rerun: `runs/song_birth_phase12_20260329_101759/song_birth_benchmark_summary.json` remained stable (`pass+floor`, adaptive winner `selection_score=73.729`; listen `overall=74.5`, `song_likeness=80.7`, `transition=57.5`, `gating_status=pass`).
+        - action: keep patch/tests; next pass should target planner candidate diversity that can perturb winner path (e.g., handoff relief parent-diversity quotas or support-pair gating), since current plateau remains despite broader admission.
    - Focus:
      - push transition above 53.8 by combining shortlist risk policy with render-time support envelope shaping,
      - keep anti-medley penalties and hard-floor gate untouched.

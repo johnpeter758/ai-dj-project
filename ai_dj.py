@@ -796,6 +796,9 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
         mode = str(op.get("transition_mode") or "").strip().lower().replace("-", "_")
         return mode in {"arrival_handoff", "single_owner_handoff"}
 
+    def _is_build_or_payoff(op: dict[str, Any]) -> bool:
+        return _normalize_section_label(op.get("section_label")) in {"build", "payoff"}
+
     def _handoff_crowding_pressure(op: dict[str, Any]) -> float:
         score_breakdown = dict(op.get("score_breakdown") or {})
         seam_risk = float(score_breakdown.get("seam_risk", 0.0) or 0.0)
@@ -823,9 +826,10 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
             choices.append(donor_choice)
 
         # Transition-targeted candidate admission: for explicit handoff sections,
-        # admit one additional lower-crowding section-local alternate even when it
-        # is not the lowest-error option. This widens proposal search toward
-        # cleaner handoff windows before combo ranking decides final pairs.
+        # admit additional lower-crowding section-local alternates even when they
+        # are not the lowest-error options. Build/payoff handoffs can admit up to
+        # two relief choices (with tighter budget for the second) so combo search
+        # gets more transition-clean options before final ranking.
         if _is_handoff_mode(primary):
             primary_error = float(primary.get("error_delta", 99.0) or 99.0)
             primary_pressure = _handoff_crowding_pressure(primary)
@@ -838,12 +842,26 @@ def _build_auto_shortlist_variant_configs(plan: Any, batch_size: int, *, variant
                 and float(item.get("error_delta", 99.0) or 99.0) <= primary_error + 0.36
             ]
             if relief_candidates:
-                relief_choice = min(relief_candidates, key=_chain_candidate_rank)
-                relief_pressure = _handoff_crowding_pressure(relief_choice)
-                relief_error = float(relief_choice.get("error_delta", 99.0) or 99.0)
-                pressure_delta = primary_pressure - relief_pressure
-                if pressure_delta >= 0.14 and relief_error <= primary_error + 0.30:
+                ranked_relief = sorted(relief_candidates, key=_chain_candidate_rank)
+                max_relief = 2 if _is_build_or_payoff(primary) else 1
+                added_relief = 0
+                for relief_choice in ranked_relief:
+                    if added_relief >= max_relief:
+                        break
+                    relief_pressure = _handoff_crowding_pressure(relief_choice)
+                    relief_error = float(relief_choice.get("error_delta", 99.0) or 99.0)
+                    pressure_delta = primary_pressure - relief_pressure
+                    if pressure_delta < 0.14 or relief_error > primary_error + 0.30:
+                        continue
+                    if added_relief >= 1:
+                        if pressure_delta < 0.20 or relief_error > primary_error + 0.24:
+                            continue
+                    relief_id = _op_identity(relief_choice)
+                    if relief_id in seen_choice_ids:
+                        continue
                     choices.append(relief_choice)
+                    seen_choice_ids.add(relief_id)
+                    added_relief += 1
 
         # Proposal synthesis: for handoff sections, expand owner-window generation to
         # nearby handoff neighborhoods (radius 2) instead of only immediate adjacency.

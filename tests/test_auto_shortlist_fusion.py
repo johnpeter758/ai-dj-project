@@ -618,6 +618,87 @@ def test_build_auto_shortlist_variant_configs_admits_section_local_transition_re
 
 
 
+def test_build_auto_shortlist_variant_configs_allows_second_relief_candidate_for_build_handoff_when_budget_is_strict():
+    verse = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'C', 'phrase_8_10_c')
+    build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'C', 'phrase_9_11_c')
+    payoff = _make_section_with_alternate('payoff', 'A', 'phrase_4_6', 'E', 'phrase_10_12_e')
+
+    verse['transition_mode'] = 'same_parent_flow'
+    build['transition_mode'] = 'arrival_handoff'
+    payoff['transition_mode'] = 'single_owner_handoff'
+
+    # Primary build alternate is low error but crowded.
+    build['cross_parent_best_alternate']['parent_id'] = 'C'
+    build['cross_parent_best_alternate']['window_label'] = 'phrase_9_11_c'
+    build['cross_parent_best_alternate']['error_delta_vs_selected'] = 0.08
+    build['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.67, 'transition_viability': 0.64})
+    build['candidate_shortlist'][-1] = dict(build['cross_parent_best_alternate'])
+
+    # First relief candidate: cleaner but not same-parent with payoff.
+    build['candidate_shortlist'].append(
+        {
+            'rank': 3,
+            'parent_id': 'D',
+            'window_label': 'phrase_9_11_d_relief1',
+            'selected': False,
+            'planner_error': 0.40,
+            'error_delta_vs_selected': 0.20,
+            'score_breakdown': {
+                'stretch_ratio': 1.02,
+                'stretch_gate': 0.0,
+                'seam_risk': 0.36,
+                'transition_viability': 0.34,
+            },
+        }
+    )
+
+    # Second relief candidate: also cleaner and aligned with payoff parent.
+    build['candidate_shortlist'].append(
+        {
+            'rank': 4,
+            'parent_id': 'E',
+            'window_label': 'phrase_9_11_e_relief2',
+            'selected': False,
+            'planner_error': 0.43,
+            'error_delta_vs_selected': 0.23,
+            'score_breakdown': {
+                'stretch_ratio': 1.03,
+                'stretch_gate': 0.0,
+                'seam_risk': 0.28,
+                'transition_viability': 0.26,
+            },
+        }
+    )
+
+    payoff['cross_parent_best_alternate']['parent_id'] = 'E'
+    payoff['cross_parent_best_alternate']['window_label'] = 'phrase_10_12_e'
+    payoff['cross_parent_best_alternate']['error_delta_vs_selected'] = 0.18
+    payoff['cross_parent_best_alternate']['score_breakdown'].update({'seam_risk': 0.29, 'transition_viability': 0.27})
+    payoff['candidate_shortlist'][-1] = dict(payoff['cross_parent_best_alternate'])
+
+    # Keep verse viable but not dominant.
+    verse['cross_parent_best_alternate']['error_delta_vs_selected'] = 0.22
+    verse['candidate_shortlist'][-1] = dict(verse['cross_parent_best_alternate'])
+
+    plan = SimpleNamespace(
+        planning_diagnostics={
+            'backbone_plan': {'backbone_parent': 'A'},
+            'selected_sections': [verse, build, payoff],
+        },
+        sections=[],
+        planning_notes=[],
+    )
+
+    configs = ai_dj._build_auto_shortlist_variant_configs(plan, batch_size=3, variant_mode='safe')
+    combo = next(config for config in configs if config['strategy'] == 'dual_section_alternate')
+    combo_labels = {str(swap.get('section_label') or '').strip().lower() for swap in combo.get('swaps', [])}
+    build_swap = next(swap for swap in combo.get('swaps', []) if str(swap.get('section_label') or '').strip().lower() == 'build')
+
+    assert combo_labels == {'build', 'payoff'}
+    assert build_swap.get('alternate_parent') == 'E'
+
+
+
 def test_build_auto_shortlist_variant_configs_prefers_two_hop_handoff_owner_bridge_over_higher_crowding_primary_parent():
     verse = _make_section_with_alternate('verse', 'A', 'phrase_2_4', 'C', 'phrase_8_10_c')
     build = _make_section_with_alternate('build', 'A', 'phrase_3_5', 'A', 'phrase_9_11')
