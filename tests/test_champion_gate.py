@@ -169,3 +169,132 @@ def test_dry_run_does_not_persist(tmp_path: Path) -> None:
     assert out["promoted"] is False
     assert champion_pointer.exists() is False
     assert champion_history.exists() is False
+
+
+def test_supports_song_birth_summary_shape_and_autoscales_thresholds(tmp_path: Path) -> None:
+    benchmark = tmp_path / "runs/song_birth_phase12_20260330_101010/song_birth_benchmark_summary.json"
+    champion_pointer = tmp_path / "runs/champion/current.json"
+    champion_history = tmp_path / "runs/champion/history.json"
+
+    _write_json(
+        champion_pointer,
+        {
+            "id": "champion-old",
+            "overall_pass": True,
+            "gating_pass": True,
+            "song_likeness": 80.0,
+            "score": 73.0,
+        },
+    )
+    _write_json(
+        benchmark,
+        {
+            "timestamp": "20260330_101010",
+            "passed": True,
+            "scores": {
+                "overall_score": 74.5,
+                "song_likeness_score": 80.7,
+                "gating_status": "pass",
+            },
+        },
+    )
+
+    out = gate(
+        benchmark_path=benchmark,
+        benchmarks_dir=tmp_path / "runs",
+        champion_pointer_path=champion_pointer,
+        champion_history_path=champion_history,
+        min_song_likeness=0.72,
+        min_score=0.70,
+        min_delta=0.01,
+    )
+
+    assert out["promoted"] is True
+    assert out["reason"] == "promoted"
+    assert abs(out["effective_thresholds"]["min_delta"] - 1.0) < 1e-9
+    assert _read_json(champion_pointer)["id"] == "20260330_101010"
+
+
+def test_song_birth_absolute_delta_is_not_overscaled(tmp_path: Path) -> None:
+    benchmark = tmp_path / "runs/song_birth_phase12_20260330_111111/song_birth_benchmark_summary.json"
+    champion_pointer = tmp_path / "runs/champion/current.json"
+    champion_history = tmp_path / "runs/champion/history.json"
+
+    _write_json(
+        champion_pointer,
+        {
+            "id": "champion-old",
+            "overall_pass": True,
+            "gating_pass": True,
+            "song_likeness": 80.0,
+            "score": 74.4,
+        },
+    )
+    _write_json(
+        benchmark,
+        {
+            "timestamp": "20260330_111111",
+            "passed": True,
+            "scores": {
+                "overall_score": 74.55,
+                "song_likeness_score": 80.8,
+                "gating_status": "pass",
+            },
+        },
+    )
+
+    out = gate(
+        benchmark_path=benchmark,
+        benchmarks_dir=tmp_path / "runs",
+        champion_pointer_path=champion_pointer,
+        champion_history_path=champion_history,
+        min_song_likeness=80.0,
+        min_score=70.0,
+        min_delta=0.1,
+    )
+
+    assert abs(out["effective_thresholds"]["min_delta"] - 0.1) < 1e-9
+    assert out["promoted"] is True
+
+
+def test_song_birth_gating_status_fail_blocks_promotion(tmp_path: Path) -> None:
+    benchmark = tmp_path / "runs/song_birth_phase12_20260330_121212/song_birth_benchmark_summary.json"
+    champion_pointer = tmp_path / "runs/champion/current.json"
+    champion_history = tmp_path / "runs/champion/history.json"
+
+    _write_json(
+        champion_pointer,
+        {
+            "id": "champion-old",
+            "overall_pass": True,
+            "gating_pass": True,
+            "song_likeness": 80.0,
+            "score": 73.0,
+        },
+    )
+    _write_json(
+        benchmark,
+        {
+            "timestamp": "20260330_121212",
+            "passed": True,
+            "scores": {
+                "overall_score": 80.0,
+                "song_likeness_score": 83.0,
+                "gating_status": "fail",
+            },
+        },
+    )
+
+    out = gate(
+        benchmark_path=benchmark,
+        benchmarks_dir=tmp_path / "runs",
+        champion_pointer_path=champion_pointer,
+        champion_history_path=champion_history,
+        min_song_likeness=80.0,
+        min_score=70.0,
+        min_delta=0.1,
+    )
+
+    assert out["promoted"] is False
+    assert out["reason"] == "guardrails_failed"
+    assert _read_json(champion_pointer)["id"] == "champion-old"

@@ -219,11 +219,24 @@ return code, artifact paths, and stdout/stderr tails.
 
 ## 24/7 advanced autopilot
 
-### Run one bounded cycle (cron-safe)
+### Run one autonomous mastering cycle (benchmark -> gate -> optional commit/push)
+
+```bash
+python3 scripts/autonomous_mastering_cycle.py \
+  --min-song-likeness 80 \
+  --min-score 70 \
+  --min-delta 0.1 \
+  --commit-on-promote \
+  --push-on-promote
+```
+
+This writes a machine-readable cycle report to `runs/autopilot/last_mastering_cycle.json`.
+
+### Run one bounded orchestrated cycle (cron-safe)
 
 ```bash
 python3 scripts/autopilot_orchestrator.py \
-  --command "./.venv/bin/python scripts/run_song_birth_benchmark.py" \
+  --command "python3 scripts/autonomous_mastering_cycle.py --min-song-likeness 80 --min-score 70 --min-delta 0.1 --commit-on-promote --push-on-promote" \
   --single-cycle \
   --state-path runs/autopilot/state.json
 ```
@@ -232,7 +245,7 @@ python3 scripts/autopilot_orchestrator.py \
 
 ```bash
 python3 scripts/autopilot_orchestrator.py \
-  --command "./.venv/bin/python scripts/run_song_birth_benchmark.py" \
+  --command "python3 scripts/autonomous_mastering_cycle.py --min-song-likeness 80 --min-score 70 --min-delta 0.1 --commit-on-promote --push-on-promote" \
   --sleep-seconds 90 \
   --state-path runs/autopilot/state.json
 ```

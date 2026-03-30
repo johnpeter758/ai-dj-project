@@ -47,13 +47,40 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 
 def extract_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    scores = summary.get("scores") if isinstance(summary.get("scores"), dict) else {}
+    gating_status = str(scores.get("gating_status") or "").strip().lower()
+
+    overall_pass_raw = summary.get("overall_pass")
+    if overall_pass_raw is None:
+        overall_pass_raw = summary.get("pass")
+    if overall_pass_raw is None:
+        overall_pass_raw = summary.get("passed")
+
+    gating_pass_raw = summary.get("gating_pass")
+    if gating_pass_raw is None:
+        gating_pass_raw = summary.get("guardrails_pass")
+    if gating_pass_raw is None and gating_status:
+        gating_pass_raw = gating_status in {"pass", "passed", "ok", "true", "1"}
+
+    song_likeness_raw = summary.get("song_likeness")
+    if song_likeness_raw is None:
+        song_likeness_raw = summary.get("song_likeness_score")
+    if song_likeness_raw is None:
+        song_likeness_raw = scores.get("song_likeness_score")
+
+    score_raw = summary.get("score")
+    if score_raw is None:
+        score_raw = summary.get("overall_score")
+    if score_raw is None:
+        score_raw = scores.get("overall_score")
+
     return {
         "id": str(summary.get("run_id") or summary.get("id") or summary.get("timestamp") or "unknown"),
         "source": str(summary.get("source") or summary.get("path") or "unknown"),
-        "overall_pass": _to_bool(summary.get("overall_pass", summary.get("pass"))),
-        "gating_pass": _to_bool(summary.get("gating_pass", summary.get("guardrails_pass"))),
-        "song_likeness": _to_float(summary.get("song_likeness", summary.get("song_likeness_score"))),
-        "score": _to_float(summary.get("score", summary.get("overall_score"))),
+        "overall_pass": _to_bool(overall_pass_raw),
+        "gating_pass": _to_bool(gating_pass_raw),
+        "song_likeness": _to_float(song_likeness_raw),
+        "score": _to_float(score_raw),
     }
 
 
@@ -71,6 +98,35 @@ def find_latest_benchmark(benchmarks_dir: Path) -> Path:
     return candidates[-1]
 
 
+def _resolve_metric_scale(challenger: dict[str, Any], champion: dict[str, Any] | None) -> float:
+    candidates = [
+        _to_float(challenger.get("song_likeness")),
+        _to_float(challenger.get("score")),
+        _to_float((champion or {}).get("song_likeness")),
+        _to_float((champion or {}).get("score")),
+    ]
+    return 100.0 if any(value > 1.5 for value in candidates) else 1.0
+
+
+def _scale_threshold(value: float, *, scale: float) -> float:
+    # Accept either 0-1 or 0-100 threshold inputs and map them to detected score scale.
+    if scale >= 10.0 and value <= 1.0:
+        return value * scale
+    if scale <= 1.0 and value > 1.0:
+        return value / 100.0
+    return value
+
+
+def _scale_delta_threshold(value: float, *, scale: float) -> float:
+    # Delta thresholds are often already absolute points on 0-100 scale (e.g. 0.1).
+    # Only auto-scale tiny fractional deltas that are clearly 0-1 style (e.g. 0.01 -> 1.0).
+    if scale >= 10.0 and value <= 0.05:
+        return value * scale
+    if scale <= 1.0 and value > 1.0:
+        return value / 100.0
+    return value
+
+
 def evaluate(
     challenger: dict[str, Any],
     champion: dict[str, Any] | None,
@@ -79,17 +135,22 @@ def evaluate(
     min_score: float,
     min_delta: float,
 ) -> dict[str, Any]:
+    metric_scale = _resolve_metric_scale(challenger, champion)
+    effective_min_song_likeness = _scale_threshold(min_song_likeness, scale=metric_scale)
+    effective_min_score = _scale_threshold(min_score, scale=metric_scale)
+    effective_min_delta = _scale_delta_threshold(min_delta, scale=metric_scale)
+
     guardrails = {
         "overall_pass": bool(challenger["overall_pass"]),
         "gating_pass": bool(challenger["gating_pass"]),
-        "song_likeness_floor": challenger["song_likeness"] >= min_song_likeness,
-        "score_floor": challenger["score"] >= min_score,
+        "song_likeness_floor": challenger["song_likeness"] >= effective_min_song_likeness,
+        "score_floor": challenger["score"] >= effective_min_score,
     }
     guardrails_ok = all(guardrails.values())
 
     champion_score = _to_float((champion or {}).get("score"), default=float("-inf"))
     score_delta = round(challenger["score"] - champion_score, 6)
-    measurable_win = champion is None or score_delta >= min_delta
+    measurable_win = champion is None or score_delta >= effective_min_delta
     promote = bool(guardrails_ok and measurable_win)
 
     reason = "promoted"
@@ -104,7 +165,13 @@ def evaluate(
         "guardrails": guardrails,
         "guardrails_ok": guardrails_ok,
         "score_delta": score_delta if champion is not None else None,
-        "min_delta": min_delta,
+        "min_delta": effective_min_delta,
+        "effective_thresholds": {
+            "scale": metric_scale,
+            "min_song_likeness": effective_min_song_likeness,
+            "min_score": effective_min_score,
+            "min_delta": effective_min_delta,
+        },
     }
 
 
@@ -164,6 +231,7 @@ def gate(
         "reason": eval_result["reason"],
         "guardrails_ok": eval_result["guardrails_ok"],
         "score_delta": eval_result["score_delta"],
+        "effective_thresholds": eval_result.get("effective_thresholds", {}),
         "challenger_id": challenger["id"],
         "champion_id_before": champion["id"] if champion else None,
         "champion_id_after": outcome["champion_after"]["id"] if outcome["champion_after"] else None,
