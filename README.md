@@ -202,6 +202,21 @@ To inspect the available `{placeholder}` fields for `--change-command` and `--te
 python3 scripts/closed_loop_listener_runner.py --print-template-fields
 ```
 
+## Minimal 2-input -> 1-output entrypoint
+
+Use this when you want the simplest possible contract (two songs in, one fused output out):
+
+```bash
+python scripts/two_input_one_output.py \
+  /path/to/song_a.mp3 \
+  /path/to/song_b.mp3 \
+  --output-dir runs/simple_fuse_$(date +%Y%m%d_%H%M%S) \
+  --arrangement-mode pro
+```
+
+It writes `two_input_one_output_report.json` in the output folder with command,
+return code, artifact paths, and stdout/stderr tails.
+
 ## 24/7 advanced autopilot
 
 ### Run one bounded cycle (cron-safe)
