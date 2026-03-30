@@ -10,7 +10,7 @@ import math
 import librosa
 import numpy as np
 import soundfile as sf
-from scipy import signal
+from scipy import ndimage, signal
 
 from .manifest import ResolvedRenderPlan
 from .mastering import bpm_synced_glue_compress, lookahead_envelope_limit, lufs_normalize
@@ -686,8 +686,87 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
     return out
 
 
-def _finalize_master(audio: np.ndarray, sr: int, bpm: float = 120.0) -> np.ndarray:
-    finished = _highpass(audio.astype(np.float32), sr, 28.0)
+def _stabilize_section_loudness(
+    audio: np.ndarray,
+    sr: int,
+    sections,
+    *,
+    max_adjust_db: float = 1.25,
+    smoothing_sec: float = 0.35,
+    silence_floor_db: float = -42.0,
+) -> np.ndarray:
+    """Reduce section-to-section loudness jumps so the render flows like one song.
+
+    This is intentionally conservative: it only nudges section gains within a small
+    range, then smooths those nudges across boundaries to avoid audible pumping.
+    """
+    if audio.size == 0 or not sections:
+        return audio.astype(np.float32)
+
+    total_samples = audio.shape[1]
+    silence_floor_lin = float(10 ** (silence_floor_db / 20.0))
+    max_ratio = float(10 ** (max_adjust_db / 20.0))
+    min_ratio = float(1.0 / max_ratio)
+
+    section_windows: list[tuple[int, int, float]] = []
+    for section in sections:
+        target = getattr(section, "target", None)
+        if target is None:
+            continue
+        try:
+            start_sec = float(getattr(target, "start_sec"))
+            end_sec = float(getattr(target, "end_sec"))
+        except (TypeError, ValueError):
+            continue
+
+        start = int(round(start_sec * sr))
+        end = int(round(end_sec * sr))
+        start = max(0, min(total_samples, start))
+        end = max(start + 1, min(total_samples, end))
+        if end - start <= 8:
+            continue
+
+        trim = min(int(round((end - start) * 0.18)), int(round(0.6 * sr)))
+        inner_start = min(end - 1, start + trim)
+        inner_end = max(inner_start + 1, end - trim)
+        region = audio[:, inner_start:inner_end]
+        if region.size == 0:
+            continue
+        rms = float(np.sqrt(np.mean(region ** 2) + 1e-12))
+        section_windows.append((start, end, rms))
+
+    active_rms = [rms for _, _, rms in section_windows if rms >= silence_floor_lin]
+    if len(active_rms) < 2:
+        return audio.astype(np.float32)
+
+    target_rms = float(np.median(np.asarray(active_rms, dtype=np.float32)))
+    if not np.isfinite(target_rms) or target_rms <= 0.0:
+        return audio.astype(np.float32)
+
+    gain_curve = np.ones(total_samples, dtype=np.float32)
+    for start, end, rms in section_windows:
+        if rms < silence_floor_lin:
+            gain = 1.0
+        else:
+            gain = float(np.clip(target_rms / max(rms, 1e-9), min_ratio, max_ratio))
+        gain_curve[start:end] = np.float32(gain)
+
+    window = int(round(max(0.0, smoothing_sec) * sr))
+    if window > 1:
+        if window % 2 == 0:
+            window += 1
+        gain_curve = ndimage.uniform_filter1d(gain_curve, size=window, mode="nearest").astype(np.float32)
+        gain_curve = np.clip(gain_curve, min_ratio, max_ratio).astype(np.float32)
+
+    return (audio * gain_curve[np.newaxis, :]).astype(np.float32)
+
+
+def _finalize_master(audio: np.ndarray, sr: int, bpm: float = 120.0, sections=None) -> np.ndarray:
+    staged = audio.astype(np.float32)
+    if sections:
+        staged = _stabilize_section_loudness(staged, sr, sections)
+
+    finished = _highpass(staged, sr, 28.0)
     finished = bpm_synced_glue_compress(finished, sr=sr, bpm=bpm, threshold_db=-16.0, ratio=1.8, makeup_db=0.75)
     finished = _compress_bus(finished, threshold_db=-18.0, ratio=2.0, makeup_db=0.5)
     finished = lookahead_envelope_limit(finished, sr=sr, ceiling_db=-1.2, attack_ms=2.0, release_ms=60.0, lookahead_ms=1.5)
@@ -771,7 +850,7 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
     master_mp3 = str((outdir / "child_master.mp3").resolve())
 
     sf.write(raw_wav, master.T, sr, subtype="FLOAT")
-    final_audio = _finalize_master(master, sr, bpm=manifest.target_bpm)
+    final_audio = _finalize_master(master, sr, bpm=manifest.target_bpm, sections=manifest.sections)
     sf.write(master_wav, final_audio.T, sr, subtype="PCM_24")
 
     mp3_ok = False

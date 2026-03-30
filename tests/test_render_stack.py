@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ from src.core.render.renderer import (
     _finalize_master,
     _overlap_carve_settings,
     _adaptive_overlap_carve_db,
+    _stabilize_section_loudness,
 )
 from src.core.render.transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
 
@@ -1984,3 +1986,31 @@ def test_finalize_master_smooths_hot_transient_before_soft_clip():
     assert mastered.shape == audio.shape
     assert np.max(np.abs(window)) <= ceiling + 1e-3
     assert float(np.sqrt(np.mean(sustained ** 2))) > 0.04
+
+
+def test_stabilize_section_loudness_reduces_large_section_gain_jumps():
+    sr = 44100
+    seconds = 4.0
+    t = np.arange(int(sr * seconds), dtype=np.float32) / sr
+    loud = 0.24 * np.sin(2 * np.pi * 220.0 * t[: int(sr * 2.0)])
+    quiet = 0.07 * np.sin(2 * np.pi * 220.0 * t[: int(sr * 2.0)])
+    mono = np.concatenate([loud, quiet]).astype(np.float32)
+    audio = np.vstack([mono, mono]).astype(np.float32)
+
+    sections = [
+        SimpleNamespace(target=SimpleNamespace(start_sec=0.0, end_sec=2.0)),
+        SimpleNamespace(target=SimpleNamespace(start_sec=2.0, end_sec=4.0)),
+    ]
+
+    stabilized = _stabilize_section_loudness(audio, sr=sr, sections=sections, max_adjust_db=1.25, smoothing_sec=0.05)
+
+    loud_before = float(np.sqrt(np.mean(audio[:, : int(sr * 2.0)] ** 2)))
+    quiet_before = float(np.sqrt(np.mean(audio[:, int(sr * 2.0):] ** 2)))
+    loud_after = float(np.sqrt(np.mean(stabilized[:, : int(sr * 2.0)] ** 2)))
+    quiet_after = float(np.sqrt(np.mean(stabilized[:, int(sr * 2.0):] ** 2)))
+
+    ratio_before = loud_before / max(quiet_before, 1e-9)
+    ratio_after = loud_after / max(quiet_after, 1e-9)
+
+    assert ratio_before > 2.5
+    assert ratio_after < ratio_before * 0.9
