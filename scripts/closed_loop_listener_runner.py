@@ -160,6 +160,112 @@ def render_iteration(song_a: str, song_b: str, output_dir: Path) -> dict[str, An
     }
 
 
+def _best_available_batch_candidate(batch_report: dict[str, Any]) -> dict[str, Any]:
+    recommended = list(batch_report.get("recommended_shortlist") or [])
+    if recommended:
+        return {
+            "selection_lane": "recommended_shortlist",
+            "candidate": dict(recommended[0]),
+        }
+
+    closest_misses = list(batch_report.get("closest_misses") or [])
+    if closest_misses:
+        return {
+            "selection_lane": "closest_miss",
+            "candidate": dict(closest_misses[0]),
+        }
+
+    candidates = list(batch_report.get("candidates") or [])
+    if not candidates:
+        raise LoopError("auto-shortlist batch produced no candidates")
+
+    ranked = sorted(
+        (dict(candidate) for candidate in candidates),
+        key=lambda row: (
+            {"survivor": 0, "borderline": 1, "reject": 2}.get(str(row.get("decision") or ""), 3),
+            -float(row.get("listener_rank") or 0.0),
+            -float(row.get("overall_score") or 0.0),
+            str(row.get("candidate_id") or ""),
+        ),
+    )
+    return {
+        "selection_lane": "best_available_candidate",
+        "candidate": ranked[0],
+    }
+
+
+def render_iteration_listener_batch(
+    song_a: str,
+    song_b: str,
+    output_dir: Path,
+    *,
+    batch_size: int,
+    shortlist: int,
+    variant_mode: str,
+    arrangement_mode: str,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rc = ai_dj.auto_shortlist_fusion(
+        song_a,
+        song_b,
+        str(output_dir),
+        batch_size=batch_size,
+        shortlist=shortlist,
+        variant_mode=variant_mode,
+        delete_non_survivors=False,
+        arrangement_mode=arrangement_mode,
+    )
+    if rc != 0:
+        raise LoopError(f"auto-shortlist fusion failed for {output_dir}")
+
+    report_path = output_dir / "auto_shortlist_report.json"
+    if not report_path.exists():
+        raise LoopError(f"auto-shortlist fusion did not write report: {report_path}")
+
+    try:
+        batch_report = json.loads(report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LoopError(f"auto-shortlist report is invalid JSON: {exc}") from exc
+
+    selected = _best_available_batch_candidate(batch_report)
+    selected_candidate = dict(selected["candidate"])
+    candidate_input = str(selected_candidate.get("run_dir") or "")
+    if not candidate_input:
+        raise LoopError("auto-shortlist batch winner is missing run_dir")
+
+    return {
+        "command": [
+            _python_executable(),
+            str(ROOT / "ai_dj.py"),
+            "auto-shortlist-fusion",
+            song_a,
+            song_b,
+            "--output",
+            str(output_dir),
+            "--batch-size",
+            str(int(batch_size)),
+            "--shortlist",
+            str(int(shortlist)),
+            "--variant-mode",
+            variant_mode,
+            "--arrangement-mode",
+            arrangement_mode,
+        ],
+        "stdout": "",
+        "stderr": "",
+        "output_dir": str(output_dir),
+        "selection_mode": "listener_batch",
+        "batch_size": int(batch_size),
+        "shortlist": int(shortlist),
+        "variant_mode": str(variant_mode),
+        "arrangement_mode": str(arrangement_mode),
+        "auto_shortlist_report_path": str(report_path),
+        "selection_lane": str(selected["selection_lane"]),
+        "selected_candidate": selected_candidate,
+        "selected_candidate_input": candidate_input,
+    }
+
+
 def _validate_command_template(command_template: str, *, label: str) -> None:
     if not str(command_template).strip():
         raise LoopError(f"{label} command template must not be empty")
@@ -292,6 +398,8 @@ def _build_iteration_artifacts(
     listener_assessment: dict[str, Any] | None = None,
     change_context_path: Path | None = None,
     change_request_path: Path | None = None,
+    auto_shortlist_report_path: Path | None = None,
+    auto_shortlist_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifacts: dict[str, Any] = {
         "render_output": _artifact_record(
@@ -319,6 +427,16 @@ def _build_iteration_artifacts(
             metadata={
                 "decision": str(listener_assessment.get("decision") or "unknown"),
                 "listener_rank": float(listener_assessment.get("listener_rank") or 0.0),
+            },
+        )
+    if auto_shortlist_report_path is not None and auto_shortlist_report is not None:
+        artifacts["auto_shortlist_report"] = _artifact_record(
+            kind="auto_shortlist_report",
+            path=auto_shortlist_report_path,
+            schema_version=str(auto_shortlist_report.get("schema_version") or ""),
+            metadata={
+                "survivor_count": int((((auto_shortlist_report.get("listener_agent_report") or {}).get("counts") or {}).get("survivors") or 0)),
+                "winner": str((((auto_shortlist_report.get("recommended_shortlist") or [{}])[0]).get("candidate_id") or "")),
             },
         )
     if change_context_path is not None:
@@ -673,6 +791,10 @@ def run_closed_loop(
     song_b: str,
     references: list[str],
     output_root: str,
+    batch_size: int = 1,
+    shortlist: int = 1,
+    variant_mode: str = "safe",
+    arrangement_mode: str = "baseline",
     max_iterations: int = 3,
     quality_gate: float = 85.0,
     plateau_limit: int = 2,
@@ -687,6 +809,10 @@ def run_closed_loop(
         raise LoopError("max_iterations must be at least 1")
     if plateau_limit < 1:
         raise LoopError("plateau_limit must be at least 1")
+    if batch_size < 1:
+        raise LoopError("batch_size must be at least 1")
+    if shortlist < 1:
+        raise LoopError("shortlist must be at least 1")
     if change_command and change_dispatch:
         raise LoopError("Specify either change_command or change_dispatch, not both")
     if test_command and test_dispatch:
@@ -713,6 +839,10 @@ def run_closed_loop(
         "song_b": str(Path(song_b).expanduser().resolve()),
         "references": [str(Path(ref).expanduser().resolve()) for ref in references],
         "config": {
+            "batch_size": int(batch_size),
+            "shortlist": int(shortlist),
+            "variant_mode": str(variant_mode),
+            "arrangement_mode": str(arrangement_mode),
             "max_iterations": int(max_iterations),
             "quality_gate": float(quality_gate),
             "plateau_limit": int(plateau_limit),
@@ -737,9 +867,25 @@ def run_closed_loop(
     for iteration_index in range(1, max_iterations + 1):
         iteration_dir = root / f"iter_{iteration_index:02d}"
         render_dir = iteration_dir / "render"
-        render_meta = render_iteration(song_a, song_b, render_dir)
+        auto_shortlist_report: dict[str, Any] | None = None
+        auto_shortlist_report_path: Path | None = None
+        if batch_size > 1:
+            render_meta = render_iteration_listener_batch(
+                song_a,
+                song_b,
+                render_dir,
+                batch_size=batch_size,
+                shortlist=shortlist,
+                variant_mode=variant_mode,
+                arrangement_mode=arrangement_mode,
+            )
+            auto_shortlist_report_path = Path(str(render_meta["auto_shortlist_report_path"])).expanduser().resolve()
+            auto_shortlist_report = json.loads(auto_shortlist_report_path.read_text(encoding="utf-8"))
+            candidate_path = str(render_meta["selected_candidate_input"])
+        else:
+            render_meta = render_iteration(song_a, song_b, render_dir)
+            candidate_path = str(render_dir)
 
-        candidate_path = str(render_dir)
         candidate_report = _candidate_report(candidate_path)
         listener_assessment = _candidate_listener_assessment(candidate_path)
         feedback_brief = _require_feedback_brief_shape(
@@ -807,6 +953,8 @@ def run_closed_loop(
                 feedback_brief=feedback_brief,
                 listener_assessment_path=listener_assessment_path,
                 listener_assessment=listener_assessment,
+                auto_shortlist_report_path=auto_shortlist_report_path,
+                auto_shortlist_report=auto_shortlist_report,
             ),
         }
 
@@ -847,6 +995,8 @@ def run_closed_loop(
                 listener_assessment=listener_assessment,
                 change_context_path=change_context_path,
                 change_request_path=change_request_path,
+                auto_shortlist_report_path=auto_shortlist_report_path,
+                auto_shortlist_report=auto_shortlist_report,
             )
             change_result = _run_command_template(
                 change_command,
@@ -911,6 +1061,7 @@ def run_closed_loop(
             "render_output": {"kind": "render_output_dir", "required": True},
             "listen_feedback_brief": {"kind": "listen_feedback_brief", "required": True, "schema_version": "from feedback brief artifact"},
             "listener_assessment": {"kind": "listener_agent_case_assessment", "required": True, "schema_version": "0.1.0"},
+            "auto_shortlist_report": {"kind": "auto_shortlist_report", "required": False, "schema_version": "from report artifact"},
             "change_context": {"kind": "change_command_context", "required": False, "schema_version": CHANGE_COMMAND_CONTEXT_SCHEMA_VERSION},
             "change_request": {"kind": "change_request_markdown", "required": False},
         }
@@ -943,6 +1094,10 @@ def main() -> int:
     parser.add_argument("song_b", help="Path to parent song B")
     parser.add_argument("references", nargs="+", help="One or more good reference inputs")
     parser.add_argument("--output-root", "-o", required=True, help="Directory to write iteration outputs")
+    parser.add_argument("--batch-size", type=int, default=1, help="Number of candidate renders to generate per iteration before the listener picks the best one")
+    parser.add_argument("--shortlist", type=int, default=1, help="Number of survivors to keep in the listener shortlist when batch mode is enabled")
+    parser.add_argument("--variant-mode", default="safe", help="Variant mode forwarded to auto-shortlist-fusion when batch mode is enabled")
+    parser.add_argument("--arrangement-mode", default="baseline", help="Arrangement mode forwarded to fusion/auto-shortlist-fusion")
     parser.add_argument("--max-iterations", type=int, default=3, help="Maximum number of loop iterations")
     parser.add_argument("--quality-gate", type=float, default=85.0, help="Stop once the candidate clears this overall score and, when available, the reference-weighted component gate")
     parser.add_argument("--plateau-limit", type=int, default=2, help="Stop after this many non-improving iterations")
@@ -962,6 +1117,10 @@ def main() -> int:
         song_b=args.song_b,
         references=args.references,
         output_root=args.output_root,
+        batch_size=args.batch_size,
+        shortlist=args.shortlist,
+        variant_mode=args.variant_mode,
+        arrangement_mode=args.arrangement_mode,
         max_iterations=args.max_iterations,
         quality_gate=args.quality_gate,
         plateau_limit=args.plateau_limit,

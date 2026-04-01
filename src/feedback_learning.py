@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from src.human_feedback import HumanFeedbackStore
+from src.listener_learning import build_listener_learning_models, summarize_listener_learning_models
 
 
 def build_feedback_learning_summary(feedback_root: Path, *, limit: int = 5000) -> dict[str, Any]:
@@ -63,8 +64,9 @@ def build_feedback_learning_summary(feedback_root: Path, *, limit: int = 5000) -
         'payoff_upgrade_pressure': round(min(1.0, tag_counts.get('weak payoff', 0) / max(len(render_events), 1)), 3),
         'backbone_reward_pressure': round(min(1.0, tag_counts.get('good backbone', 0) / max(len(render_events), 1)), 3),
     }
+    listener_learning_models = build_listener_learning_models(events)
     return {
-        'schema_version': '0.1.0',
+        'schema_version': '0.2.0',
         'summary': {
             'render_event_count': len(render_events),
             'pairwise_event_count': len(pairwise_events),
@@ -74,6 +76,7 @@ def build_feedback_learning_summary(feedback_root: Path, *, limit: int = 5000) -
             'top_positive_tags': [{'tag': tag, 'count': count} for tag, count in top_positive_tags],
         },
         'derived_priors': derived_priors,
+        'listener_learning': summarize_listener_learning_models(listener_learning_models),
         'timestamped_moments': timestamped_moments[:128],
     }
 

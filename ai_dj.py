@@ -20,6 +20,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 from src.feedback_learning import build_feedback_learning_summary, write_feedback_learning_summary
+from src.human_feedback import HumanFeedbackStore
+from src.listener_learning import build_listener_learning_models, score_report_with_listener_learning
 
 LISTEN_COMPONENT_KEYS = ("structure", "groove", "energy_arc", "transition", "coherence", "mix_sanity", "song_likeness")
 
@@ -2738,7 +2740,7 @@ def _feedback_learning_snapshot() -> dict[str, Any]:
         return payload
     except Exception:
         return {
-            "schema_version": "0.1.0",
+            "schema_version": "0.2.0",
             "summary": {"render_event_count": 0, "pairwise_event_count": 0},
             "derived_priors": {
                 "medley_rejection_pressure": 0.0,
@@ -2747,8 +2749,22 @@ def _feedback_learning_snapshot() -> dict[str, Any]:
                 "payoff_upgrade_pressure": 0.0,
                 "backbone_reward_pressure": 0.0,
             },
+            "listener_learning": {
+                "render_acceptor": {"available": False},
+                "pairwise_preference": {"available": False},
+            },
             "timestamped_moments": [],
         }
+
+
+@lru_cache(maxsize=1)
+def _listener_learning_models() -> dict[str, Any]:
+    feedback_root = (Path(__file__).resolve().parent / "data" / "human_feedback").resolve()
+    try:
+        events = HumanFeedbackStore(feedback_root).list_events(limit=5000)
+        return build_listener_learning_models(events)
+    except Exception:
+        return {}
 
 
 
@@ -2814,6 +2830,7 @@ def _append_auto_shortlist_memory_log(report: dict[str, Any]) -> Path | None:
 def _apply_feedback_learning_bias(result: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
     snapshot = _feedback_learning_snapshot()
     priors = dict(snapshot.get("derived_priors") or {})
+    listener_learning = dict(snapshot.get("listener_learning") or {})
     song_metrics = (((report.get("song_likeness") or {}).get("details") or {}).get("aggregate_metrics") or {})
     groove_score = float(((report.get("groove") or {}).get("score", 0.0)) or 0.0)
     transition_score = float(((report.get("transition") or {}).get("score", 0.0)) or 0.0)
@@ -2833,15 +2850,34 @@ def _apply_feedback_learning_bias(result: dict[str, Any], report: dict[str, Any]
 
     penalty = 8.0 * medley_pressure * medley_risk + 6.5 * groove_pressure * groove_gap + 5.0 * transition_pressure * transition_gap + 4.5 * payoff_pressure * payoff_gap
     bonus = 5.0 * backbone_pressure * backbone_continuity
-    adjusted_rank = round(float(result.get("listener_rank", 0.0)) + bonus - penalty, 1)
+    learned_scores = score_report_with_listener_learning(report, _listener_learning_models())
+    learned_acceptance_delta = 0.0
+    learned_preference_delta = 0.0
+    if learned_scores.get("available"):
+        acceptance_probability = float(learned_scores.get("acceptance_probability", 0.5) or 0.5)
+        preference_probability = float(learned_scores.get("preference_probability", 0.5) or 0.5)
+        learned_acceptance_delta = 12.0 * (acceptance_probability - 0.5)
+        learned_preference_delta = 8.0 * (preference_probability - 0.5)
+    adjusted_rank = round(
+        float(result.get("listener_rank", 0.0))
+        + bonus
+        - penalty
+        + learned_acceptance_delta
+        + learned_preference_delta,
+        1,
+    )
 
     result["base_listener_rank"] = result.get("listener_rank")
     result["listener_rank"] = adjusted_rank
     result["feedback_learning"] = {
         "derived_priors": priors,
+        "listener_learning": listener_learning,
         "penalty": round(penalty, 3),
         "bonus": round(bonus, 3),
+        "learned_acceptance_delta": round(learned_acceptance_delta, 3),
+        "learned_preference_delta": round(learned_preference_delta, 3),
         "adjusted_listener_rank": adjusted_rank,
+        "learned_scores": learned_scores,
         "signals": {
             "medley_risk": round(medley_risk, 3),
             "backbone_continuity": round(backbone_continuity, 3),
@@ -3555,6 +3591,7 @@ def distill_feedback_learning(output: Optional[str] = None) -> int:
     output_path = Path(output).expanduser().resolve() if output else (feedback_root / "learning_snapshot.json")
     payload = write_feedback_learning_summary(feedback_root, output_path, limit=5000)
     _feedback_learning_snapshot.cache_clear()
+    _listener_learning_models.cache_clear()
     print(f"Wrote feedback learning snapshot: {output_path}")
     print(json.dumps(payload.get("derived_priors") or {}, indent=2, sort_keys=True))
     return 0
@@ -3566,6 +3603,10 @@ def closed_loop(
     song_b: str,
     references: list[str],
     output_root: Optional[str],
+    batch_size: int = 1,
+    shortlist: int = 1,
+    variant_mode: str = "safe",
+    arrangement_mode: str = "baseline",
     max_iterations: int = 3,
     quality_gate: float = 85.0,
     plateau_limit: int = 2,
@@ -3600,6 +3641,10 @@ def closed_loop(
             song_b=song_b_path,
             references=references,
             output_root=str(output_root_dir),
+            batch_size=batch_size,
+            shortlist=shortlist,
+            variant_mode=variant_mode,
+            arrangement_mode=arrangement_mode,
             max_iterations=max_iterations,
             quality_gate=quality_gate,
             plateau_limit=plateau_limit,
@@ -3680,7 +3725,7 @@ Suggested first checkpoint:
   python3 ai_dj.py benchmark-listen runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listen_benchmark.json
   python3 ai_dj.py listener-agent runs/fusion_a runs/fusion_b runs/fusion_c --output runs/checkpoint/listener_agent.json
   python3 ai_dj.py auto-shortlist-fusion song_a.wav song_b.wav --output runs/auto_shortlist/demo --batch-size 4 --shortlist 2
-  python3 ai_dj.py closed-loop song_a.wav song_b.wav ref_a.wav ref_b.wav --output runs/closed_loop/demo --max-iterations 2
+  python3 ai_dj.py closed-loop song_a.wav song_b.wav ref_a.wav ref_b.wav --output runs/closed_loop/demo --batch-size 4 --shortlist 2 --max-iterations 2
   python3 ai_dj.py prototype song_a.wav song_b.wav --output-dir runs/prototype-001
   python3 ai_dj.py fusion song_a.wav song_b.wav --output runs/render-prototype
 ''',
@@ -3736,6 +3781,10 @@ Suggested first checkpoint:
     closed_loop_parser.add_argument("song_b", help="Path to parent song B")
     closed_loop_parser.add_argument("references", nargs="+", help="One or more good reference inputs")
     closed_loop_parser.add_argument("--output", "-o", help="Directory (or JSON path inside a directory) for closed-loop artifacts/report")
+    closed_loop_parser.add_argument("--batch-size", type=int, default=1, help="Generate this many candidates per iteration before the listener picks the best one")
+    closed_loop_parser.add_argument("--shortlist", type=int, default=1, help="Number of survivors to keep in the listener shortlist when batch mode is enabled")
+    closed_loop_parser.add_argument("--variant-mode", default="safe", help="Variant mode forwarded to auto-shortlist-fusion when batch mode is enabled")
+    closed_loop_parser.add_argument("--arrangement-mode", default="baseline", choices=["baseline", "adaptive"], help="Arrangement mode forwarded to fusion/auto-shortlist-fusion")
     closed_loop_parser.add_argument("--max-iterations", type=int, default=3, help="Maximum number of loop iterations")
     closed_loop_parser.add_argument("--quality-gate", type=float, default=85.0, help="Stop once the candidate clears this overall score")
     closed_loop_parser.add_argument("--plateau-limit", type=int, default=2, help="Stop after this many non-improving iterations")
@@ -3818,6 +3867,10 @@ Suggested first checkpoint:
                 args.song_b,
                 args.references,
                 args.output,
+                args.batch_size,
+                args.shortlist,
+                args.variant_mode,
+                args.arrangement_mode,
                 args.max_iterations,
                 args.quality_gate,
                 args.plateau_limit,
