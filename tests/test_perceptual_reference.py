@@ -50,3 +50,24 @@ def test_score_candidate_against_references_ranks_reference_similarity(tmp_path:
     assert result["reference_count"] == 2
     assert result["top_reference_similarities"][0]["label"] == "strong.wav"
     assert result["candidate_similarity"] > 0.4
+
+
+def test_load_embedder_uses_env_preference_and_cache(monkeypatch) -> None:
+    class _EnvEmbedder:
+        backend_name = "env"
+
+    calls: list[str] = []
+
+    def _fake_msclap_embedder():
+        calls.append("msclap")
+        return _EnvEmbedder()
+
+    monkeypatch.setenv("AI_DJ_PERCEPTUAL_BACKEND", "msclap")
+    pr._load_cached_embedder.cache_clear()
+    monkeypatch.setattr(pr, "_MsClapEmbedder", _fake_msclap_embedder)
+
+    first = pr.load_embedder()
+    second = pr.load_embedder()
+
+    assert first is second
+    assert calls == ["msclap"]

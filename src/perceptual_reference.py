@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+
+PERCEPTUAL_BACKEND_ENV_VAR = "AI_DJ_PERCEPTUAL_BACKEND"
 
 
 def _load_audio_mono(path: str | Path, *, sr: int = 24000, duration: float = 60.0) -> np.ndarray:
@@ -127,7 +132,8 @@ def available_backends() -> list[str]:
     return backends
 
 
-def load_embedder(preferred_backend: str | None = None) -> _BaseEmbedder:
+@lru_cache(maxsize=4)
+def _load_cached_embedder(preferred_backend: str | None) -> _BaseEmbedder:
     backend_order = []
     if preferred_backend:
         backend_order.append(preferred_backend)
@@ -146,6 +152,11 @@ def load_embedder(preferred_backend: str | None = None) -> _BaseEmbedder:
             errors.append(f"{backend}: {exc}")
     error_text = "; ".join(errors) if errors else "no perceptual backend available"
     raise RuntimeError(error_text)
+
+
+def load_embedder(preferred_backend: str | None = None) -> _BaseEmbedder:
+    backend = preferred_backend or os.environ.get(PERCEPTUAL_BACKEND_ENV_VAR) or None
+    return _load_cached_embedder(backend)
 
 
 def _normalize_embedding(vector: np.ndarray) -> np.ndarray:
