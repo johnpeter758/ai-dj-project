@@ -686,6 +686,39 @@ def _section_mix_cleanup(segment: np.ndarray, sr: int, work, section) -> np.ndar
     return out
 
 
+def _stabilize_overlap_sum(existing: np.ndarray, incoming: np.ndarray, sr: int) -> np.ndarray:
+    """Trim overlap energy before summing so crossfades do not trigger audible bus pumping."""
+    if existing.size == 0 or incoming.size == 0 or existing.shape != incoming.shape:
+        return incoming.astype(np.float32)
+
+    existing_mono = np.mean(existing, axis=0).astype(np.float32)
+    incoming_mono = np.mean(incoming, axis=0).astype(np.float32)
+    combined_mono = existing_mono + incoming_mono
+
+    env_window = max(128, int(round(sr * 0.040)))
+    existing_env = np.sqrt(ndimage.uniform_filter1d(np.square(existing_mono), size=env_window, mode="nearest") + 1e-10)
+    incoming_env = np.sqrt(ndimage.uniform_filter1d(np.square(incoming_mono), size=env_window, mode="nearest") + 1e-10)
+    combined_env = np.sqrt(ndimage.uniform_filter1d(np.square(combined_mono), size=env_window, mode="nearest") + 1e-10)
+
+    # Allow a modest lift above the louder contributor, but stop dense overlaps from doubling perceived loudness.
+    target_env = np.maximum(existing_env, incoming_env) * np.float32(1.12)
+    raw_gain = np.minimum(1.0, target_env / np.maximum(combined_env, 1e-6)).astype(np.float32)
+
+    attack = np.float32(math.exp(-1.0 / max(1.0, sr * 0.008)))
+    release = np.float32(math.exp(-1.0 / max(1.0, sr * 0.120)))
+    smooth_gain = np.ones_like(raw_gain, dtype=np.float32)
+    current_gain = np.float32(1.0)
+    floor = np.float32(10 ** (-4.5 / 20.0))
+    for idx, desired_gain in enumerate(raw_gain):
+        desired_gain = max(desired_gain, floor)
+        if desired_gain < current_gain:
+            current_gain = desired_gain + attack * (current_gain - desired_gain)
+        else:
+            current_gain = desired_gain + release * (current_gain - desired_gain)
+        smooth_gain[idx] = current_gain
+    return (incoming * smooth_gain[np.newaxis, :]).astype(np.float32)
+
+
 def _stabilize_section_loudness(
     audio: np.ndarray,
     sr: int,
@@ -739,7 +772,7 @@ def _stabilize_section_loudness(
     if len(active_rms) < 2:
         return audio.astype(np.float32)
 
-    target_rms = float(np.median(np.asarray(active_rms, dtype=np.float32)))
+    target_rms = float(np.percentile(np.asarray(active_rms, dtype=np.float32), 65.0))
     if not np.isfinite(target_rms) or target_rms <= 0.0:
         return audio.astype(np.float32)
 
@@ -748,7 +781,10 @@ def _stabilize_section_loudness(
         if rms < silence_floor_lin:
             gain = 1.0
         else:
-            gain = float(np.clip(target_rms / max(rms, 1e-9), min_ratio, max_ratio))
+            if rms <= target_rms:
+                gain = 1.0
+            else:
+                gain = float(np.clip(target_rms / max(rms, 1e-9), min_ratio, 1.0))
         gain_curve[start:end] = np.float32(gain)
 
     window = int(round(max(0.0, smoothing_sec) * sr))
@@ -767,12 +803,10 @@ def _finalize_master(audio: np.ndarray, sr: int, bpm: float = 120.0, sections=No
         staged = _stabilize_section_loudness(staged, sr, sections)
 
     finished = _highpass(staged, sr, 28.0)
-    finished = bpm_synced_glue_compress(finished, sr=sr, bpm=bpm, threshold_db=-16.0, ratio=1.8, makeup_db=0.75)
-    finished = _compress_bus(finished, threshold_db=-18.0, ratio=2.0, makeup_db=0.5)
-    finished = lookahead_envelope_limit(finished, sr=sr, ceiling_db=-1.2, attack_ms=2.0, release_ms=60.0, lookahead_ms=1.5)
-    finished = _soft_limit(finished, drive=1.05)
-    finished = lufs_normalize(finished, target_lufs=-12.0, sr=sr)
-    return _peak_normalize(finished, -1.0)
+    finished = bpm_synced_glue_compress(finished, sr=sr, bpm=bpm, threshold_db=-14.0, ratio=1.45, makeup_db=0.35)
+    finished = lookahead_envelope_limit(finished, sr=sr, ceiling_db=-1.4, attack_ms=1.5, release_ms=120.0, lookahead_ms=3.0)
+    finished = lufs_normalize(finished, target_lufs=-13.5, sr=sr)
+    return _peak_normalize(finished, -1.2)
 
 
 def _peak_normalize(audio: np.ndarray, target_peak_dbfs: float = -1.0) -> np.ndarray:
@@ -843,6 +877,8 @@ def render_resolved_plan(manifest: ResolvedRenderPlan, output_dir: str | Path) -
                     carve_hi_hz=carve_hi_hz,
                 )
                 master[:, start_sample:end_sample] = existing
+            if existing.shape[1] == seg.shape[1] and np.any(np.abs(existing) > 1e-6):
+                seg = _stabilize_overlap_sum(existing, seg, sr)
             master[:, start_sample:end_sample] += seg
 
     raw_wav = str((outdir / "child_raw.wav").resolve())

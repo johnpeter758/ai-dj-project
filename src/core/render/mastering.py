@@ -15,26 +15,38 @@ def bpm_synced_glue_compress(
     audio: np.ndarray,
     sr: int,
     bpm: float,
-    threshold_db: float = -16.0,
-    ratio: float = 1.8,
-    makeup_db: float = 0.75,
+    threshold_db: float = -14.0,
+    ratio: float = 1.45,
+    makeup_db: float = 0.35,
+    attack_ms: float = 18.0,
+    max_reduction_db: float = 2.5,
 ) -> np.ndarray:
     if audio.size == 0:
         return audio.astype(np.float32)
     threshold_lin = 10 ** (threshold_db / 20.0)
-    envelope = np.max(np.abs(audio), axis=0).astype(np.float32)
-    over = np.maximum(envelope, threshold_lin) / threshold_lin
-    gain = np.ones_like(envelope, dtype=np.float32)
+    mono = np.mean(audio, axis=0).astype(np.float32)
+    envelope = np.sqrt(ndimage.uniform_filter1d(np.square(mono), size=max(64, int(round(sr * 0.018))), mode="nearest") + 1e-10).astype(np.float32)
+    target_gain = np.ones_like(envelope, dtype=np.float32)
     mask = envelope > threshold_lin
     if np.any(mask):
-        compressed = np.power(over[mask], -(1.0 - 1.0 / max(ratio, 1.0)))
-        gain[mask] = compressed.astype(np.float32)
+        over = envelope[mask] / threshold_lin
+        compressed = np.power(over, -(1.0 - 1.0 / max(ratio, 1.0)))
+        min_gain = np.float32(10 ** (-max(max_reduction_db, 0.0) / 20.0))
+        target_gain[mask] = np.maximum(compressed.astype(np.float32), min_gain)
 
+    attack_sec = max(float(attack_ms), 1.0) / 1000.0
     beat_interval_sec = 60.0 / max(float(bpm), 1e-6)
-    release_sec = float(np.clip(beat_interval_sec * 0.65, 0.08, 0.24))
-    window = max(64, int(round(release_sec * sr)))
-    kernel = np.ones(window, dtype=np.float32) / np.float32(window)
-    smoothed = np.convolve(gain, kernel, mode="same")
+    release_sec = float(np.clip(beat_interval_sec * 0.85, 0.16, 0.42))
+    attack_coeff = np.float32(math.exp(-1.0 / max(1.0, attack_sec * sr)))
+    release_coeff = np.float32(math.exp(-1.0 / max(1.0, release_sec * sr)))
+    smoothed = np.ones_like(target_gain, dtype=np.float32)
+    current_gain = np.float32(1.0)
+    for idx, desired_gain in enumerate(target_gain):
+        if desired_gain < current_gain:
+            current_gain = desired_gain + attack_coeff * (current_gain - desired_gain)
+        else:
+            current_gain = desired_gain + release_coeff * (current_gain - desired_gain)
+        smoothed[idx] = current_gain
     out = audio * smoothed[np.newaxis, :]
     return apply_gain_db(out, makeup_db)
 
@@ -43,9 +55,9 @@ def lookahead_envelope_limit(
     audio: np.ndarray,
     sr: int,
     ceiling_db: float = -1.2,
-    attack_ms: float = 2.0,
-    release_ms: float = 60.0,
-    lookahead_ms: float = 1.5,
+    attack_ms: float = 1.5,
+    release_ms: float = 120.0,
+    lookahead_ms: float = 3.0,
 ) -> np.ndarray:
     if audio.size == 0:
         return audio.astype(np.float32)
