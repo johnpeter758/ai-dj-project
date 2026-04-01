@@ -564,3 +564,60 @@ def test_build_feedback_brief_extracts_stable_reference_features(tmp_path: Path)
     low_end_metric = next(item for item in mix_summary['stable_metrics'] if item['metric'] == 'manifest_metrics.aggregate_metrics.low_end_owner_stability_risk')
     assert low_end_metric['avg'] == 0.15
     assert low_end_metric['spread'] == 0.02
+
+
+def test_build_feedback_brief_exposes_perceptual_reference_diagnostics(tmp_path: Path, monkeypatch):
+    candidate = tmp_path / 'candidate.wav'
+    ref = tmp_path / 'ref.wav'
+    candidate.write_bytes(b'wave')
+    ref.write_bytes(b'wave')
+
+    candidate_item = {
+        'input_label': 'candidate.wav',
+        'case_id': 'candidate',
+        'input_path': str(candidate),
+        'report_origin': 'audio_file',
+        'resolved_audio_path': str(candidate),
+        'render_manifest_path': None,
+        'report': _report(74.0, groove=72.0),
+    }
+    ref_item = {
+        'input_label': 'ref.wav',
+        'case_id': 'ref',
+        'input_path': str(ref),
+        'report_origin': 'audio_file',
+        'resolved_audio_path': str(ref),
+        'render_manifest_path': None,
+        'report': _report(90.0, groove=88.0),
+    }
+
+    monkeypatch.setattr(loop, '_load_report', lambda path: candidate_item if Path(path).name == 'candidate.wav' else ref_item)
+    monkeypatch.setattr(
+        loop,
+        '_component_gap_summary',
+        lambda candidate_path, reference_paths: (
+            {'overall_vs_references': -8.0, 'structure': 0.0, 'song_likeness': 0.0, 'groove': -8.0, 'energy_arc': 0.0, 'transition': 0.0, 'coherence': 0.0, 'mix_sanity': 0.0},
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        loop,
+        '_perceptual_reference_quality',
+        lambda candidate_item, reference_items: {
+            'available': True,
+            'backend': 'dummy',
+            'reference_count': 1,
+            'candidate_similarity': 0.8123,
+            'top_reference_similarities': [{'label': 'ref.wav', 'similarity': 0.8123, 'path': str(ref)}],
+            'notes': ['secondary perceptual check'],
+        },
+    )
+
+    brief = build_feedback_brief(str(candidate), [str(ref)])
+
+    diagnostics = brief['quality_gate_diagnostics']['perceptual_reference']
+    assert diagnostics['available'] is True
+    assert diagnostics['backend'] == 'dummy'
+    assert diagnostics['candidate_similarity'] == 0.8123
+    assert brief['reference_alignment']['perceptual']['backend'] == 'dummy'
+    assert 'Use perceptual reference similarity as a secondary check' in brief['automation_loop'][1]

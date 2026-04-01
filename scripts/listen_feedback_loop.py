@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 import ai_dj
 from scripts.reference_input_normalizer import normalize_reference_inputs
+from src.perceptual_reference import score_candidate_against_references
 
 
 INTERVENTION_LIBRARY: dict[str, dict[str, Any]] = {
@@ -521,6 +522,40 @@ def _reference_dynamic_contour_similarity(comparisons: list[dict[str, Any]]) -> 
     return _reference_profile_similarity(comparisons, "energy_profile_match")
 
 
+def _existing_audio_path(item: dict[str, Any]) -> Path | None:
+    candidates = [item.get("resolved_audio_path"), item.get("input_path")]
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            path = Path(str(raw)).expanduser().resolve()
+        except (TypeError, ValueError):
+            continue
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def _perceptual_reference_quality(candidate_item: dict[str, Any], reference_items: list[dict[str, Any]]) -> dict[str, Any]:
+    candidate_audio = _existing_audio_path(candidate_item)
+    reference_audio_paths = [
+        path
+        for item in reference_items
+        for path in [_existing_audio_path(item)]
+        if path is not None
+    ]
+    if candidate_audio is None:
+        return {
+            "available": False,
+            "backend": None,
+            "reference_count": len(reference_audio_paths),
+            "candidate_similarity": None,
+            "top_reference_similarities": [],
+            "notes": ["candidate audio path unavailable for perceptual reference scoring"],
+        }
+    return score_candidate_against_references(candidate_audio, reference_audio_paths).to_dict()
+
+
 def _get_nested(payload: dict[str, Any], path: list[str]) -> Any:
     current: Any = payload
     for key in path:
@@ -917,6 +952,7 @@ def build_feedback_brief(candidate: str, references: list[str], target_score: fl
     section_program_alignment = _section_program_reference_alignment(candidate_item, reference_items)
     dynamic_contour_similarity = _reference_dynamic_contour_similarity(comparisons)
     reference_weighted_quality = _reference_weighted_quality_diagnostics(candidate_report, reference_items)
+    perceptual_reference_quality = _perceptual_reference_quality(candidate_item, reference_items)
 
     if climax_reference_alignment and float(climax_reference_alignment.get("mean_position_similarity") or 0.0) < 0.6:
         planner_feedback_map = [
@@ -1031,9 +1067,11 @@ def build_feedback_brief(candidate: str, references: list[str], target_score: fl
             "climax_position": climax_reference_alignment,
             "section_program": section_program_alignment,
             "dynamic_contour": dynamic_contour_similarity,
+            "perceptual": perceptual_reference_quality,
         },
         "quality_gate_diagnostics": {
             "reference_weighted": reference_weighted_quality,
+            "perceptual_reference": perceptual_reference_quality,
         },
         "gap_summary": gap_summary,
         "ranked_interventions": ranked_interventions,
@@ -1056,6 +1094,7 @@ def build_feedback_brief(candidate: str, references: list[str], target_score: fl
         "pairwise_comparisons": comparisons,
         "automation_loop": [
             "Compare candidate against references and compute component gaps.",
+            "Use perceptual reference similarity as a secondary check when an embedding backend is available.",
             "Patch the highest-priority code targets tied to the worst gaps.",
             "Rerender the fusion and rerun listener-agent + reference benchmark.",
             "Accept only changes that materially improve score and survivor status.",
