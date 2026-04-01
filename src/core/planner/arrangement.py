@@ -4674,17 +4674,24 @@ def _choose_support_recipe(
     if not ranked_pool:
         return None
 
-    max_error_delta = 0.42
-    max_stretch_gate = 0.35
-    max_stretch_ratio = 1.12
-    max_seam_risk = 0.58
-    max_transition_viability = 0.68
-    max_foreground_collision = 0.42
-    if spec.label in {'build', 'bridge', 'payoff'}:
+    max_error_delta = 0.32
+    max_stretch_gate = 0.20
+    max_stretch_ratio = 1.08
+    max_seam_risk = 0.48
+    max_transition_viability = 0.54
+    max_foreground_collision = 0.30
+    if spec.label in {'build', 'bridge'}:
         max_error_delta = 0.68
         max_seam_risk = 0.66
         max_transition_viability = 0.76
         max_foreground_collision = 0.48
+    elif spec.label == 'payoff':
+        max_error_delta = 0.14
+        max_stretch_gate = 0.0
+        max_stretch_ratio = 1.04
+        max_seam_risk = 0.36
+        max_transition_viability = 0.38
+        max_foreground_collision = 0.22
 
     for candidate in ranked_pool:
         alt_parent = str(candidate.get('parent_id') or '')
@@ -4715,8 +4722,8 @@ def _choose_support_recipe(
             continue
 
         support_mode = 'filtered_counterlayer'
-        if spec.label == 'payoff' and alt_parent != backbone_parent:
-            support_mode = 'foreground_counterlayer'
+        if spec.label == 'payoff':
+            support_mode = 'filtered_support'
         gain_db = _support_gain_db_for_recipe(
             spec,
             support_mode=support_mode,
@@ -4734,6 +4741,65 @@ def _choose_support_recipe(
             'score_breakdown': score_breakdown,
         }
     return None
+
+
+def _apply_development_continuity_guard(
+    section_specs: list[_SectionSpec],
+    chosen_selections: list[_WindowSelection],
+    ranked_choices: list[list[_WindowSelection]],
+    *,
+    backbone_parent: str,
+) -> tuple[list[_WindowSelection], list[str]]:
+    if len(chosen_selections) < 3:
+        return chosen_selections, []
+
+    def _safe_backbone_alternate(current: _WindowSelection, ranked: list[_WindowSelection], spec: _SectionSpec) -> _WindowSelection | None:
+        for alt in ranked:
+            if alt.parent_id != backbone_parent or alt.parent_id == current.parent_id:
+                continue
+            error_delta = alt.blended_error - current.blended_error
+            stretch_ratio = float(alt.score_breakdown.get('stretch_ratio', 1.0))
+            stretch_gate = float(alt.score_breakdown.get('stretch_gate', 1.0))
+            seam_risk = float(alt.score_breakdown.get('seam_risk', 1.0))
+            transition_viability = float(alt.score_breakdown.get('transition_viability', 1.0))
+            groove_confidence = float(alt.score_breakdown.get('listen_groove_confidence', 0.0))
+            if error_delta > (0.52 if spec.label in {'build', 'payoff'} else 0.38):
+                continue
+            if stretch_gate > 0.0 or stretch_ratio > 1.10:
+                continue
+            if seam_risk > 0.62 or transition_viability > 0.68:
+                continue
+            if groove_confidence < 0.54:
+                continue
+            return alt
+        return None
+
+    updated = list(chosen_selections)
+    notes: list[str] = []
+    for idx in range(1, len(updated) - 1):
+        spec = section_specs[idx]
+        current = updated[idx]
+        prev_sel = updated[idx - 1]
+        next_sel = updated[idx + 1]
+        if spec.label not in {'verse', 'build', 'payoff', 'outro'}:
+            continue
+        if current.parent_id == backbone_parent:
+            continue
+        if prev_sel.parent_id != backbone_parent or next_sel.parent_id != backbone_parent:
+            continue
+
+        alternate = _safe_backbone_alternate(current, ranked_choices[idx], spec)
+        if alternate is None:
+            continue
+
+        updated[idx] = alternate
+        notes.append(
+            f"development continuity guard: {spec.label} switched to {alternate.parent_id}:{alternate.candidate.label} "
+            f"to keep the backbone readable through a {prev_sel.section_label}->{spec.label}->{next_sel.section_label} arc; "
+            f"alt delta {alternate.blended_error - current.blended_error:.2f}"
+        )
+
+    return updated, notes
 
 
 _ALLOWED_ARRANGEMENT_MODES = {'adaptive', 'baseline'}
@@ -4869,6 +4935,13 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
         ranked_choices,
     )
     selection_notes.extend(authenticity_guard_notes)
+    chosen_selections, development_guard_notes = _apply_development_continuity_guard(
+        section_specs,
+        chosen_selections,
+        ranked_choices,
+        backbone_parent=backbone_plan.backbone_parent,
+    )
+    selection_notes.extend(development_guard_notes)
 
     sections: list[PlannedSection] = []
     selection_diagnostics: list[dict[str, Any]] = []
@@ -5056,9 +5129,10 @@ def build_stub_arrangement_plan(song_a: SongDNA, song_b: SongDNA, arrangement_mo
         'Seam-risk priors reuse listen-style handoff heuristics (energy/spectral/onset jumps plus low-end, foreground, and vocal-collision risk) to reject obviously awkward boundaries before render.',
         'Arrangement artifacts now expose listen-aligned planning_diagnostics so evaluator-facing groove/arc/transition signals are inspectable without parsing note strings.',
         'Per-section diagnostics now include a structured multi-candidate shortlist plus the best cross-parent alternate so guard-driven picks and near-miss alternates stay machine-readable downstream.',
-        'Major child sections can now schedule filtered donor support from the best safe cross-parent alternate so the render can build integrated two-parent sections instead of only section-to-section handoffs.',
+        'Integrated donor support is now treated as a rare accent, not a default richness trick: payoff overlays require unusually clean evidence and risky support is rejected upstream.',
         'Stretch and bar-grid fit are now evaluated against the backbone parent tempo so donor phrases are judged on the child-song grid instead of each source parent silently keeping its own clock.',
         'For same-parent backbone continuity, diagnostics can emit backbone_flow and the renderer now applies a dedicated low-overlap/low-end-protect treatment so backbone handoffs stay cleaner than generic same_parent_flow.',
+        'A development continuity guard now prefers a readable backbone through local three-section arcs over isolated donor cameos when the alternate stays musically safe.',
         'Resolver understands phrase_<start>_<end> labels and snaps them directly to analyzed phrase boundaries.',
         *selection_notes,
     ]

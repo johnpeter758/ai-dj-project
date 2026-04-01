@@ -4,7 +4,7 @@ import pytest
 
 from src.core.analysis.models import SongDNA
 from src.core.planner import build_compatibility_report, build_stub_arrangement_plan
-from src.core.planner.arrangement import _SectionCandidate, _SectionSpec, _WindowSelection, _apply_section_level_authenticity_guard, _backbone_selection_guard_reason, _baseline_mini_arc_metrics, _boundary_confidence, _build_section_program, _build_selection_shortlist_diagnostics, _choose_backbone_parent, _choose_support_recipe, _choose_with_major_section_balance_guard, _clamp01, _collect_parent_candidates, _enumerate_section_choices, _hard_groove_candidate_pool, _hard_outro_release_candidate_pool, _infer_transition_mode, _normalize_scores, _outro_release_candidate_metrics, _phrase_window_candidates, _pick_candidate, _planner_listen_feedback, _planner_seam_risk, _resolve_baseline_donor_mini_arc, _safe_float_list, _selection_backbone_continuity_penalty, _selection_opening_continuity_penalty, _support_gain_db_for_recipe
+from src.core.planner.arrangement import _SectionCandidate, _SectionSpec, _WindowSelection, _apply_development_continuity_guard, _apply_section_level_authenticity_guard, _backbone_selection_guard_reason, _baseline_mini_arc_metrics, _boundary_confidence, _build_section_program, _build_selection_shortlist_diagnostics, _choose_backbone_parent, _choose_support_recipe, _choose_with_major_section_balance_guard, _clamp01, _collect_parent_candidates, _enumerate_section_choices, _hard_groove_candidate_pool, _hard_outro_release_candidate_pool, _infer_transition_mode, _normalize_scores, _outro_release_candidate_metrics, _phrase_window_candidates, _pick_candidate, _planner_listen_feedback, _planner_seam_risk, _resolve_baseline_donor_mini_arc, _safe_float_list, _selection_backbone_continuity_penalty, _selection_opening_continuity_penalty, _support_gain_db_for_recipe
 from src.core.planner.compatibility import baseline_hard_key_pass, baseline_pair_admissibility, key_semitone_distance, tempo_ratio
 
 
@@ -2317,6 +2317,74 @@ def test_build_stub_arrangement_plan_keeps_late_major_sections_on_backbone_after
     assert build_section["source_parent"] == "B"
     assert len(late_major_sections) >= 1
     assert all(section["source_parent"] == "A" for section in late_major_sections)
+
+
+def test_development_continuity_guard_reclaims_backbone_between_backbone_neighbors():
+    specs = [
+        _SectionSpec(label="verse", start_bar=0, bar_count=8, target_energy=0.4, source_parent_preference="A"),
+        _SectionSpec(label="build", start_bar=8, bar_count=8, target_energy=0.6, source_parent_preference=None),
+        _SectionSpec(label="payoff", start_bar=16, bar_count=8, target_energy=0.8, source_parent_preference="A"),
+    ]
+
+    def _sel(parent: str, label: str, error: float, **scores):
+        return _WindowSelection(
+            parent_id=parent,
+            song=make_song(f"{parent}_{label}.wav", 128.0, "A", "minor", "8A", 6, 0.2),
+            candidate=_SectionCandidate(label=label, start=0.0, end=8.0, duration=8.0, midpoint=4.0, energy=0.5, origin="phrase"),
+            blended_error=error,
+            score_breakdown=scores,
+            section_label=label,
+        )
+
+    chosen = [
+        _sel("A", "verse", 0.10, stretch_ratio=1.0, stretch_gate=0.0, seam_risk=0.25, transition_viability=0.25, listen_groove_confidence=0.8),
+        _sel("B", "build", 0.10, stretch_ratio=1.0, stretch_gate=0.0, seam_risk=0.25, transition_viability=0.25, listen_groove_confidence=0.8),
+        _sel("A", "payoff", 0.10, stretch_ratio=1.0, stretch_gate=0.0, seam_risk=0.25, transition_viability=0.25, listen_groove_confidence=0.8),
+    ]
+    ranked = [
+        [chosen[0]],
+        [
+            chosen[1],
+            _sel("A", "build_backbone", 0.32, stretch_ratio=1.02, stretch_gate=0.0, seam_risk=0.3, transition_viability=0.3, listen_groove_confidence=0.78),
+        ],
+        [chosen[2]],
+    ]
+
+    updated, notes = _apply_development_continuity_guard(specs, chosen, ranked, backbone_parent="A")
+
+    assert updated[1].parent_id == "A"
+    assert any("development continuity guard" in note for note in notes)
+
+
+def test_choose_support_recipe_is_strict_for_payoff_overlays():
+    spec = _SectionSpec(label="payoff", start_bar=24, bar_count=8, target_energy=0.86, source_parent_preference=None)
+    chosen = _WindowSelection(
+        parent_id="A",
+        song=make_song("a.wav", 128.0, "A", "minor", "8A", 6, 0.2),
+        candidate=_SectionCandidate(label="phrase_3_5", start=24.0, end=40.0, duration=16.0, midpoint=32.0, energy=0.9, origin="phrase"),
+        blended_error=0.10,
+        score_breakdown={},
+        section_label="payoff",
+    )
+    shortlist = {
+        "candidate_shortlist": [],
+        "cross_parent_best_alternate": {
+            "parent_id": "B",
+            "window_label": "phrase_3_5",
+            "error_delta_vs_selected": 0.20,
+            "score_breakdown": {
+                "stretch_ratio": 1.03,
+                "stretch_gate": 0.0,
+                "seam_risk": 0.34,
+                "transition_viability": 0.44,
+                "seam_foreground_collision": 0.18,
+            },
+        },
+    }
+
+    recipe = _choose_support_recipe(spec, chosen, shortlist, backbone_parent="A")
+
+    assert recipe is None
 
 
 
