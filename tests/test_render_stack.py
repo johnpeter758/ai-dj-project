@@ -24,6 +24,7 @@ from src.core.render.renderer import (
     _stabilize_section_loudness,
 )
 from src.core.render.transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
+from src.core.render.resolver import _clamp_stretch_ratio
 
 
 def make_song(path: str, tempo: float, tonic: str, mode: str, camelot: str, sections: int, mean_rms: float) -> SongDNA:
@@ -606,12 +607,59 @@ def test_resolve_render_plan_handoff_support_profile_tightens_low_viability_payo
 
     low_viability_manifest = resolve_render_plan(low_viability_plan, a, b)
     high_viability_manifest = resolve_render_plan(high_viability_plan, a, b)
-    low_viability_support = next(work for work in low_viability_manifest.work_orders if work.order_type == 'section_support')
     high_viability_support = next(work for work in high_viability_manifest.work_orders if work.order_type == 'section_support')
 
-    assert low_viability_support.gain_db < high_viability_support.gain_db
-    assert low_viability_support.fade_in_sec > high_viability_support.fade_in_sec
-    assert low_viability_support.fade_out_sec > high_viability_support.fade_out_sec
+    assert all(work.order_type != 'section_support' for work in low_viability_manifest.work_orders)
+    assert high_viability_support.order_type == 'section_support'
+    assert any('integrated donor support disabled' in warning for warning in low_viability_manifest.sections[0].warnings)
+
+
+def test_resolve_render_plan_disables_integrated_support_for_unviable_payoff_handoff(tmp_path: Path):
+    p1 = write_sine(tmp_path / 'a.wav', 220.0)
+    p2 = write_sine(tmp_path / 'b.wav', 660.0)
+    a = make_song(str(p1), 120.0, 'A', 'minor', '8A', 1, 0.1)
+    b = make_song(str(p2), 120.0, 'C', 'major', '8B', 1, 0.1)
+
+    plan = ChildArrangementPlan(
+        parents=[
+            ParentReference(str(p1), 120.0, 'A', 'minor', 12.0),
+            ParentReference(str(p2), 120.0, 'C', 'major', 12.0),
+        ],
+        compatibility=CompatibilityFactors(tempo=1.0, harmony=1.0, structure=1.0, energy=1.0, stem_conflict=1.0),
+        sections=[
+            PlannedSection(
+                label='payoff',
+                start_bar=0,
+                bar_count=4,
+                source_parent='A',
+                source_section_label='phrase_0_2',
+                support_parent='B',
+                support_section_label='phrase_0_2',
+                support_mode='filtered_support',
+                support_gain_db=-10.0,
+                support_transition_risk=0.7,
+                support_foreground_collision_risk=0.55,
+                support_transition_viability=0.25,
+                transition_mode='arrival_handoff',
+            ),
+        ],
+    )
+
+    manifest = resolve_render_plan(plan, a, b)
+
+    assert all(work.order_type != 'section_support' for work in manifest.work_orders)
+    assert manifest.sections[0].owner_mode == 'backbone_only'
+    assert any('integrated donor support disabled' in warning for warning in manifest.sections[0].warnings)
+
+
+def test_clamp_stretch_ratio_uses_nearest_conservative_bound_instead_of_opposite_extreme():
+    shrunk, _, shrunk_fallbacks = _clamp_stretch_ratio(0.8)
+    stretched, _, stretched_fallbacks = _clamp_stretch_ratio(1.22)
+
+    assert shrunk == pytest.approx(0.85)
+    assert stretched == pytest.approx(1.15)
+    assert any('0.85' in message for message in shrunk_fallbacks)
+    assert any('1.15' in message for message in stretched_fallbacks)
 
 
 def test_resolve_render_plan_support_work_order_tracks_section_transition_mode(tmp_path: Path):

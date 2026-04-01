@@ -17,8 +17,8 @@ from .manifest import (
 )
 from .transitions import incoming_gain_db, transition_overlap_beats, transition_overlap_seconds
 
-_CONSERVATIVE_STRETCH_MIN = 0.75
-_CONSERVATIVE_STRETCH_MAX = 1.25
+_CONSERVATIVE_STRETCH_MIN = 0.85
+_CONSERVATIVE_STRETCH_MAX = 1.15
 _HARD_STRETCH_MIN = 0.5
 _HARD_STRETCH_MAX = 2.0
 _GENERIC_SECTION_PREFIXES = ("section_", "part_", "segment_")
@@ -379,6 +379,35 @@ def _resolve_support_overlay_profile(
         gain_db -= 0.75
 
     return gain_db, fade_in_sec, fade_out_sec
+
+
+def _should_disable_integrated_support(
+    *,
+    section_label: str | None,
+    support_mode: str | None,
+    support_transition_risk: float | None,
+    support_foreground_collision_risk: float | None,
+    support_transition_viability: float | None,
+    support_stretch_ratio: float | None,
+) -> tuple[bool, str | None]:
+    label = (section_label or "").strip().lower()
+    mode = (support_mode or "").strip().lower()
+    if mode not in {"filtered_support", "filtered_counterlayer", "foreground_counterlayer"}:
+        return False, None
+
+    risk = float(max(0.0, min(1.0, support_transition_risk if support_transition_risk is not None else 0.0)))
+    collision = float(max(0.0, min(1.0, support_foreground_collision_risk if support_foreground_collision_risk is not None else 0.0)))
+    viability = float(max(0.0, min(1.0, support_transition_viability if support_transition_viability is not None else 0.5)))
+    stretch = float(abs((support_stretch_ratio if support_stretch_ratio is not None else 1.0) - 1.0))
+
+    if label in {"build", "payoff"}:
+        if viability <= 0.45 and (risk >= 0.55 or collision >= 0.45):
+            return True, "integrated donor support disabled because build/payoff handoff viability was too low for a clean two-parent section"
+        if risk >= 0.72 or collision >= 0.68:
+            return True, "integrated donor support disabled because build/payoff support collision risk was too high"
+    if stretch >= 0.12 and (risk >= 0.5 or viability <= 0.5):
+        return True, "integrated donor support disabled because support stretch was too aggressive for the estimated seam viability"
+    return False, None
 
 def _finite_float_values(values: list[float] | tuple[float, ...] | object) -> list[float]:
     if not isinstance(values, (list, tuple)):
@@ -750,10 +779,11 @@ def _clamp_stretch_ratio(stretch_ratio: float) -> tuple[float, list[str], list[s
         fallbacks.append(f"stretch ratio {stretch_ratio:.3f} was too large; clamped to {_HARD_STRETCH_MAX:.2f}")
         stretch_ratio = _HARD_STRETCH_MAX
     elif stretch_ratio < _CONSERVATIVE_STRETCH_MIN:
-        fallbacks.append(f"stretch ratio {stretch_ratio:.3f} was outside conservative bounds; clamped to {_HARD_STRETCH_MAX:.2f} for v1 safety")
-        stretch_ratio = _HARD_STRETCH_MAX
-    elif stretch_ratio > _CONSERVATIVE_STRETCH_MAX and math.isclose(stretch_ratio, _HARD_STRETCH_MAX, rel_tol=0.0, abs_tol=1e-9):
-        fallbacks.append(f"stretch ratio {stretch_ratio:.3f} was outside conservative bounds; clamped to {_HARD_STRETCH_MAX:.2f}")
+        fallbacks.append(f"stretch ratio {stretch_ratio:.3f} was outside conservative bounds; clamped to {_CONSERVATIVE_STRETCH_MIN:.2f} for v1 safety")
+        stretch_ratio = _CONSERVATIVE_STRETCH_MIN
+    elif stretch_ratio > _CONSERVATIVE_STRETCH_MAX:
+        fallbacks.append(f"stretch ratio {stretch_ratio:.3f} was outside conservative bounds; clamped to {_CONSERVATIVE_STRETCH_MAX:.2f} for v1 safety")
+        stretch_ratio = _CONSERVATIVE_STRETCH_MAX
 
     return stretch_ratio, warnings, fallbacks
 
@@ -809,6 +839,21 @@ def resolve_render_plan(plan: ChildArrangementPlan, parent_a: SongDNA, parent_b:
             target_bpm=target_bpm,
         )
         integrated_support_active = support_ref is not None and (sec.support_parent or None) not in {None, parent_id}
+        if integrated_support_active:
+            disable_support, disable_reason = _should_disable_integrated_support(
+                section_label=sec.label,
+                support_mode=sec.support_mode,
+                support_transition_risk=sec.support_transition_risk,
+                support_foreground_collision_risk=sec.support_foreground_collision_risk,
+                support_transition_viability=sec.support_transition_viability,
+                support_stretch_ratio=support_stretch_ratio,
+            )
+            if disable_support:
+                integrated_support_active = False
+                support_ref = None
+                support_stretch_ratio = None
+                if disable_reason:
+                    section_warnings.append(disable_reason)
         section_warnings.extend(support_warnings)
 
         if section_warnings:
