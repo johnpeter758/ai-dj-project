@@ -53,6 +53,16 @@ artifacts/
 /data/local/
 /data/tmp/
 /data/mixes/
+/src/analytics_reports/
+/src/playlists/
+/src/data/sharing/
+/src/automation.json
+/src/notifications.json
+/src/queue_state.json
+/src/scheduler_state.json
+/src/test_report.json
+/src/workflow/current.json
+/music
 
 # Large files
 *.pth
